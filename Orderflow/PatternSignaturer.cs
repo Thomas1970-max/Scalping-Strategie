@@ -1,0 +1,958 @@
+﻿// File: PatternSignaturer.cs
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using System.Windows.Documents;
+using ATAS.DataFeedsCore;
+using MyNamespace.Strategies.Models;
+using Utils.Common.Logging;
+using static MyNamespace.Strategies.Goldfluss3_3;
+
+namespace MyNamespace.Strategies.Orderflow
+{
+    public class PatternSignaturer
+    {
+        private readonly ILoggerSource _loggerSource;
+        private readonly SetupConfiguration _strategySetup;
+        private readonly List<IPatternEvaluator> _evaluators;
+        private readonly IThresholdsResolver _thresholdsResolver;
+        // GEÄNDERT: Felder mit Ratenbegrenzung, um kostspielige wiederholte Reflektionen/Neuerstellungen zu vermeiden
+        private DateTime _lastRebuildTime = DateTime.MinValue; // GEÄNDERT
+        private readonly TimeSpan _minRebuildInterval = TimeSpan.FromSeconds(5); // GEÄNDERT, bei Bedarf konfigurierbar
+        private readonly object _rebuildLock = new object();
+
+        public PatternSignaturer(IThresholdsResolver thresholdsResolver, ILoggerSource loggerSource, SetupConfiguration strategySetup, IEnumerable<IPatternEvaluator> externalEvaluators = null)
+        {
+            _loggerSource = loggerSource ?? throw new ArgumentNullException(nameof(loggerSource));
+            _strategySetup = strategySetup ?? throw new ArgumentNullException(nameof(strategySetup));
+            _thresholdsResolver = thresholdsResolver ?? throw new ArgumentNullException(nameof(thresholdsResolver));
+
+            // Beginnen Sie mit allen ausdrücklich angegebenen externen Gutachtern.
+            var evaluators = new List<IPatternEvaluator>();
+            if (externalEvaluators != null)
+                evaluators.AddRange(externalEvaluators.Where(e => e != null));
+
+            // Automatisches Erkennen und Registrieren von Evaluatoren gemäß SetupConfiguration
+            var autoDiscovered = DiscoverEvaluatorsFromSetup(_strategySetup);
+            foreach (var ev in autoDiscovered)
+            {
+                // Duplikate vermeiden (gleicher Typ und gleiche Richtung)
+                if (!evaluators.Any(x => x.Type == ev.Type && x.Direction == ev.Direction))
+                    evaluators.Add(ev);
+            }
+
+            // Als Fallback: Behalte aus Sicherheitsgründen eine integrierte Liste mit minimalen Evaluatoren (optional)
+            // Du kannst diese entfernen, wenn alle Evaluatoren implementiert und auffindbar sind.
+            TryAddBuiltInFallbacks(evaluators);
+
+            // Sortieren für stabile Reihenfolge
+            _evaluators = evaluators.OrderBy(e => GetEvaluationPriority(e.Type)).ToList();
+
+            try
+            {
+                _loggerSource.LogInfo($"[PatternSignaturer] Registered {_evaluators.Count} evaluators (including external/fallback).");
+                _loggerSource.LogDebug("[PatternSignaturer] Evaluator list: " +
+                    string.Join(", ", _evaluators.Select(e => e == null ? "(null)" : $"{e.GetType().Name}|Type={e.Type}|Dir={e.Direction}")));
+            }
+            catch { /* kein Logging darf Konstruktion verhindern */ }
+        }
+
+        private IEnumerable<IPatternEvaluator> DiscoverEvaluatorsFromSetup(SetupConfiguration setup)
+        {
+            // GEÄNDERT: Einfache Ratenbegrenzung, um wiederholte starke Reflexionen in kurzen Intervallen zu vermeiden
+            lock (_rebuildLock)
+            {
+                if (DateTime.UtcNow - _lastRebuildTime < _minRebuildInterval)
+                {
+                    _loggerSource.LogDebug($"[PatternSignaturer] DiscoverEvaluatorsFromSetup skipped due to rate-limit. Next allowed at {_lastRebuildTime + _minRebuildInterval:O}");
+                    return Enumerable.Empty<IPatternEvaluator>();
+                }
+                _lastRebuildTime = DateTime.UtcNow; // GEÄNDERT
+            }
+
+            var found = new List<IPatternEvaluator>();
+            if (setup?.PatternConditionConfigs == null || setup.PatternConditionConfigs.Count == 0)
+            {
+                _loggerSource.LogDebug("[PatternSignaturer] No pattern configs defined in SetupConfiguration; skipping auto-discovery.");
+                return found;
+            }
+
+            // Alle Kandidatentypen abrufen, die IPatternEvaluator aus geladenen Assemblies implementieren
+            var candidateTypes = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(a => !a.IsDynamic)
+                .SelectMany(a =>
+                {
+                    try { return a.GetTypes(); }
+                    catch (ReflectionTypeLoadException ex) { return ex.Types.Where(t => t != null); }
+                    catch { return Enumerable.Empty<Type>(); }
+                })
+                .Where(t => typeof(IPatternEvaluator).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract)
+                .ToList();
+
+            _loggerSource.LogDebug($"[PatternSignaturer] Found {candidateTypes.Count} candidate evaluator types via reflection.");
+
+            // Versuchen Sie für jeden Kandidatentyp, eine Instanz zu erstellen und deren .Type-Eigenschaft zu testen.
+            foreach (var t in candidateTypes)
+            {
+                try
+                {
+                    // Versuchen Sie zunächst einen parameterlosen Konstruktor.                    
+                    IPatternEvaluator instance = null;
+                    var parameterlessCtor = t.GetConstructor(Type.EmptyTypes);
+                    if (parameterlessCtor != null)
+                    {
+                        instance = (IPatternEvaluator)Activator.CreateInstance(t);
+
+                        // Versuche, falls sinnvoll, die Gegenrichtung zu erzeugen wenn ein ctor(OrderDirections) existiert.
+                        var ctorWithDir = t.GetConstructors()
+                            .FirstOrDefault(ci =>
+                            {
+                                var ps = ci.GetParameters();
+                                return ps.Length >= 1 && ps[0].ParameterType == typeof(OrderDirections);
+                            });
+
+                        if (ctorWithDir != null)
+                        {
+                            // Erzeuge Buy und Sell, falls die parameterlose Instanz nur eine Richtung repräsentiert.
+                            try
+                            {
+                                // Wenn die parameterlose Instanz z.B. Buy ist, dann noch Sell erzeugen; falls sie Sell ist, noch Buy erzeugen.
+                                var existingDir = instance.Direction;
+                                var otherDir = existingDir == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy;
+
+                                // Build minimal arglist: setze nur das erste param (OrderDirections). Für weitere optionale Parameter, versuche DefaultValue oder null.
+                                var paramInfos = ctorWithDir.GetParameters();
+                                var args = new object[paramInfos.Length];
+                                args[0] = otherDir;
+                                for (int i = 1; i < paramInfos.Length; i++)
+                                {
+                                    var p = paramInfos[i];
+                                    if (p.HasDefaultValue) args[i] = p.DefaultValue;
+                                    else if (typeof(ILoggerSource).IsAssignableFrom(p.ParameterType)) args[i] = _loggerSource;
+                                    else args[i] = null;
+                                }
+
+                                var counterpart = (IPatternEvaluator)ctorWithDir.Invoke(args);
+                                TryAddIfConfigured(found, instance, setup);
+                                TryAddIfConfigured(found, counterpart, setup);
+                                continue; // zu nächstem Typ
+                            }
+                            catch (Exception ex)
+                            {
+                                // Falls Erzeugung der Gegeninstanz fehlschlägt, loggen, aber die ursprüngliche Instanz dennoch prüfen/hinzufügen.
+                                _loggerSource.LogDebug($"[PatternSignaturer] Could not create opposite-direction instance for {t.FullName}: {ex.Message}");
+                                TryAddIfConfigured(found, instance, setup);
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            // Kein ctor mit OrderDirections vorhanden: füge die gefundene Instanz hinzu (möglicher direction-default).
+                            TryAddIfConfigured(found, instance, setup);
+                            continue;
+                        }
+                    }
+
+                    if (instance != null)
+                    {
+                        TryAddIfConfigured(found, instance, setup);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _loggerSource.LogWarn($"[PatternSignaturer] Fehler beim Instanziieren des Evaluator-Typs {t.FullName}: {ex.Message}. Skipping.");
+                }
+            }
+
+            _loggerSource.LogInfo($"[PatternSignaturer] Automatisch erkannt {found.Count} Bewerter-Abgleich SetupConfiguration.");
+            // GEÄNDERT: Debug-Fallback, wenn bestimmte (Reversal) evaluator-Typen fehlen, zu Testzwecken hinzufügen.
+            // Dies ist nur ein Debug-Hilfsmittel, bitte entfernen, wenn Discovery/Config etabliert ist.
+            try
+            {
+                bool missingLongReversal = !found.Any(e => e.Type == OrderflowPatternType.PotentialLongReversalBounce);
+                bool missingShortReversal = !found.Any(e => e.Type == OrderflowPatternType.PotentialShortReversalBounce);
+                if ((missingLongReversal || missingShortReversal) && setup.PatternConditionConfigs.Keys.Any(k =>
+                        k == OrderflowPatternType.PotentialLongReversalBounce || k == OrderflowPatternType.PotentialShortReversalBounce))
+                {
+                    _loggerSource.LogDebug("[PatternSignaturer] Reversal evaluators not discovered but configured — adding debug fallback instances (if constructor available).");
+                    var tReversal = candidateTypes.FirstOrDefault(t => t.Name.IndexOf("ReversalBounce", StringComparison.InvariantCultureIgnoreCase) >= 0);
+                    if (tReversal != null)
+                    {
+                        try
+                        {
+                            // try ctor (OrderDirections, ILoggerSource) first
+                            var ctor2 = tReversal.GetConstructors()
+                                .FirstOrDefault(ci =>
+                                {
+                                    var ps = ci.GetParameters();
+                                    return ps.Length == 2 && ps[0].ParameterType == typeof(OrderDirections) && typeof(ILoggerSource).IsAssignableFrom(ps[1].ParameterType);
+                                });
+                            if (ctor2 != null)
+                            {
+                                if (missingLongReversal)
+                                {
+                                    var inst = (IPatternEvaluator)ctor2.Invoke(new object[] { OrderDirections.Buy, _loggerSource });
+                                    TryAddIfConfigured(found, inst, setup);
+                                }
+                                if (missingShortReversal)
+                                {
+                                    var inst = (IPatternEvaluator)ctor2.Invoke(new object[] { OrderDirections.Sell, _loggerSource });
+                                    TryAddIfConfigured(found, inst, setup);
+                                }
+                            }
+                            else
+                            {
+                                // fallback to single-orderdir ctor
+                                var ctor1 = tReversal.GetConstructors()
+                                    .FirstOrDefault(ci =>
+                                    {
+                                        var ps = ci.GetParameters();
+                                        return ps.Length == 1 && ps[0].ParameterType == typeof(OrderDirections);
+                                    });
+                                if (ctor1 != null)
+                                {
+                                    if (missingLongReversal)
+                                    {
+                                        var inst = (IPatternEvaluator)ctor1.Invoke(new object[] { OrderDirections.Buy });
+                                        TryAddIfConfigured(found, inst, setup);
+                                    }
+                                    if (missingShortReversal)
+                                    {
+                                        var inst = (IPatternEvaluator)ctor1.Invoke(new object[] { OrderDirections.Sell });
+                                        TryAddIfConfigured(found, inst, setup);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _loggerSource.LogWarn($"[PatternSignaturer] Debug fallback: failed to create Reversal evaluator instance: {ex.Message}");
+                        }
+                    }
+                    else
+                    {
+                        _loggerSource.LogDebug("[PatternSignaturer] No ReversalBounce* type name found among candidates for debug fallback.");
+                    }
+                }
+            }
+            catch { /* defensive */ }
+
+            return found;
+        }
+
+
+
+        private void TryAddIfConfigured(List<IPatternEvaluator> list, IPatternEvaluator instance, SetupConfiguration setup)
+        {
+            try
+            {
+                if (instance == null) return;
+
+                // Defensive: ensure setup and its PatternConditionConfigs exist before trying to read
+                if (setup?.PatternConditionConfigs == null)
+                {
+                    var msg = $"[PatternSignaturer] Setup or PatternConditionConfigs is null; skipping evaluator {instance.GetType().Name}";
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: -1,
+                        message: msg,
+                        signature: SmartLogger.ComposeSignature(("reason", "NoSetup")),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+                    return;
+                }
+
+                // Wenn der Instanztyp mit einem der konfigurierten Mustertypen übereinstimmt, hinzufügen.
+                if (setup.PatternConditionConfigs.ContainsKey(instance.Type))
+                {
+                    list.Add(instance);
+                    var msg = $"[PatternSignaturer] Registrierte Evaluator-Instanz {instance.GetType().Name} for PatternType={instance.Type} Direction={instance.Direction}";
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: -1,
+                        message: msg,
+                        signature: SmartLogger.ComposeSignature(("action", "register"), ("type", instance.Type.ToString()), ("dir", instance.Direction.ToString())),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+                }
+                else
+                {
+                    // Fallback by classname match
+                    var className = instance.GetType().Name.ToLowerInvariant();
+                    var matchesAny = setup.PatternConditionConfigs.Keys.Any(k => className.Contains(k.ToString().ToLowerInvariant()));
+                    if (matchesAny)
+                    {
+                        list.Add(instance);
+                        var msg = $"[PatternSignaturer] Registered evaluator (by name-match) {instance.GetType().Name} for PatternType={instance.Type} Direction={instance.Direction}";
+                        SmartLogger.Instance.LogIfChanged(
+                            category: "PatternDetection",
+                            sourceId: "PatternSignaturer",
+                            barIndex: -1,
+                            message: msg,
+                            signature: SmartLogger.ComposeSignature(("action", "registerByName"), ("type", instance.Type.ToString())),
+                            backendLogAction: s => _loggerSource.LogDebug(s)
+                        );
+                    }
+                    else
+                    {
+                        var configuredKeys = setup.PatternConditionConfigs?.Keys != null
+                            ? string.Join(", ", setup.PatternConditionConfigs.Keys)
+                            : "(none)";
+                        var msg = $"[PatternSignaturer] Skipping evaluator {instance.GetType().Name}. Instance.Type={instance.Type}. Configured pattern types: {configuredKeys}";
+                        SmartLogger.Instance.LogIfChanged(
+                            category: "PatternDetection",
+                            sourceId: "PatternSignaturer",
+                            barIndex: -1,
+                            message: msg,
+                            signature: SmartLogger.ComputeHashHex(configuredKeys + "|" + instance.Type.ToString()),
+                            backendLogAction: s => _loggerSource.LogDebug(s)
+                        );
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                var msg = $"[PatternSignaturer] Error while deciding to add evaluator instance {instance?.GetType().FullName}: {ex.Message}";
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: -1,
+                    message: msg,
+                    signature: SmartLogger.ComposeSignature(("ex", ex.GetType().FullName), ("msg", ex.Message)),
+                    backendLogAction: s => _loggerSource.LogWarn(s)
+                );
+            }
+        }
+
+        private void TryAddBuiltInFallbacks(List<IPatternEvaluator> list)
+        {
+            try
+            {
+                var configuredPatternTypes = _strategySetup.PatternConditionConfigs?.Keys ?? Enumerable.Empty<OrderflowPatternType>();
+
+                foreach (var pt in configuredPatternTypes)
+                {
+                    bool exists = list.Any(e => e.Type == pt);
+                    if (exists) continue;
+
+                    IPatternEvaluator created = null;
+                    switch (pt)
+                    {
+                        case OrderflowPatternType.PotentialLongReversalBounce:
+                        case OrderflowPatternType.PotentialShortReversalBounce:
+                            // skip creation by default as before
+                            break;
+                        default:
+                            break;
+                    }
+
+                    if (created != null)
+                    {
+                        list.Add(created);
+                        var msg = $"[PatternSignaturer] Added fallback evaluator for {pt}.";
+                        SmartLogger.Instance.LogIfChanged(
+                            category: "PatternDetection",
+                            sourceId: "PatternSignaturer",
+                            barIndex: -1,
+                            message: msg,
+                            signature: SmartLogger.ComposeSignature(("action", "addFallback"), ("type", pt.ToString())),
+                            backendLogAction: s => _loggerSource.LogDebug(s)
+                        );
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                var msg = $"[PatternSignaturer] Exception in TryAddBuiltInFallbacks: {ex.Message}";
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: -1,
+                    message: msg,
+                    signature: SmartLogger.ComposeSignature(("ex", ex.GetType().FullName), ("msg", ex.Message)),
+                    backendLogAction: s => _loggerSource.LogWarn(s)
+                );
+            }
+        }
+
+        public DetectedOrderflowPattern DetectDominantOrderflowPattern(
+        int bar,
+        OfFeaturesHistory history,
+        Dictionary<int, OfFeatures> ofFeaturesByBar,
+        MarketRegime currentRegime,
+        MarketDirectionalBias currentDirectionalBias,
+        MarketState currentMarketState,
+        MarketStructureContext currentMarketStructureContext,
+        int? currentBar = null
+        )
+        {
+            ArgumentNullException.ThrowIfNull(ofFeaturesByBar);
+            ArgumentNullException.ThrowIfNull(history);
+
+
+            if (!ofFeaturesByBar.TryGetValue(bar, out var currentFeatures) || currentFeatures == null)
+            {
+                _loggerSource.LogDebug($"[PatternSignaturer] No features found for bar {bar}. Returning explicit default no-pattern.");
+                return new DetectedOrderflowPattern(
+                    OrderflowPatternType.None,
+                    OrderDirections.Buy,
+                    PatternCategory.Unknown,
+                    null,
+                    new SetupEvaluationDetails { MinSignalsRequired = 0 },
+                    0m
+                );
+            }
+
+            try
+            {
+                var snapshotExists = currentFeatures.Snapshot != null;
+                var snapshotLow = currentFeatures.Snapshot?.Low;
+                var snapshotHigh = currentFeatures.Snapshot?.High;
+                var historyCount = history?.Count ?? 0;
+                var ofFeaturesCount = ofFeaturesByBar.Count;
+                var configuredKeys = _strategySetup?.PatternConditionConfigs?.Keys != null
+                    ? string.Join(", ", _strategySetup.PatternConditionConfigs.Keys)
+                    : "(none)";
+
+                var inputMsg = $"[PatternSignaturer-Inputs] bar={bar}, snapshotExists={snapshotExists}, low={snapshotLow}, high={snapshotHigh}, historyCount={historyCount}, ofFeaturesByBar.Count={ofFeaturesCount}, currentRegime={currentRegime}, currentBias={currentDirectionalBias}, configuredPatterns={configuredKeys}, marketStateSummary={(currentMarketState != null ? currentMarketState.ToString() : "null")}";
+                var inputSig = SmartLogger.ComputeHashHex($"{snapshotExists}|{snapshotLow}|{snapshotHigh}|{historyCount}|{ofFeaturesCount}|{currentRegime}|{currentDirectionalBias}|{configuredKeys}");
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: bar,
+                    message: inputMsg,
+                    signature: inputSig,
+                    backendLogAction: s => _loggerSource.LogDebug(s)
+                );
+            }
+            catch (Exception ex)
+            {
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: bar,
+                    message: $"[PatternSignaturer] Failed to log Detect inputs: {ex.Message}",
+                    signature: SmartLogger.ComposeSignature(("ex", ex.GetType().FullName)),
+                    backendLogAction: s => _loggerSource.LogWarn(s)
+                );
+            }
+
+            DetectedOrderflowPattern dominantPattern = null;
+            double? highestScore = null;
+            decimal? highestCombined = null;
+            int highestPriority = int.MaxValue;
+
+            // KORREKT: konkrete generische Liste deklarieren
+            var detectedCandidates = new List<DetectedOrderflowPattern>();
+
+            foreach (var evaluator in _evaluators)
+            {
+                if (evaluator == null) continue;
+
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: bar,
+                    message: $"[PatternSignaturer] Evaluating pattern: {evaluator.Type} ({evaluator.Direction}) on bar {bar}",
+                    signature: SmartLogger.ComposeSignature(("evalType", evaluator.Type.ToString()), ("dir", evaluator.Direction.ToString())),
+                    backendLogAction: s => _loggerSource.LogDebug(s)
+                );
+
+                if (_strategySetup?.PatternConditionConfigs == null || !_strategySetup.PatternConditionConfigs.TryGetValue(evaluator.Type, out var conditionConfig))
+                {
+                    _loggerSource.LogDebug($"[PatternSignaturer] No SetupConditionConfig for {evaluator.Type}, skipping evaluator.");
+                    continue;
+                }
+
+                var patternCategory = evaluator.Type.GetCategory();
+                if (patternCategory == PatternCategory.Unknown)
+                {
+                    _loggerSource.LogDebug($"[PatternSignaturer] Skipping evaluator due to Unknown category. EvaluatorType={evaluator.Type}, Direction={evaluator.Direction}, evaluatorClass={evaluator.GetType().Name}.");
+                    continue;
+                }
+
+                if (!PatternCategorySpecs.Map.TryGetValue(patternCategory, out var categorySpecificSpecs))
+                {
+                    _loggerSource.LogDebug($"[PatternSignaturer] No ModeSpecsEntry for category {patternCategory}, skipping {evaluator.Type}.");
+                    continue;
+                }
+
+                var thresholdsResult = _thresholdsResolver.CalculateAdaptiveThresholds(
+                    evaluator.Type,
+                    patternCategory,
+                    currentRegime,
+                    history,
+                    ofFeaturesByBar,
+                    categorySpecificSpecs,
+                    conditionConfig,
+                    _strategySetup,
+                    null,
+                    currentBar
+                    );
+                var adaptiveFull = thresholdsResult?.Full;
+                var adaptivePruned = thresholdsResult?.Pruned;
+
+                try
+                {
+                    if (adaptivePruned != null)
+                    {
+                        var msg = $"[PatternSignaturer-Thresholds] Pattern={evaluator.Type}, MinSignalsRequired={adaptivePruned.MinSignalsRequired}";
+                        SmartLogger.Instance.LogIfChanged(
+                            category: "PatternDetection",
+                            sourceId: "PatternSignaturer",
+                            barIndex: bar,
+                            message: msg,
+                            signature: SmartLogger.ComposeSignature(("thPattern", evaluator.Type.ToString()), ("minSignals", adaptivePruned.MinSignalsRequired.ToString())),
+                            backendLogAction: s => _loggerSource.LogDebug(s)
+                        );
+                    }
+                }
+                catch { }
+
+                var evaluationResult = evaluator.Evaluate(
+                    currentFeatures.Snapshot,
+                    currentFeatures,
+                    history,
+                    adaptivePruned,
+                    conditionConfig,
+                    currentRegime,
+                    currentDirectionalBias,
+                    currentMarketState,
+                    currentMarketStructureContext
+                );
+                if (evaluationResult == null)
+                {
+                    _loggerSource.LogDebug($"[PatternSignaturer] Evaluator {evaluator.Type} returned null result. Skipping.");
+                    continue;
+                }
+
+                var detected = evaluationResult.IsDetected;
+                var confidence = evaluationResult.ConfidenceScore;
+                var reasonList = evaluationResult.Reasons ?? Enumerable.Empty<string>();
+                var matchedValues = evaluationResult.MatchedCriteriaValues ?? new Dictionary<string, object>();
+                var metHard = evaluationResult.MetHardConditions ?? new List<EvaluatedConditionDetail>();
+                var metRel = evaluationResult.MetRelevantConditions ?? new List<EvaluatedConditionDetail>();
+
+                var snapTime = currentFeatures?.Snapshot?.Time;
+                var snapLow = currentFeatures?.Snapshot?.Low;
+                var snapHigh = currentFeatures?.Snapshot?.High;
+                var volBurstZ = currentFeatures?.Snapshot?.VolBurstZ;
+                var cvdImpulse = currentFeatures?.Snapshot?.CvdImpulse;
+                var eff = currentFeatures?.Snapshot?.Efficiency;
+
+                var ofTh = adaptivePruned as OrderflowThresholds;
+                var minSignalsReq = ofTh?.MinSignalsRequired ?? conditionConfig?.MinSignalsRequired ?? 0;
+                var thVolBurstZ = ofTh?.ThVolBurstZ;
+                var thEff = ofTh?.ThEfficiency;
+
+                var snapTimeStr = snapTime.HasValue ? snapTime.Value.ToString("O") : "null";
+                var lowStr = snapLow?.ToString("F2") ?? "n/a";
+                var highStr = snapHigh?.ToString("F2") ?? "n/a";
+                var volBurstZStr = volBurstZ?.ToString("F2") ?? "n/a";
+                var cvdImpulseStr = cvdImpulse?.ToString("F0") ?? "n/a";
+                var effStr = eff?.ToString("F2") ?? "n/a";
+                var thVolBurstZStr = thVolBurstZ?.ToString("F2") ?? "n/a";
+                var thEffStr = thEff?.ToString("F2") ?? "n/a";
+
+                var (score, combined) = ComputePatternScore(
+                    metRel,
+                    matchedValues,
+                    ofTh,
+                    confidence,
+                    lambda: 0.60m,
+                    scoreScale: 4.0
+                );
+
+                var evalMsg = $"[PatternSignaturer] EvalResult Pattern={evaluator.Type}, Dir={evaluator.Direction}, Detected={detected}, Conf={confidence:F2}, Score={score:F3}, Combined={combined:F2}, Bar={bar}, " +
+                    $"SnapTime={snapTimeStr}, Low={lowStr}, High={highStr}, VolBurstZ={volBurstZStr}, CvdImpulse={cvdImpulseStr}, Eff={effStr}, MinSignals={minSignalsReq}, " +
+                    $"ThVolBurstZ={thVolBurstZStr}, ThEff={thEffStr}, ReasonsCount={reasonList.Count()}, MetHard={metHard.Count}, MetRel={metRel.Count}";
+
+                var evalSig = SmartLogger.ComposeSignature(
+                    ("type", evaluator.Type.ToString()),
+                    ("dir", evaluator.Direction.ToString()),
+                    ("detected", detected.ToString()),
+                    ("conf", confidence.ToString("F2")),
+                    ("score", score.ToString("F3")),
+                    ("combined", combined.ToString("F2"))
+                );
+
+                // Info-Backend verwenden
+                SmartLogger.Instance.LogIfChanged(
+                    category: "PatternDetection",
+                    sourceId: "PatternSignaturer",
+                    barIndex: bar,
+                    message: evalMsg,
+                    signature: evalSig,
+                    backendLogAction: s => _loggerSource.LogInfo(s)
+                );
+
+                if (!detected)
+                {
+                    var reasonMsg = $"[PatternSignaturer] Not detected {evaluator.Type}. ReasonsCount={reasonList.Count()}. Reasons: {string.Join(" | ", reasonList)}";
+                    // signature can be a hash of reasons to avoid too long keys
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: reasonMsg,
+                        signature: SmartLogger.ComputeHashHex(string.Join("|", reasonList)),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+                }
+                else if (confidence >= 0.75m)
+                {
+                    var matchedShort = matchedValues.Count > 0
+                        ? string.Join(", ", matchedValues.Select(kv => kv.Key + "=" + (kv.Value?.ToString() ?? "null")))
+                        : "(none)";
+                    var strongMsg = $"[PatternSignaturer] Strong detection {evaluator.Type} ({evaluator.Direction}) conf={confidence:F2}. MatchedValues: {matchedShort}";
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: strongMsg,
+                        signature: SmartLogger.ComputeHashHex(evaluator.Type + "|" + evaluator.Direction + "|" + matchedShort),
+                        backendLogAction: s => _loggerSource.LogInfo(s)
+                    );
+                }
+
+                if (metHard.Any())
+                {
+                    var mh = string.Join("; ", metHard.Select(h => h.ToShortString()));
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: "[PatternSignaturer] " + evaluator.Type + " MetHardConditions: " + mh,
+                        signature: SmartLogger.ComputeHashHex(mh),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+                }
+                if (metRel.Any())
+                {
+                    var mr = string.Join("; ", metRel.Select(r => r.ToShortString()));
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: "[PatternSignaturer] " + evaluator.Type + " MetRelevantConditions: " + mr,
+                        signature: SmartLogger.ComputeHashHex(mr),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+                }
+
+                if (detected)
+                {
+                    if (metHard.Count < minSignalsReq)
+                    {
+                        _loggerSource.LogDebug($"[PatternSignaturer] {evaluator.Type} detected but metHard ({metHard.Count}) < MinSignalsRequired ({minSignalsReq}). Skipping as hard-gate not passed.");
+                        continue;
+                    }
+
+                    var candidatePriority = GetEvaluationPriority(evaluator.Type);
+                    var replace = false;
+
+                    if (highestScore == null)
+                    {
+                        replace = true;
+                    }
+                    else
+                    {
+                        double eps = 1e-9;
+                        if (score > highestScore.Value + eps)
+                        {
+                            replace = true;
+                        }
+                        else if (Math.Abs(score - highestScore.Value) <= eps)
+                        {
+                            if (candidatePriority < highestPriority)
+                                replace = true;
+                            else if (candidatePriority == highestPriority)
+                            {
+                                if (currentDirectionalBias == MarketDirectionalBias.BullishTrend && evaluator.Direction == OrderDirections.Buy)
+                                    replace = true;
+                                else if (currentDirectionalBias == MarketDirectionalBias.BearishTrend && evaluator.Direction == OrderDirections.Sell)
+                                    replace = true;
+                                else
+                                {
+                                    if (highestCombined == null || combined > highestCombined.Value)
+                                        replace = true;
+                                }
+                            }
+                        }
+                    }
+
+                    var candidate = new DetectedOrderflowPattern(
+                        evaluator.Type,
+                        evaluator.Direction,
+                        patternCategory,
+                        evaluator.Direction == OrderDirections.Buy ? currentFeatures.Snapshot?.Low : currentFeatures.Snapshot?.High,
+                        new SetupEvaluationDetails { MinSignalsRequired = minSignalsReq },
+                        confidence,
+                        score,
+                        combined
+                    );
+
+                    candidate.Evaluation = evaluationResult; // braucht die neue Property in DetectedOrderflowPattern (siehe unten)
+
+                    // Optional: explizit kopieren, falls du die Felder direkt in DetectedOrderflowPattern sichtbar machen willst
+                    candidate.Reasons = evaluationResult.Reasons?.ToList() ?? new List<string>();
+                    candidate.MatchedCriteriaValues = evaluationResult.MatchedCriteriaValues != null
+                    ? new Dictionary<string, object>(evaluationResult.MatchedCriteriaValues)
+                    : new Dictionary<string, object>();
+                    candidate.MetHardConditions = evaluationResult.MetHardConditions?.ToList() ?? new List<EvaluatedConditionDetail>();
+                    candidate.MetRelevantConditions = evaluationResult.MetRelevantConditions?.ToList() ?? new List<EvaluatedConditionDetail>();
+                    candidate.MetDiagnosticConditions = evaluationResult.MetDiagnosticConditions?.ToList() ?? new List<EvaluatedConditionDetail>();
+                    candidate.MetCriteriaCount = evaluationResult.MetCriteriaCount;
+                    candidate.PossibleCriteriaCount = evaluationResult.PossibleCriteriaCount;
+                    candidate.DetectReason = evaluationResult.DetectReason ?? string.Join(" | ", evaluationResult.Reasons ?? Enumerable.Empty<string>());
+
+
+
+
+                    // ---------------------------------------------------------------------
+                    // KORREKT: füge zur List<T> hinzu
+                    detectedCandidates.Add(candidate);
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: $"[PatternSignaturer] Added candidate {evaluator.Type} ({evaluator.Direction}) rawScore={score:F3} combined={combined:F2} conf={confidence:F2}",
+                        signature: SmartLogger.ComposeSignature(("added", evaluator.Type.ToString()), ("score", score.ToString("F3")), ("combined", combined.ToString("F2"))),
+                        backendLogAction: s => _loggerSource.LogDebug(s)
+                    );
+
+                    // Falls du weiterhin die in-loop dominanz-Logik brauchst, kannst du hier highestScore/ highestCombined/ highestPriority aktualisieren.
+                    // Ich aktualisiere sie, damit spätere Tiebreaker/Logging ggf. konsistent sind:
+                    highestScore = score;
+                    highestCombined = combined;
+                    highestPriority = candidatePriority;
+                    dominantPattern = candidate;
+                }
+            } // Ende foreach evaluators
+
+
+            // Konfliktauflösung: wenn mehrere Kandidaten vorhanden sind, nutze ConflictResolver (zentralisierte Regeln).
+            if (detectedCandidates != null && detectedCandidates.Count > 0)
+            {
+                var resolver = new ConflictResolver
+                {
+                    UsePerformanceFactorInScore = false,
+                    MinScoreLead = 0.20,
+                    RejectIfBelow = 0.10,
+                    MinConfidence = 0.30m,
+                    OppositeDirectionCancelThreshold = 0.05
+                };
+
+                string higherTfDirection = null;
+
+                // Aufruf des vorhandenen ResolveConflict auf dem Resolver (statt nicht vorhandenem Adapter)
+                var winner = resolver.ResolveConflict(detectedCandidates, null, higherTfDirection);
+
+                if (winner != null && winner.IsDetected)
+                {
+                    var winnerMsg = $"[PatternSignaturer] Final DOMINANT PATTERN for bar {bar} (by ConflictResolver): {winner.Type} ({winner.Direction}) with Confidence: {winner.ConfidenceScore:F2}.";
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "PatternDetection",
+                        sourceId: "PatternSignaturer",
+                        barIndex: bar,
+                        message: winnerMsg,
+                        signature: SmartLogger.ComposeSignature(("winner", winner.Type.ToString()), ("dir", winner.Direction.ToString()), ("conf", winner.ConfidenceScore.ToString("F2"))),
+                        backendLogAction: s => _loggerSource.LogInfo(s)
+                    );
+                    return winner;
+                }
+            }
+
+            var defaultNoPattern = new DetectedOrderflowPattern(
+                OrderflowPatternType.None,
+                OrderDirections.Buy,
+                PatternCategory.Unknown,
+                null,
+                new SetupEvaluationDetails { MinSignalsRequired = 0 },
+                0m
+            );
+
+            SmartLogger.Instance.LogIfChanged(
+                category: "PatternDetection",
+                sourceId: "PatternSignaturer",
+                barIndex: bar,
+                message: $"[PatternSignaturer] Kein dominantes Muster gefunden für bar {bar}. Returning default no-pattern.",
+                signature: SmartLogger.ComposeSignature(("result", "none")),
+                backendLogAction: s => _loggerSource.LogDebug(s)
+            );
+            return defaultNoPattern;
+        }
+
+        private (double score, decimal combinedConfidence) ComputePatternScore(
+            IEnumerable<EvaluatedConditionDetail> metRelevantConditions,
+            IDictionary<string, object> matchedValues,
+            OrderflowThresholds thresholds,
+            decimal evaluatorConfidence,            // evaluationResult.ConfidenceScore (0..1)
+            decimal lambda = 0.60m,                 // Gewichtung: normierter Score vs. evaluatorConfidence
+            double scoreScale = 4.0                 // Skala für die logist. Normalisierung (tunable)
+        )
+        {
+            // Defensive defaults
+            metRelevantConditions = metRelevantConditions ?? Enumerable.Empty<EvaluatedConditionDetail>();
+            matchedValues = matchedValues ?? new Dictionary<string, object>();
+            // thresholds may be null -> fewer dist-metrics available
+
+            // 1) Additive Punktbasis aus metRelevantConditions (Standard: 1, Important: 2).
+            double basePoints = 0.0;
+            foreach (var c in metRelevantConditions)
+            {
+                try
+                {
+                    // Falls EvaluatedConditionDetail eine Eigenschaft "IsImportant" hat, verwende sie;
+                    // ansonsten versuche Namen/Flags zu interpretieren (defensive).
+                    var isImportantProp = c?.GetType().GetProperty("IsImportant");
+                    bool isImportant = false;
+                    if (isImportantProp != null)
+                    {
+                        var v = isImportantProp.GetValue(c);
+                        if (v is bool b) isImportant = b;
+                    }
+                    basePoints += isImportant ? 2.0 : 1.0;
+                }
+                catch
+                {
+                    basePoints += 1.0; // safe fallback
+                }
+            }
+
+            // 2) Distanzkomponente: falls Schwellenwerte vorhanden, skaliere Abstände normalisiert.
+            // Wir berücksichtigen eine kleine Auswahl nützlicher Schwellen, falls verfügbar.
+            var distContributions = new List<double>();
+            double eps = 1e-6;
+
+            try
+            {
+                if (thresholds != null)
+                {
+                    // VolBurstZ
+                    if (thresholds.ThVolBurstZ.HasValue && matchedValues.TryGetValue("VolBurstZ", out var vVol))
+                    {
+                        if (TryConvertToDouble(vVol, out double dv))
+                        {
+                            double th = (double)thresholds.ThVolBurstZ.Value;
+                            double dist = (dv - th) / Math.Max(Math.Abs(th), eps);
+                            distContributions.Add(Math.Max(0.0, dist)); // only positive over-threshold helps
+                        }
+                    }
+
+                    // Efficiency (example)
+                    if (thresholds.ThEfficiency.HasValue && matchedValues.TryGetValue("Efficiency", out var vEff))
+                    {
+                        if (TryConvertToDouble(vEff, out double de))
+                        {
+                            double th = (double)thresholds.ThEfficiency.Value;
+                            double dist = (de - th) / Math.Max(Math.Abs(th), eps);
+                            distContributions.Add(Math.Max(0.0, dist));
+                        }
+                    }
+
+                    // Weitere Schwellen-Felder können hier analog ergänzt werden, z.B. CvdImpulse, etc.
+                }
+            }
+            catch
+            {
+                // keep going even if something unexpected appears
+            }
+
+            double distScore = 0.0;
+            if (distContributions.Count > 0)
+            {
+                // Mittelwert der positiven Distanzanteile; begrenze Extremwerte.
+                distScore = distContributions.Average();
+                // Optional: clamp to [0, 3] um Ausreißer zu deckeln
+                distScore = Math.Max(0.0, Math.Min(3.0, distScore));
+                // Skaliere DistScore in additive Punkte (z.B. multipliziere mit Faktor 1.5)
+                distScore *= 1.5;
+            }
+
+            // 3) Roh-Score = basePoints + distScore
+            double rawScore = basePoints + distScore;
+
+            // 4) Normierung: logistic mapping in [0,1] für rawScore
+            // Formel (logistische Normalisierung): norm = 1 / (1 + exp(-rawScore / scoreScale))
+            // (scoreScale steuert Sensitivität; höhere Werte -> flacherer Übergang)
+            double normScore;
+            try
+            {
+                normScore = 1.0 / (1.0 + Math.Exp(-rawScore / Math.Max(1e-6, scoreScale)));
+            }
+            catch
+            {
+                normScore = rawScore <= 0.0 ? 0.0 : 1.0;
+            }
+
+            // 5) Kombiniere normScore und evaluatorConfidence zu CombinedConfidence:
+            // CombinedConfidence = lambda * normScore + (1 - lambda) * evaluatorConfidence
+            // Beide Werte im [0,1] (evaluatorConfidence ist decimal in [0,1] per Vereinbarung).
+            decimal normScoreDec = (decimal)Math.Max(0.0, Math.Min(1.0, normScore));
+            decimal combined = lambda * normScoreDec + (1m - lambda) * evaluatorConfidence;
+
+            // Return: numerischer Score (rawScore) und kombinierte Confidence (decimal in [0,1])
+            return (score: rawScore, combinedConfidence: Math.Max(0m, Math.Min(1m, combined)));
+        }
+
+        // Hilfsfunktion: robustes Konvertieren von matchedValues-Objekten zu double
+        private static bool TryConvertToDouble(object o, out double result)
+        {
+            result = 0.0;
+            if (o == null) return false;
+            try
+            {
+                switch (o)
+                {
+                    case double d:
+                        result = d; return true;
+                    case float f:
+                        result = f; return true;
+                    case decimal m:
+                        result = (double)m; return true;
+                    case int i:
+                        result = i; return true;
+                    case long l:
+                        result = l; return true;
+                    case string s:
+                        return double.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out result);
+                    default:
+                        {
+                            var conv = System.Convert.ToDouble(o);
+                            result = conv;
+                            return true;
+                        }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private int GetEvaluationPriority(OrderflowPatternType type)
+        {
+            switch (type)
+            {
+                case OrderflowPatternType.PotentialLongReversalBounce:
+                case OrderflowPatternType.PotentialShortReversalBounce:
+                    return 1;
+                case OrderflowPatternType.PotentialLongBreakout:
+                case OrderflowPatternType.PotentialShortBreakout:
+                    return 2;
+                case OrderflowPatternType.PotentialLongTrendContinuation:
+                case OrderflowPatternType.PotentialShortTrendContinuation:
+                    return 3;
+                default:
+                    return 99;
+            }
+        }
+    }
+}
+
+
+
