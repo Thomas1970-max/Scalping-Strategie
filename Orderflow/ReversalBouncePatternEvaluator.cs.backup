@@ -32,7 +32,11 @@ namespace MyNamespace.Strategies.Orderflow
 
         // Property zum Setzen externer Thresholds (statisch)
         public OrderflowThresholds? ExternalThresholds
-        {
+        {using ATAS.DataFeedsCore;
+using MyNamespace.Strategies.Models;
+using MyNamespace.Strategies.Orderflow;
+using Utils.Common.Logging;
+using static MyNamespace.Strategies.Goldfluss3_3;
             get => _externalThresholds;
             set => _externalThresholds = value;
         }
