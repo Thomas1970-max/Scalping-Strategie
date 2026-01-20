@@ -5724,7 +5724,7 @@ namespace MyNamespace.Strategies
 
             string fmtDec6Local(decimal v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
 
-            this.LogInfo(
+            var imbalanceLog =
                 $"[ImbalanceScore] {{" +
                 $"\"BarIndex\":{b},\"TotalPairs\":{r.TotalPairs}," +
                 $"\"BuyMax\":{r.BuyCountMax},\"SellMax\":{r.SellCountMax}," +
@@ -5738,7 +5738,9 @@ namespace MyNamespace.Strategies
                 $"\"volBuyScore01\":{fmtDec6Local(volBuyScore01)},\"volSellScore01\":{fmtDec6Local(volSellScore01)}," +
                 $"\"weightedBuy\":{fmtDec6Local(weightedBuy)},\"weightedSell\":{fmtDec6Local(weightedSell)}," +
                 $"\"score\":{fmtDec6Local(r.ImbalanceScore)},\"label\":\"{r.ImbalanceScoreLabel}\"" +
-                $"}}");
+                $"}}";
+
+            this.LogInfo(imbalanceLog.Replace("{", "{{").Replace("}", "}}"));
 
 
 
