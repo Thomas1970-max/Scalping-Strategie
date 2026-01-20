@@ -5,16 +5,42 @@ VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Goldfluss 3.3", "Goldfluss 3.3.csproj", "{D94DF824-840D-BA7C-4484-633CEF598512}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scalping-Strategie.Tests", "Scalping-Strategie.Tests\Scalping-Strategie.Tests.csproj", "{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
 		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|x64.Build.0 = Debug|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Debug|x86.Build.0 = Debug|Any CPU
 		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|x64.ActiveCfg = Release|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|x64.Build.0 = Release|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|x86.ActiveCfg = Release|Any CPU
+		{D94DF824-840D-BA7C-4484-633CEF598512}.Release|x86.Build.0 = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|x64.Build.0 = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Debug|x86.Build.0 = Debug|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|x64.ActiveCfg = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|x64.Build.0 = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|x86.ActiveCfg = Release|Any CPU
+		{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
