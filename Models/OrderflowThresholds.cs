@@ -9,9 +9,9 @@ using OFTParameter = OFT.Attributes.ParameterAttribute;
 
 namespace MyNamespace.Strategies.Models
 {
-    // Macht die Klasse im PropertyGrid aufklappbar — wenn die Hauptstrategie eine
+    // Macht die Klasse im PropertyGrid aufklappbar ï¿½ wenn die Hauptstrategie eine
     // Property vom Typ OrderflowThresholds expose't, erscheinen die konfigurierbaren
-    // Reversal-Properties direkt in der Hauptstrategie (unabhängig von SetupConfiguration).
+    // Reversal-Properties direkt in der Hauptstrategie (unabhï¿½ngig von SetupConfiguration).
     [TypeConverter(typeof(ExpandableObjectConverter))]
     public class OrderflowThresholds : INotifyPropertyChanged
     {
@@ -119,8 +119,14 @@ namespace MyNamespace.Strategies.Models
         [Browsable(false)]
         public int? ThOppositeAnchoredWeakMax { get; set; }
 
-        // Reversal blockers (intern copies — visible Reversal-* variants below
-        // werden bevorzugt für Konfiguration verwendet)
+        // Imbalance score (intern)
+        [Browsable(false)]
+        public decimal? ThImbalanceScoreMinLong { get; set; }
+        [Browsable(false)]
+        public decimal? ThImbalanceScoreMaxShort { get; set; }
+
+        // Reversal blockers (intern copies ï¿½ visible Reversal-* variants below
+        // werden bevorzugt fï¿½r Konfiguration verwendet)
         [Browsable(false)]
         public decimal? ThCvdImpulseMinForLongReversal { get; set; }
         [Browsable(false)]
@@ -132,20 +138,20 @@ namespace MyNamespace.Strategies.Models
         public int? ThPersistBear { get; set; }
 
         // ---------------------------------------------------------
-        // Sichtbare Reversal-Properties (für Strategy-Konfiguration).
-        // Diese sind double + DefaultValue(double.NaN) — editierbar im PropertyGrid.
+        // Sichtbare Reversal-Properties (fï¿½r Strategy-Konfiguration).
+        // Diese sind double + DefaultValue(double.NaN) ï¿½ editierbar im PropertyGrid.
         // Die alten nullable Properties bleiben als Browsable(false)-Wrapper erhalten.
         // ---------------------------------------------------------
 
         // CVD Impulse Long (visible as double)
         [Category("Reversal")]
         [DisplayName("Reversal: CVD Impulse Long")]
-        [Description("Spezielle CVD-Impulse-Schwelle für Reversal-Long-Matching.")]
+        [Description("Spezielle CVD-Impulse-Schwelle fï¿½r Reversal-Long-Matching.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(59.0)]
-        public double ReversalThCvdImpulseLong_UI { get; set; } = 59.0;
+        public double ReversalThCvdImpulseLong_UI { get; set; } = 60.0;
 
-        // unsichtbarer Wrapper für Business-Logik (decimal?)
+        // unsichtbarer Wrapper fï¿½r Business-Logik (decimal?)
         [Browsable(false)]
         public decimal? ReversalThCvdImpulseLong
         {
@@ -162,10 +168,10 @@ namespace MyNamespace.Strategies.Models
         // CVD Impulse Short
         [Category("Reversal")]
         [DisplayName("Reversal: CVD Impulse Short")]
-        [Description("Spezielle CVD-Impulse-Schwelle für Reversal-Short-Matching. Überschreibt ggf. ThCvdImpulseShort für Reversal-Checks.")]
+        [Description("Spezielle CVD-Impulse-Schwelle fÃ¼r Reversal-Short-Matching. Ã¼berschreibt ggf. ThCvdImpulseShort fÃ¼r Reversal-Checks.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThCvdImpulseShort_UI { get; set; } = -136;
+        public double ReversalThCvdImpulseShort_UI { get; set; } = -100;
 
         [Browsable(false)]
         public decimal? ReversalThCvdImpulseShort
@@ -183,10 +189,10 @@ namespace MyNamespace.Strategies.Models
         // CVD Impulse Min For Long Reversal (blocker)
         [Category("Reversal")]
         [DisplayName("Reversal: CVD Impulse Min For Long Reversal")]
-        [Description("Harter Min-Blocker für Long-Reversal (falls gesetzt). Wenn gesetzt, blockiert Long-Reversals unter diesem Wert.")]
+        [Description("Harter Min-Blocker fÃ¼r Long-Reversal (falls gesetzt). Wenn gesetzt, blockiert Long-Reversals unter diesem Wert.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThCvdImpulseMinForLongReversal_UI { get; set; } = -50;
+        public double ReversalThCvdImpulseMinForLongReversal_UI { get; set; } = double.NaN;
 
         [Browsable(false)]
         public decimal? ReversalThCvdImpulseMinForLongReversal
@@ -197,14 +203,14 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThCvdImpulseMinForLongReversal_UI = (double)value.Value;
                 else
-                    ReversalThCvdImpulseMinForLongReversal_UI = -50;
+                    ReversalThCvdImpulseMinForLongReversal_UI = double.NaN;
             }
         }
 
         // CVD Impulse Max For Short Reversal (blocker)
         [Category("Reversal")]
         [DisplayName("Reversal: CVD Impulse Max For Short Reversal")]
-        [Description("Harter Max-Blocker für Short-Reversal (falls gesetzt). Wenn gesetzt, blockiert Short-Reversals oberhalb dieses Wertes.")]
+        [Description("Harter Max-Blocker fï¿½r Short-Reversal (falls gesetzt). Wenn gesetzt, blockiert Short-Reversals oberhalb dieses Wertes.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
         public double ReversalThCvdImpulseMaxForShortReversal_UI { get; set; } = double.NaN;
@@ -222,13 +228,55 @@ namespace MyNamespace.Strategies.Models
             }
         }
 
+        // Imbalance Score Min (Long)
+        [Category("Reversal")]
+        [DisplayName("Reversal: Imbalance Score Min (Long)")]
+        [Description("Mindestwert fÃ¼r Imbalance-Score in Long-Entry-Fenster. Leerlassen zum Deaktivieren.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(double.NaN)]
+        public double ReversalThImbalanceScoreMinLong_UI { get; set; } = double.NaN;
+
+        [Browsable(false)]
+        public decimal? ReversalThImbalanceScoreMinLong
+        {
+            get => double.IsNaN(ReversalThImbalanceScoreMinLong_UI) ? (decimal?)null : (decimal)ReversalThImbalanceScoreMinLong_UI;
+            set
+            {
+                if (value.HasValue)
+                    ReversalThImbalanceScoreMinLong_UI = (double)value.Value;
+                else
+                    ReversalThImbalanceScoreMinLong_UI = double.NaN;
+            }
+        }
+
+        // Imbalance Score Max (Short)
+        [Category("Reversal")]
+        [DisplayName("Reversal: Imbalance Score Max (Short)")]
+        [Description("Maximalwert fÃ¼r Imbalance-Score in Short-Entry-Fenster. Leerlassen zum Deaktivieren.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(double.NaN)]
+        public double ReversalThImbalanceScoreMaxShort_UI { get; set; } = double.NaN;
+
+        [Browsable(false)]
+        public decimal? ReversalThImbalanceScoreMaxShort
+        {
+            get => double.IsNaN(ReversalThImbalanceScoreMaxShort_UI) ? (decimal?)null : (decimal)ReversalThImbalanceScoreMaxShort_UI;
+            set
+            {
+                if (value.HasValue)
+                    ReversalThImbalanceScoreMaxShort_UI = (double)value.Value;
+                else
+                    ReversalThImbalanceScoreMaxShort_UI = double.NaN;
+            }
+        }
+
         // AggPressure Breakout (Bull)
         [Category("Reversal")]
         [DisplayName("Reversal: AggPressure Breakout (Bull)")]
-        [Description("Aggression-Pressure Schwelle (Bull) für Reversal-Checks.")]
+        [Description("Aggression-Pressure Schwelle (Bull) fÃ¼r Reversal-Checks.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThAggPressureBreakoutBull_UI { get; set; } = -0.79;
+        public double ReversalThAggPressureBreakoutBull_UI { get; set; } = -0.1;
 
         [Browsable(false)]
         public decimal? ReversalThAggPressureBreakoutBull
@@ -239,17 +287,17 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThAggPressureBreakoutBull_UI = (double)value.Value;
                 else
-                    ReversalThAggPressureBreakoutBull_UI = -0.79;
+                    ReversalThAggPressureBreakoutBull_UI = -0.1;
             }
         }
 
         // AggPressure Breakout (Bear)
         [Category("Reversal")]
         [DisplayName("Reversal: AggPressure Breakout (Bear)")]
-        [Description("Aggression-Pressure Schwelle (Bear) für Reversal-Checks.")]
+        [Description("Aggression-Pressure Schwelle (Bear) fÃ¼r Reversal-Checks.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThAggPressureBreakoutBear_UI { get; set; } = double.NaN;
+        public double ReversalThAggPressureBreakoutBear_UI { get; set; } = 0.6;
 
         [Browsable(false)]
         public decimal? ReversalThAggPressureBreakoutBear
@@ -260,14 +308,14 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThAggPressureBreakoutBear_UI = (double)value.Value;
                 else
-                    ReversalThAggPressureBreakoutBear_UI = double.NaN;
+                    ReversalThAggPressureBreakoutBear_UI = 0.6;
             }
         }
 
         // NEU: Range-Bar-Filterung
         [Category("Reversal")]
         [DisplayName("Range-Bar: Trend-Bar Size (Ticks)")]
-        [Description("Größe eines Trend-Bars in Ticks für Range-Markt-Erkennung.")]
+        [Description("GrÃ¶ÃŸe eines Trend-Bars in Ticks fÃ¼r Range-Markt-Erkennung.")]
         [Range(1, 100)]
         [DefaultValue(6)]
         public int RangeBarTrendSizeTicks_UI { get; set; } = 5;
@@ -281,7 +329,7 @@ namespace MyNamespace.Strategies.Models
 
         [Category("Reversal")]
         [DisplayName("Range-Bar: Reversal-Bar Size (Ticks)")]
-        [Description("Größe eines Reversal-Bars in Ticks für Range-Markt-Erkennung.")]
+        [Description("GrÃ¶ÃŸe eines Reversal-Bars in Ticks fÃ¼r Range-Markt-Erkennung.")]
         [Range(1, 100)]
         [DefaultValue(9)]
         public int RangeBarReversalSizeTicks_UI { get; set; } = 8;
@@ -309,7 +357,7 @@ namespace MyNamespace.Strategies.Models
 
         [Category("Reversal")]
         [DisplayName("Range-Bar: Max Alternating Pattern Length")]
-        [Description("Maximale Länge von alternierenden Bull/Bear-Bars, die als Range gelten.")]
+        [Description("Maximale LÃ¤nge von alternierenden Bull/Bear-Bars, die als Range gelten.")]
         [Range(2, 20)]
         [DefaultValue(8)]
         public int RangeBarMaxAlternatingLength_UI { get; set; } = 8;
@@ -327,7 +375,7 @@ namespace MyNamespace.Strategies.Models
         [Description("Maximale Anzahl von Bars nach einem Reversal, in denen ein Entry erlaubt ist.")]
         [Range(1, 10)]
         [DefaultValue(3)]
-        public int RangeBarMaxBarsAfterReversal_UI { get; set; } = 3;
+        public int RangeBarMaxBarsAfterReversal_UI { get; set; } = 2;
 
         [Browsable(false)]
         public int RangeBarMaxBarsAfterReversal
@@ -340,10 +388,10 @@ namespace MyNamespace.Strategies.Models
         // Max CounterDelta Share (Bull)
         [Category("Reversal")]
         [DisplayName("Reversal: Max CounterDelta Share (Bull)")]
-        [Description("Maximaler Counter-Delta-Anteil für Reversal-Checks (Bull).")]
+        [Description("Maximaler Counter-Delta-Anteil fï¿½r Reversal-Checks (Bull).")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalMaxCounterDeltaShareBull_UI { get; set; } = double.NaN;
+        public double ReversalMaxCounterDeltaShareBull_UI { get; set; } = 0.4;
 
         [Browsable(false)]
         public decimal? ReversalMaxCounterDeltaShareBull
@@ -354,17 +402,17 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalMaxCounterDeltaShareBull_UI = (double)value.Value;
                 else
-                    ReversalMaxCounterDeltaShareBull_UI = double.NaN;
+                    ReversalMaxCounterDeltaShareBull_UI = 0.4;
             }
         }
 
         // Max CounterDelta Share (Bear)
         [Category("Reversal")]
         [DisplayName("Reversal: Max CounterDelta Share (Bear)")]
-        [Description("Maximaler Counter-Delta-Anteil für Reversal-Checks (Bear).")]
+        [Description("Maximaler Counter-Delta-Anteil fï¿½r Reversal-Checks (Bear).")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalMaxCounterDeltaShareBear_UI { get; set; } = double.NaN;
+        public double ReversalMaxCounterDeltaShareBear_UI { get; set; } = 0.4;
 
         [Browsable(false)]
         public decimal? ReversalMaxCounterDeltaShareBear
@@ -375,17 +423,17 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalMaxCounterDeltaShareBear_UI = (double)value.Value;
                 else
-                    ReversalMaxCounterDeltaShareBear_UI = double.NaN;
+                    ReversalMaxCounterDeltaShareBear_UI = 0.4;
             }
         }
 
         // Vol Burst Z
         [Category("Reversal")]
         [DisplayName("Reversal: Vol Burst Z")]
-        [Description("VolBurst Z Schwelle, nur für Reversal-Matching.")]
+        [Description("VolBurst Z Schwelle, nur fï¿½r Reversal-Matching.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThVolBurstZ_UI { get; set; } = 0.36;
+        public double ReversalThVolBurstZ_UI { get; set; } = 0.4;
 
         [Browsable(false)]
         public decimal? ReversalThVolBurstZ
@@ -396,17 +444,17 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThVolBurstZ_UI = (double)value.Value;
                 else
-                    ReversalThVolBurstZ_UI = 0.36;
+                    ReversalThVolBurstZ_UI = 0.4;
             }
         }
 
         // Efficiency
         [Category("Reversal")]
         [DisplayName("Reversal: Efficiency")]
-        [Description("Effizienz-Schwelle, nur für Reversal-Matching.")]
+        [Description("Effizienz-Schwelle, nur fï¿½r Reversal-Matching.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThEfficiency_UI { get; set; } = 0.06;
+        public double ReversalThEfficiency_UI { get; set; } = 0.01;
 
         [Browsable(false)]
         public decimal? ReversalThEfficiency
@@ -417,7 +465,7 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThEfficiency_UI = (double)value.Value;
                 else
-                    ReversalThEfficiency_UI = 0.06;
+                    ReversalThEfficiency_UI = 0.01;
             }
         }
 
@@ -427,7 +475,7 @@ namespace MyNamespace.Strategies.Models
         [Description("Reversal-spezifischer StackedImbalance Anchored Range Minimum (directional).")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThStackedImbAnchoredRangeMinDirectional_UI { get; set; } = 5;
+        public double ReversalThStackedImbAnchoredRangeMinDirectional_UI { get; set; } = double.NaN;
 
         [Browsable(false)]
         public int? ReversalThStackedImbAnchoredRangeMinDirectional
@@ -438,7 +486,7 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThStackedImbAnchoredRangeMinDirectional_UI = value.Value;
                 else
-                    ReversalThStackedImbAnchoredRangeMinDirectional_UI = 5;
+                    ReversalThStackedImbAnchoredRangeMinDirectional_UI = double.NaN;
             }
         }
 
@@ -466,7 +514,7 @@ namespace MyNamespace.Strategies.Models
         public decimal? TickSizeDecimal { get; set; } = 0.25m;
 
         // -----------------------------------------
-        // Rückwärtskompatible "Effective" Properties:
+        // Rï¿½ckwï¿½rtskompatible "Effective" Properties:
         // Diese lesen Reversal-Value wenn gesetzt, sonst die internen
         // (nicht-sichtbaren) klassischen Properties.
         // -----------------------------------------

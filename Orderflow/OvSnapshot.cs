@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
@@ -37,17 +37,19 @@ namespace MyNamespace.Strategies.Orderflow
         public decimal CumulativeVolume;
         public decimal BarDeltaPerVolume;
         // NEU: Stacked Imbalance Metriken
-        public int StackedBuyImbCount;          // längster Buy-Stack irgendwo im Bar
-        public int StackedSellImbCount;         // längster Sell-Stack irgendwo im Bar
+        public int StackedBuyImbCount;          // lÃ¤ngster Buy-Stack irgendwo im Bar
+        public int StackedSellImbCount;         // lÃ¤ngster Sell-Stack irgendwo im Bar
         public int StackedBuyImbTopCount;       // Buy-Stack direkt unter High (anchored)
-        public int StackedSellImbBottomCount;   // Sell-Stack direkt über Low (anchored)
-
+        public int StackedSellImbBottomCount;   // Sell-Stack direkt Ã¼ber Low (anchored)
+        public decimal ImbalanceScore;
+        public string ImbalanceScoreLabel = string.Empty;
         // NEU: Parameter zur Nachvollziehbarkeit
         public decimal StackedImbRatioPct;          // z.B. 300 => 3.0x
-        public int StackedImbRangeMin;          // Mindestlänge Stack
+        public int StackedImbRangeMin;          // MindestlÃ¤nge Stack
         public decimal StackedImbMinVolPerLevel;// MinVol pro Level
-        public int StackedImbMaxDepthTicks;     // Tiefe für anchored-Check
+        public int StackedImbMaxDepthTicks;     // Tiefe fÃ¼r anchored-Check
     }
 }
+
 
 

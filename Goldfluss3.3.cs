@@ -675,6 +675,7 @@ namespace MyNamespace.Strategies
         private int _lastTimeoutCheckBarIndex = -1;
         private int _lastResearchBar = 0;
         private int _lastTradeBar = 0;
+        private int _lastImbalanceLogBar = -1;
 
         private bool _isBreakEvenCompleted = false;
         private int _breakEvenLevelReached = 0;
@@ -752,10 +753,12 @@ namespace MyNamespace.Strategies
         }
 
         // Ergebnis-Serien (decimal f?r Konsistenz mit GetOr0)
-        private readonly Dictionary<int, decimal> _stackedBuyImbCount = new(); // l?ngster Buy-Stack irgendwo im Bar
-        private readonly Dictionary<int, decimal> _stackedSellImbCount = new(); // l?ngster Sell-Stack irgendwo im Bar
+        private readonly Dictionary<int, decimal> _stackedBuyImbCount = new(); // gesamt
+        private readonly Dictionary<int, decimal> _stackedSellImbCount = new(); // gesamt
         private readonly Dictionary<int, decimal> _stackedBuyImbTopCount = new(); // direkt unter High (anchored)
         private readonly Dictionary<int, decimal> _stackedSellImbBottomCount = new(); // direkt ?ber Low (anchored)
+        private readonly Dictionary<int, decimal> _imbalanceScoreSeries = new();
+        private readonly Dictionary<int, string> _imbalanceScoreLabelSeries = new();
 
         // --- Stacked-Imbalance Parameter (Defaults analog ATAS) ---
         private decimal _imbalanceRatioPct = 300; // 300% => Faktor 3.0
@@ -2522,6 +2525,7 @@ namespace MyNamespace.Strategies
             _armedBarIndex = -1;
             _signalCheckedForThisBarFirstTick = false;
             _lastProcessedBarIndex = -1;
+            _lastImbalanceLogBar = -1;
 
             // Reset day data
             _previousDayOpen = _previousDayHigh = _previousDayLow = _previousDayClose = 0;
@@ -5675,7 +5679,8 @@ namespace MyNamespace.Strategies
 
 
 
-            // 11) Stacked Imbalance (pro Bar-Level-Footprint, passend f?r Range-Bars 5?8 Ticks)
+            // 11) Stacked Imbalance auf zuletzt geschlossener Kerze (bar-1)
+            int imbBar = Math.Max(0, b - 1);
             var pImb = new StackedImbParams
             {
                 ImbalanceRatioPct = _imbalanceRatioPct,
@@ -5683,7 +5688,7 @@ namespace MyNamespace.Strategies
                 IgnoreZeroValues = _imbIgnoreZeroValues,
                 MaxDepthTicksAnchored = _imbMaxDepthTicksAnchored
             };
-            var r = ComputeStackedImbalanceForBar(b, pImb);
+            var r = ComputeStackedImbalanceForBar(imbBar, pImb);
 
             // Optional: Mindestl?nge global anwenden (falls gew?nscht)
             int buyMax = r.BuyCountMax >= _imbalanceRangeMin ? r.BuyCountMax : 0;
@@ -5693,10 +5698,12 @@ namespace MyNamespace.Strategies
             int sellBottom = r.SellCountBottomAnchored;
 
             // Ergebnisse in die vorhandenen readonly-Serien schreiben (keine Neuzuweisung)
-            _stackedBuyImbCount[b] = (decimal)buyMax;
-            _stackedSellImbCount[b] = (decimal)sellMax;
-            _stackedBuyImbTopCount[b] = (decimal)buyTop;
-            _stackedSellImbBottomCount[b] = (decimal)sellBottom;
+            _stackedBuyImbCount[imbBar] = (decimal)buyMax;
+            _stackedSellImbCount[imbBar] = (decimal)sellMax;
+            _stackedBuyImbTopCount[imbBar] = (decimal)buyTop;
+            _stackedSellImbBottomCount[imbBar] = (decimal)sellBottom;
+            _imbalanceScoreSeries[imbBar] = r.ImbalanceScore;
+            _imbalanceScoreLabelSeries[imbBar] = r.ImbalanceScoreLabel ?? string.Empty;
             if (_stackedBuyImbCount == null || _stackedSellImbCount == null || _stackedBuyImbTopCount == null || _stackedSellImbBottomCount == null)
             {
                 this.LogWarn($"[OnCalculate-Imbalance] Serien null: buy={_stackedBuyImbCount == null}, sell={_stackedSellImbCount == null}, top={_stackedBuyImbTopCount == null}, bottom={_stackedSellImbBottomCount == null}");
@@ -5726,7 +5733,7 @@ namespace MyNamespace.Strategies
 
             var imbalanceLog =
                 $"[ImbalanceScore] {{" +
-                $"\"BarIndex\":{b},\"TotalPairs\":{r.TotalPairs}," +
+                $"\"BarIndex\":{imbBar},\"TotalPairs\":{r.TotalPairs}," +
                 $"\"BuyMax\":{r.BuyCountMax},\"SellMax\":{r.SellCountMax}," +
                 $"\"BuyAnch\":{r.BuyCountTopAnchored},\"SellAnch\":{r.SellCountBottomAnchored}," +
                 $"\"BuyPairs\":{r.BuyPairsCount},\"SellPairs\":{r.SellPairsCount}," +
@@ -5740,7 +5747,11 @@ namespace MyNamespace.Strategies
                 $"\"score\":{fmtDec6Local(r.ImbalanceScore)},\"label\":\"{r.ImbalanceScoreLabel}\"" +
                 $"}}";
 
-            this.LogInfo(imbalanceLog.Replace("{", "{{").Replace("}", "}}"));
+            if (imbBar != _lastImbalanceLogBar)
+            {
+                this.LogInfo(imbalanceLog.Replace("{", "{{").Replace("}", "}}"));
+                _lastImbalanceLogBar = imbBar;
+            }
 
 
 
@@ -6629,6 +6640,10 @@ namespace MyNamespace.Strategies
                     decimal stackedSellCount = GetOr0(_stackedSellImbCount, closed);
                     decimal stackedBuyTopCount = GetOr0(_stackedBuyImbTopCount, closed);
                     decimal stackedSellBottomCount = GetOr0(_stackedSellImbBottomCount, closed);
+                    decimal imbalanceScore = GetOr0(_imbalanceScoreSeries, closed);
+                    string imbalanceScoreLabel = _imbalanceScoreLabelSeries.TryGetValue(closed, out var scoreLabel)
+                        ? scoreLabel
+                        : string.Empty;
 
                     // HINZUGEF?GT: Werte aus MyClusterStatistic (angenommen, sie sind als Series verf?gbar)
                     decimal candleDuration = _myClusterStatistic.CandleDurations[closed];
@@ -6687,6 +6702,8 @@ namespace MyNamespace.Strategies
                         StackedSellImbCount = (int)stackedSellCount,
                         StackedBuyImbTopCount = (int)stackedBuyTopCount,
                         StackedSellImbBottomCount = (int)stackedSellBottomCount,
+                        ImbalanceScore = imbalanceScore,
+                        ImbalanceScoreLabel = imbalanceScoreLabel,
                         StackedImbMinVolPerLevel = _imbalanceVolumeMin,
                         StackedImbRatioPct = _imbalanceRatioPct,
                         StackedImbRangeMin = _imbalanceRangeMin,

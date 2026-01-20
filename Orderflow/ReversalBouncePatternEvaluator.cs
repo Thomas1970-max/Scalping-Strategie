@@ -22,6 +22,10 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly ILoggerSource _loggerSource;
         private OrderflowThresholds? _externalThresholds;
         private Func<OrderflowThresholds?>? _thresholdsProvider;
+        private int? _lastValidReversalBarIndex;
+        private OrderDirections? _lastValidReversalDirection;
+        private string _lastValidReversalType = "";
+        private int? _lastClosedEntryWindowReversalBarIndex;
 
         public OrderflowPatternType Type => _patternType;
         public OrderDirections Direction => _direction; // Ob der Evaluator für Long oder Short ist
@@ -37,6 +41,20 @@ namespace MyNamespace.Strategies.Orderflow
         {
             get => _thresholdsProvider;
             set => _thresholdsProvider = value;
+        }
+
+        public bool TryGetLastValidReversalInfo(out int reversalBarIndex, out OrderDirections? direction)
+        {
+            if (_lastValidReversalBarIndex.HasValue)
+            {
+                reversalBarIndex = _lastValidReversalBarIndex.Value;
+                direction = _lastValidReversalDirection;
+                return true;
+            }
+
+            reversalBarIndex = -1;
+            direction = null;
+            return false;
         }
 
         public ReversalBouncePatternEvaluator(OrderDirections direction, ILoggerSource loggerSource = null)
@@ -61,6 +79,72 @@ namespace MyNamespace.Strategies.Orderflow
             return value.ToString();
         }
 
+        private static string BuildOrderflowThresholdLog(
+            OrderDirections direction,
+            OvSnapshot snapshot,
+            OrderflowThresholds thresholds)
+        {
+            if (snapshot == null || thresholds == null)
+                return "[ReversalBounceEvaluator] Orderflow-Schwellen: n/a (Snapshot oder Thresholds fehlen)";
+
+            if (direction == OrderDirections.Buy)
+            {
+                var cvdTh = thresholds.ReversalThCvdImpulseLong;
+                var aggTh = thresholds.ReversalThAggPressureBreakoutBull;
+                var minCvd = thresholds.ThCvdImpulseMinForLongReversal;
+                var imbMin = thresholds.ReversalThImbalanceScoreMinLong;
+                return "[ReversalBounceEvaluator] ✅ ORDERFLOW-SCHWELLEN (Long): " +
+                       $"CVD {FormatMetValue(snapshot.CvdImpulse)} {(cvdTh.HasValue ? $"> {FormatMetValue(cvdTh.Value)}" : "(keine Schwelle)")}, " +
+                       $"AggPressure {FormatMetValue(snapshot.AggPressure)} {(aggTh.HasValue ? $"> {FormatMetValue(aggTh.Value)}" : "(keine Schwelle)")}, " +
+                       $"MinCVD {FormatMetValue(snapshot.CvdImpulse)} {(minCvd.HasValue ? $">= {FormatMetValue(minCvd.Value)}" : "(keine Schwelle)")}, " +
+                       $"VolBurstZ {FormatMetValue(snapshot.VolBurstZ)} {(thresholds.ThVolBurstZ.HasValue ? $"> {FormatMetValue(thresholds.ThVolBurstZ.Value)}" : "(keine Schwelle)")}, " +
+                       $"Eff {FormatMetValue(snapshot.Efficiency)} {(thresholds.ThEfficiency.HasValue ? $"> {FormatMetValue(thresholds.ThEfficiency.Value)}" : "(keine Schwelle)")}, " +
+                       $"ImbScore {FormatMetValue(snapshot.ImbalanceScore, "F3")} {(imbMin.HasValue ? $">= {FormatMetValue(imbMin.Value, "F3")}" : "(keine Schwelle)")}";
+            }
+
+            var cvdThShort = thresholds.ReversalThCvdImpulseShort;
+            var aggThShort = thresholds.ReversalThAggPressureBreakoutBear;
+            var imbMax = thresholds.ReversalThImbalanceScoreMaxShort;
+            return "[ReversalBounceEvaluator] ✅ ORDERFLOW-SCHWELLEN (Short): " +
+                   $"CVD {FormatMetValue(snapshot.CvdImpulse)} {(cvdThShort.HasValue ? $"< {FormatMetValue(cvdThShort.Value)}" : "(keine Schwelle)")}, " +
+                   $"AggPressure {FormatMetValue(snapshot.AggPressure)} {(aggThShort.HasValue ? $"< {FormatMetValue(aggThShort.Value)}" : "(keine Schwelle)")}, " +
+                   $"VolBurstZ {FormatMetValue(snapshot.VolBurstZ)} {(thresholds.ThVolBurstZ.HasValue ? $"> {FormatMetValue(thresholds.ThVolBurstZ.Value)}" : "(keine Schwelle)")}, " +
+                   $"Eff {FormatMetValue(snapshot.Efficiency)} {(thresholds.ThEfficiency.HasValue ? $"> {FormatMetValue(thresholds.ThEfficiency.Value)}" : "(keine Schwelle)")}, " +
+                   $"ImbScore {FormatMetValue(snapshot.ImbalanceScore, "F3")} {(imbMax.HasValue ? $"<= {FormatMetValue(imbMax.Value, "F3")}" : "(keine Schwelle)")}";
+        }
+
+        private static string BuildCriteriaStatusLog(
+            List<string> reasons,
+            List<EvaluatedConditionDetail> metHard,
+            List<EvaluatedConditionDetail> metRel,
+            List<EvaluatedConditionDetail> diagnostics)
+        {
+            var hardSummary = metHard.Any()
+                ? string.Join(" | ", metHard.Select(h => $"✅ {h.ToShortString()}"))
+                : "🚫 metHard: keine";
+
+            var relSummary = metRel.Any()
+                ? string.Join(" | ", metRel.Select(r => $"✅ {r.ToShortString()}"))
+                : "🚫 metRel: keine";
+
+            var failedReasons = reasons
+                .Where(r => r.StartsWith("FAIL", StringComparison.OrdinalIgnoreCase)
+                            || r.StartsWith("BLOCKED", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var failedSummary = failedReasons.Any()
+                ? string.Join(" | ", failedReasons.Select(r => $"🚫 {r}"))
+                : "🚫 keine";
+
+            var diagSummary = diagnostics.Any()
+                ? string.Join(" | ", diagnostics.Select(d => $"✅ {d.ToShortString()}"))
+                : null;
+
+            return "[ReversalBounceEvaluator] Kriterien: " +
+                   $"{hardSummary} | {relSummary} | Fehlend: {failedSummary}" +
+                   (diagSummary != null ? $" | Diagnostics: {diagSummary}" : string.Empty);
+        }
+
         public PatternEvaluationResult Evaluate(
             OvSnapshot currentSnapshot,
             OfFeatures features,
@@ -72,103 +156,181 @@ namespace MyNamespace.Strategies.Orderflow
             MarketState currentMarketState,
             MarketStructureContext currentMarketStructureContext)
             {
-            LoggerHelper.LogDebug(_loggerSource, $"ReversalBouncePatternEvaluator.Evaluate: start direction={_direction}, bar={features?.Bar}");
+            LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] Start: Richtung={_direction}, Bar={features?.Bar}");
 
-            // NEU: 1. Effektive Thresholds bestimmen
-            var effectiveThresholds = GlobalThresholds ?? _thresholdsProvider?.Invoke() ?? _externalThresholds ?? thresholds;
+            // NEU: 1. Effektive Thresholds bestimmen (übergebene Thresholds haben Vorrang)
+            var effectiveThresholds = thresholds ?? _externalThresholds ?? _thresholdsProvider?.Invoke() ?? GlobalThresholds;
+            if (effectiveThresholds == null)
+                effectiveThresholds = new OrderflowThresholds();
 
-            if (GlobalThresholds != null)
+            thresholds = effectiveThresholds;
+
+            if (thresholds != null)
             {
-                LoggerHelper.LogInfo(_loggerSource, $"Using global thresholds: ReversalThCvdImpulseLong={FormatMetValue(GlobalThresholds?.ReversalThCvdImpulseLong)}");
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ReversalBounceEvaluator] Schwellenquelle: Übergabe (Dir={_direction}, " +
+                    $"ReversalThCvdImpulseLong={FormatMetValue(thresholds.ReversalThCvdImpulseLong)}, " +
+                    $"ReversalThCvdImpulseShort={FormatMetValue(thresholds.ReversalThCvdImpulseShort)})");
+            }
+            else if (_externalThresholds != null)
+            {
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ReversalBounceEvaluator] Schwellenquelle: Extern (Dir={_direction}, " +
+                    $"ReversalThCvdImpulseLong={FormatMetValue(_externalThresholds?.ReversalThCvdImpulseLong)}, " +
+                    $"ReversalThCvdImpulseShort={FormatMetValue(_externalThresholds?.ReversalThCvdImpulseShort)})");
             }
             else if (_thresholdsProvider != null)
             {
                 var dynamicThresholds = _thresholdsProvider.Invoke();
-                LoggerHelper.LogInfo(_loggerSource, $"Using dynamic thresholds: ReversalThCvdImpulseLong={FormatMetValue(dynamicThresholds?.ReversalThCvdImpulseLong)}");
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ReversalBounceEvaluator] Schwellenquelle: Provider (Dir={_direction}, " +
+                    $"ReversalThCvdImpulseLong={FormatMetValue(dynamicThresholds?.ReversalThCvdImpulseLong)}, " +
+                    $"ReversalThCvdImpulseShort={FormatMetValue(dynamicThresholds?.ReversalThCvdImpulseShort)})");
             }
-            else if (_externalThresholds != null)
+            else if (GlobalThresholds != null)
             {
-                LoggerHelper.LogInfo(_loggerSource, $"Using external thresholds: ReversalThCvdImpulseLong={FormatMetValue(_externalThresholds?.ReversalThCvdImpulseLong)}");
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ReversalBounceEvaluator] Schwellenquelle: Global (Dir={_direction}, " +
+                    $"ReversalThCvdImpulseLong={FormatMetValue(GlobalThresholds?.ReversalThCvdImpulseLong)}, " +
+                    $"ReversalThCvdImpulseShort={FormatMetValue(GlobalThresholds?.ReversalThCvdImpulseShort)})");
             }
 
             // NEU: 2. Range-Bar Pattern-Erkennung (universell)
             var rangeAnalysis = RangeBarAnalyzer.AnalyzeRangeBarPattern(
-                history, features.Bar, currentSnapshot, effectiveThresholds, _loggerSource);
+                history, features.Bar, currentSnapshot, effectiveThresholds, RangeBarPatternDefinitions.ReversalBounce, _loggerSource);
             
-            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBouncePatternEvaluator] 📊 RANGE-ANALYSE: HasValidReversalSetup={rangeAnalysis.HasValidReversalSetup}, HasValidLong={rangeAnalysis.HasValidLongReversalSetup}, HasValidShort={rangeAnalysis.HasValidShortReversalSetup}");
-            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBouncePatternEvaluator] 📊 PATTERN-DETAILS: BarTypes=[{string.Join(", ", rangeAnalysis.BarTypes)}], LastReversalType={rangeAnalysis.LastReversalType}, BarsSinceReversal={rangeAnalysis.BarsSinceLastReversal}");
+            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] Range-Bar Analyse: gültiges Setup={rangeAnalysis.HasValidReversalSetup}, Long={rangeAnalysis.HasValidLongReversalSetup}, Short={rangeAnalysis.HasValidShortReversalSetup}");
+            var barsSinceReversalLog = rangeAnalysis.LastReversalBarIndex.HasValue
+                ? (features.Bar - rangeAnalysis.LastReversalBarIndex.Value)
+                : (int?)null;
+            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] Pattern-Details: Bars=[{string.Join(", ", rangeAnalysis.BarTypes)}], Reversal={rangeAnalysis.LastReversalType}, Bars seit Reversal={barsSinceReversalLog}");
 
-            // NEU: 2. Pattern-Validierung
-            if (!rangeAnalysis.HasValidReversalSetup)
+            // NEU: 2. Pattern-Validierung und Entry-Fenster im Evaluator verwalten
+            if (rangeAnalysis.HasValidReversalSetup && rangeAnalysis.LastReversalBarIndex.HasValue &&
+                rangeAnalysis.LastReversalBarIndex.Value == features.Bar &&
+                (!_lastClosedEntryWindowReversalBarIndex.HasValue || rangeAnalysis.LastReversalBarIndex.Value > _lastClosedEntryWindowReversalBarIndex.Value))
             {
-                var patternReasons = new List<string> { 
-                    $"BLOCKED (Pattern): Kein gültiges Reversal-Setup gefunden. Pattern: [{string.Join(", ", rangeAnalysis.BarTypes)}]" 
+                _lastValidReversalBarIndex = rangeAnalysis.LastReversalBarIndex;
+                _lastValidReversalDirection = rangeAnalysis.HasValidLongReversalSetup
+                    ? OrderDirections.Buy
+                    : OrderDirections.Sell;
+                _lastValidReversalType = rangeAnalysis.LastReversalType;
+            }
+
+            if (_lastValidReversalBarIndex.HasValue && _lastValidReversalBarIndex.Value == features.Bar)
+            {
+                var entryDelayReasons = new List<string>
+                {
+                    $"BLOCKED (Entry Window): Entry-Fenster startet erst nach dem Reversal-Bar. Aktuell Bar={features.Bar}, Reversal-Bar={_lastValidReversalBarIndex.Value}."
                 };
-                LoggerHelper.LogWarn(_loggerSource, $"[ReversalBouncePatternEvaluator] 🚫 PATTERN BLOCK: {patternReasons[0]}");
-                
+                LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] 🕒 PATTERN OK – ENTRY-FENSTER WARTET: {entryDelayReasons[0]}");
+
+                return PatternEvaluationResult.NotDetected(
+                    Type,
+                    string.Join(" | ", entryDelayReasons),
+                    new Dictionary<string, object>(),
+                    new List<EvaluatedConditionDetail>(),
+                    new List<EvaluatedConditionDetail>(),
+                    new List<EvaluatedConditionDetail>()
+                );
+            }
+
+            if (_lastValidReversalBarIndex.HasValue &&
+                !string.IsNullOrWhiteSpace(rangeAnalysis.CurrentBarType) &&
+                rangeAnalysis.CurrentBarType.StartsWith("REVERSAL_", StringComparison.Ordinal))
+            {
+                var reversalWindowReasons = new List<string>
+                {
+                    $"BLOCKED (Entry Window): Reversal-Bar erkannt ({rangeAnalysis.CurrentBarType}). Entry-Fenster schließt sofort. Bar={features.Bar}."
+                };
+                LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] Entry-Fenster geschlossen: {reversalWindowReasons[0]}");
+
+                _lastClosedEntryWindowReversalBarIndex = features.Bar;
+                _lastValidReversalBarIndex = null;
+                _lastValidReversalDirection = null;
+                _lastValidReversalType = "";
+
+                return PatternEvaluationResult.NotDetected(
+                    Type,
+                    string.Join(" | ", reversalWindowReasons),
+                    new Dictionary<string, object>(),
+                    new List<EvaluatedConditionDetail>(),
+                    new List<EvaluatedConditionDetail>(),
+                    new List<EvaluatedConditionDetail>()
+                );
+            }
+
+            if (!_lastValidReversalBarIndex.HasValue)
+            {
+                var patternReasons = new List<string> {
+                    $"BLOCKED (Pattern): Kein gültiges Reversal-Setup gefunden. Pattern: [{string.Join(", ", rangeAnalysis.BarTypes)}]"
+                };
+                LoggerHelper.LogWarn(_loggerSource, $"[ReversalBounceEvaluator] Pattern blockiert: {patternReasons[0]}");
+
                 return PatternEvaluationResult.NotDetected(
                     Type,
                     string.Join(" | ", patternReasons),
-                    null,
+                    new Dictionary<string, object>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>()
                 );
             }
 
-            // NEU: 3. Entry-Fenster Validierung
+            int barsSinceLastValidReversal = features.Bar - _lastValidReversalBarIndex.Value;
+            if (barsSinceLastValidReversal == 0)
+                barsSinceLastValidReversal = 999;
+
             int maxBarsAfterReversal = thresholds.RangeBarMaxBarsAfterReversal;
-            if (rangeAnalysis.BarsSinceLastValidReversal > maxBarsAfterReversal)
+            if (barsSinceLastValidReversal > maxBarsAfterReversal)
             {
-                var entryReasons = new List<string> { 
-                    $"BLOCKED (Entry Window): Entry-Fenster abgelaufen. Bars seit Reversal={rangeAnalysis.BarsSinceLastValidReversal} > Max={maxBarsAfterReversal}" 
+                var entryReasons = new List<string> {
+                    $"BLOCKED (Entry Window): Entry-Fenster abgelaufen. Bars seit Reversal={barsSinceLastValidReversal} > Max={maxBarsAfterReversal}"
                 };
-                LoggerHelper.LogWarn(_loggerSource, $"[ReversalBouncePatternEvaluator] 🚫 ENTRY-FENSTER BLOCK: {entryReasons[0]}");
-                
+                LoggerHelper.LogWarn(_loggerSource, $"[ReversalBounceEvaluator] Entry-Fenster abgelaufen: {entryReasons[0]}");
+
+                _lastValidReversalBarIndex = null;
+                _lastValidReversalDirection = null;
+                _lastValidReversalType = "";
+
                 return PatternEvaluationResult.NotDetected(
                     Type,
                     string.Join(" | ", entryReasons),
-                    null,
+                    new Dictionary<string, object>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>()
                 );
             }
 
-            // NEU: 4. Direction aus Pattern bestimmen
-            OrderDirections detectedDirection = OrderDirections.Buy; // Default
-            
-            if (rangeAnalysis.HasValidLongReversalSetup)
-            {
-                detectedDirection = OrderDirections.Buy;
-                LoggerHelper.LogInfo(_loggerSource, $"[ReversalBouncePatternEvaluator] ✅ PATTERN-ERKENNUNG: LONG setup detected - {rangeAnalysis.LastReversalType}");
-            }
-            else if (rangeAnalysis.HasValidShortReversalSetup)
-            {
-                detectedDirection = OrderDirections.Sell;
-                LoggerHelper.LogInfo(_loggerSource, $"[ReversalBouncePatternEvaluator] ✅ PATTERN-ERKENNUNG: SHORT setup detected - {rangeAnalysis.LastReversalType}");
-            }
+            // NEU: 3. Direction aus Pattern bestimmen
+            var detectedDirection = _lastValidReversalDirection ?? OrderDirections.Buy;
+            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] ✅ ENTRY-FENSTER AKTIV: Pattern={_lastValidReversalType}, Richtung={detectedDirection}, Bars seit Reversal={barsSinceLastValidReversal}");
 
-            // NEU: 5. Prüfen ob Pattern zur Evaluator-Richtung passt
             if (detectedDirection != _direction)
             {
-                var directionReasons = new List<string> { 
-                    $"BLOCKED (Direction Mismatch): Pattern-Direction={detectedDirection}, Evaluator-Direction={_direction}" 
+                var directionReasons = new List<string> {
+                    $"BLOCKED (Direction Mismatch): Pattern-Direction={detectedDirection}, Evaluator-Direction={_direction}"
                 };
-                LoggerHelper.LogWarn(_loggerSource, $"[ReversalBouncePatternEvaluator] 🚫 DIRECTION MISMATCH: {directionReasons[0]}");
-                
+                LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator][Eval={_direction}] Richtung passt nicht: {directionReasons[0]}");
+
                 return PatternEvaluationResult.NotDetected(
                     Type,
                     string.Join(" | ", directionReasons),
-                    null,
+                    new Dictionary<string, object>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>(),
                     new List<EvaluatedConditionDetail>()
                 );
             }
 
-            // BESTEHEND: 6. Orderflow-Kriterien (nur im Entry-Fenster und bei passender Direction)
-            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBouncePatternEvaluator] ✅ ENTRY-FENSTER AKTIV: Orderflow-Prüfung wird durchgeführt für {detectedDirection}");
+            // BESTEHEND: 4. Orderflow-Kriterien (nur im Entry-Fenster und bei passender Direction)
+            LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] Orderflow-Prüfung startet für Richtung {detectedDirection}");
+            LoggerHelper.LogInfo(_loggerSource, BuildOrderflowThresholdLog(detectedDirection, currentSnapshot, effectiveThresholds));
 
             var reasons = new List<string>();
             int metCriteriaCount = 0;
@@ -185,7 +347,7 @@ namespace MyNamespace.Strategies.Orderflow
                 // ####################################################################
 
 
-                LoggerHelper.LogDebug(_loggerSource, "Evaluate: Long path");
+                LoggerHelper.LogDebug(_loggerSource, "[ReversalBounceEvaluator] Pfad: Long");
 
                 // **NEUES HARTES KRITERIUM: Mindest-CVD-Impuls für Long Reversal**
                 // Wenn dieser Schwellenwert gesetzt ist und der aktuelle CvdImpulse zu negativ ist,
@@ -195,7 +357,7 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     var reasonText = $"BLOCKED (Hard Criterium): CvdImpulse ({currentSnapshot.CvdImpulse:F2}) ist zu negativ für ein Long Reversal (Min. erlaubt: {thresholds.ThCvdImpulseMinForLongReversal.Value:F2}).";
                     reasons.Add(reasonText);
-                    LoggerHelper.LogWarn(_loggerSource, $"[PatternSignaturer] HARD BLOCK for Long Reversal Bounce: {reasonText}");
+                    LoggerHelper.LogWarn(_loggerSource, $"[ReversalBounceEvaluator] Harter Block Long: {reasonText}");
 
                     var diagDetail = new EvaluatedConditionDetail(
                         "CvdImpulseTooNegativeForLongReversal",
@@ -207,28 +369,11 @@ namespace MyNamespace.Strategies.Orderflow
                     return PatternEvaluationResult.NotDetected(
                         Type,
                         string.Join(" | ", reasons),
-                        null,
+                        new Dictionary<string, object>(),
                         metHardConditions,
                         metRelConditions,
                         metDiagnosticConditions
                     );
-                }
-
-                // Strenger Block: wenn Bar bärisch oder CVD klar negativ, disqualifizieren
-                bool isBearishBar = currentSnapshot.Close <= currentSnapshot.Open;
-                bool cvdNegative = currentSnapshot.CvdImpulse < 0m;
-                bool aggNotBullish = !thresholds.ReversalThAggPressureBreakoutBull.HasValue || currentSnapshot.AggPressure <= 0m;
-
-                if (isBearishBar || cvdNegative)
-                {
-                    reasons.Add($"BLOCKED: Bearish candle (Close {currentSnapshot.Close:F2} <= Open {currentSnapshot.Open:F2}) OR CvdImpulse {currentSnapshot.CvdImpulse:F2} < 0.");
-                    LoggerHelper.LogWarn(_loggerSource, $"Blocking Long: bearish candle OR negative CVD. Bar={features.Bar}");
-                    metDiagnosticConditions.Add(new EvaluatedConditionDetail(
-                    "BarBearishOrCvdNegative",
-                    $"{FormatMetValue(currentSnapshot.Close)}/{FormatMetValue(currentSnapshot.Open)} | Cvd={FormatMetValue(currentSnapshot.CvdImpulse)}",
-                    "Bearish candle || CvdImpulse < 0 => disqualify Long"
-                    ));
-                    return PatternEvaluationResult.NotDetected(Type, string.Join(" | ", reasons), null, metHardConditions, metRelConditions, metDiagnosticConditions);
                 }
 
                 // Kriterien-Gruppe 1: Aggressive Kaufkraft
@@ -247,7 +392,7 @@ namespace MyNamespace.Strategies.Orderflow
                         $"> {FormatMetValue(thresholds.ReversalThCvdImpulseLong.Value, "F2")}"
                     );
                     metHardConditions.Add(detail);
-                    LoggerHelper.LogDebug(_loggerSource, $"Erstellt MetHard Detail: {detail.ToShortString()}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetHard erzeugt: {detail.ToShortString()}");
                 }
 
                 // Aggressive Pressure vorhanden?
@@ -260,69 +405,22 @@ namespace MyNamespace.Strategies.Orderflow
                     var detail = new EvaluatedConditionDetail(
                         "AggPressureAboveReversalThBull",
                         FormatMetValue(currentSnapshot.AggPressure, "F2"),
-                        $"> {FormatMetValue(thresholds.ReversalThAggPressureBreakoutBull.Value, "F2")}"
+                        $"> {FormatMetValue(thresholds.ReversalThAggPressureBreakoutBull.Value, "F2") }"
                     );
                     metHardConditions.Add(detail);
-                    LoggerHelper.LogDebug(_loggerSource, $"Erstellt MetHard Detail: {detail.ToShortString()}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetHard erzeugt: {detail.ToShortString()}");
                 }
 
-                // Defensive rule: wenn keine Long-CVD-Schwelle gesetzt ist (NULL) und aktueller CvdImpulse negativ,
-                // dann behandeln wir die Aggressivitäts-Gruppe für Long als NICHT erfüllt (block Long).
-                bool blockLongDueToCvdDirectionality = false;
-                if (!thresholds.ReversalThCvdImpulseLong.HasValue && currentSnapshot.CvdImpulse < 0)
-                {
-                    blockLongDueToCvdDirectionality = true;
-
-                    // Diagnostic: füge eine negative/erklärende EvaluatedConditionDetail hinzu, damit Audit-Log klar ist.
-                    var diagDetail = new EvaluatedConditionDetail(
-                        "CvdImpulseDirectionality",
-                        FormatMetValue(currentSnapshot.CvdImpulse, "F2"),
-                        "ReversalThCvdImpulseLong=NULL & CvdImpulse<0 => als NICHT erfüllt behandeln"
-                    );
-                    // Wir fügen diese als "hard" hinzu, damit sie in der Audit-Ausgabe erscheint.
-                    metDiagnosticConditions.Add(diagDetail);
-
-                    LoggerHelper.LogInfo(_loggerSource,
-                        $"[PatternSignaturer] Blocking Long: ReversalThCvdImpulseLong is NULL and current CvdImpulse={currentSnapshot.CvdImpulse:F2} < 0");
-                }
-
-                // Verwende eine effektive Variable, damit die ursprüngliche Berechnung nicht verändert wird,
-                // aber wir die Gruppe bei Bedarf blockieren können.
-                bool effectiveAggressive = (aggressiveCvdPresent || aggressivePressurePresent) && !blockLongDueToCvdDirectionality;
-
-                if (effectiveAggressive)
+                if (aggressiveCvdPresent || aggressivePressurePresent)
                 {
                     metCriteriaCount++;
                 }
                 else
                 {
-                    // Wenn wir blocken, geben wir spezielleren Reason-Text aus.
-                    if (blockLongDueToCvdDirectionality)
-                        reasons.Add($"BLOCKED: Keine validierte Long-CVD-Schwelle (ReversalThCvdImpulseLong=NULL) und CvdImpulse negativ ({currentSnapshot.CvdImpulse:F2}). Aggressivitäts-Gruppe gilt als nicht erfüllt.");
-                    else
-                        reasons.Add("FAIL: Unzureichender CvdImpulse oder AggPressure.");
+                    reasons.Add("FAIL: Unzureichender CvdImpulse oder AggPressure.");
                 }
 
 
-                // Momentum-Shift-Bestätigung (Inflection)
-                bool inflectionBullish = features.InflectionCvd == InflectionType.Bullish || features.InflectionPressure == InflectionType.Bullish;
-                if (inflectionBullish)
-                {
-                    metCriteriaCount++;
-                    reasons.Add("Bullish Inflection in CVD oder AggPressure erkannt.");
-
-                    var detail = new EvaluatedConditionDetail(
-                        "InflectionBullish",
-                        "Bullish",
-                        "InflectionCvd or InflectionPressure == Bullish"
-                    );
-                    metRelConditions.Add(detail);
-                    LoggerHelper.LogDebug(_loggerSource, $"Created MetRel detail: {detail.ToShortString()}");
-                }
-                else
-                {
-                    reasons.Add("FAIL: Keine Bullish Inflection in CVD oder AggPressure erkannt.");
-                }
 
                 // Kriterien-Gruppe 2: Mangel an bärischem Widerstand
                 if (thresholds.MaxCounterDeltaShareBear.HasValue)
@@ -338,7 +436,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"< {FormatMetValue(thresholds.MaxCounterDeltaShareBear.Value, "F2")}"
                         );
                         metHardConditions.Add(detail);
-                        LoggerHelper.LogDebug(_loggerSource, $"Created MetHard detail: {detail.ToShortString()}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetHard erzeugt: {detail.ToShortString()}");
                     }
                     else
                     {
@@ -364,7 +462,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"> {FormatMetValue(thresholds.ThVolBurstZ.Value, "F2")}"
                         );
                         metHardConditions.Add(detail);
-                        LoggerHelper.LogDebug(_loggerSource, $"Created MetHard detail: {detail.ToShortString()}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetHard erzeugt: {detail.ToShortString()}");
                     }
                     else
                     {
@@ -389,7 +487,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"> {FormatMetValue(thresholds.ThEfficiency.Value, "F2")}, SlopeEff>0"
                         );
                         metHardConditions.Add(detail);
-                        LoggerHelper.LogDebug(_loggerSource, $"Created MetHard detail: {detail.ToShortString()}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetHard erzeugt: {detail.ToShortString()}");
                     }
                     else
                     {
@@ -417,7 +515,7 @@ namespace MyNamespace.Strategies.Orderflow
                             "StackedImbalance thresholds matched"
                         );
                         metRelConditions.Add(detail);
-                        LoggerHelper.LogDebug(_loggerSource, $"Created MetRel detail: {detail.ToShortString()}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetRel erzeugt: {detail.ToShortString()}");
                     }
                     else
                     {
@@ -428,6 +526,32 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     reasons.Add("HINWEIS: Stacked Imbalance Thresholds nicht gesetzt, Kriterium nicht geprüft.");
                 }
+
+                // Kriterien-Gruppe 5: Imbalance Score (Trend-Bar Bestätigung)
+                if (thresholds.ReversalThImbalanceScoreMinLong.HasValue)
+                {
+                    if (currentSnapshot.ImbalanceScore >= thresholds.ReversalThImbalanceScoreMinLong.Value)
+                    {
+                        metCriteriaCount++;
+                        reasons.Add($"ImbalanceScore ({currentSnapshot.ImbalanceScore:F3}) >= ThImbScoreMinLong ({thresholds.ReversalThImbalanceScoreMinLong.Value:F3})");
+
+                        var detail = new EvaluatedConditionDetail(
+                            "ImbalanceScoreMinLong",
+                            FormatMetValue(currentSnapshot.ImbalanceScore, "F3"),
+                            $">= {FormatMetValue(thresholds.ReversalThImbalanceScoreMinLong.Value, "F3") }"
+                        );
+                        metRelConditions.Add(detail);
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetRel erzeugt: {detail.ToShortString()}");
+                    }
+                    else
+                    {
+                        reasons.Add("ImbalanceScore zu schwach für Long (Trend-Bar Bestätigung fehlt).");
+                    }
+                }
+                else
+                {
+                    reasons.Add("HINWEIS: ImbalanceScore-Threshold (Long) nicht gesetzt, Kriterium nicht geprüft.");
+                }
             }
             else // Direction == OrderDirections.Sell
             {
@@ -435,37 +559,10 @@ namespace MyNamespace.Strategies.Orderflow
                 // #                       SHORT EVALUATION                           #
                 // ####################################################################
 
-                LoggerHelper.LogDebug(_loggerSource, "Evaluate: Short path");
+                LoggerHelper.LogDebug(_loggerSource, "[ReversalBounceEvaluator] Pfad: Short");
 
-                // **NEUES HARTES KRITERIUM: Maximaler-CVD-Impuls für Short Reversal**
-                // Wenn dieser Schwellenwert gesetzt ist und der aktuelle CvdImpulse zu positiv ist,
-                // wird das Muster sofort als NICHT erkannt zurückgegeben.
-                if (thresholds.ThCvdImpulseMaxForShortReversal.HasValue &&
-                    currentSnapshot.CvdImpulse > thresholds.ThCvdImpulseMaxForShortReversal.Value)
-                {
-                    var reasonText = $"BLOCKED (Hard Criterium): CvdImpulse ({currentSnapshot.CvdImpulse:F2}) ist zu positiv für ein Short Reversal (Max. erlaubt: {thresholds.ThCvdImpulseMaxForShortReversal.Value:F2}).";
-                    reasons.Add(reasonText);
-                    LoggerHelper.LogWarn(_loggerSource, $"[PatternSignaturer] HARD BLOCK for Short Reversal Bounce: {reasonText}");
-
-                    var diagDetail = new EvaluatedConditionDetail(
-                        "CvdImpulseTooPositiveForShortReversal",
-                        FormatMetValue(currentSnapshot.CvdImpulse, "F2"),
-                        $"> {FormatMetValue(thresholds.ThCvdImpulseMaxForShortReversal.Value, "F2")}"
-                    );
-                    metDiagnosticConditions.Add(diagDetail);
-
-                    return PatternEvaluationResult.NotDetected(
-                        Type,
-                        string.Join(" | ", reasons),
-                        null,
-                        metHardConditions,
-                        metRelConditions,
-                        metDiagnosticConditions
-                    );
-                }
-
-
-                // Kriterien-Gruppe 1: Aggressive Verkaufsdruck
+                // Kriterien-Gruppe 1: Aggressive Verkaufskraft
+                // ----------------------------------------------------
                 bool aggressiveCvdPresent = false;
                 if (thresholds.ReversalThCvdImpulseShort.HasValue && currentSnapshot.CvdImpulse < thresholds.ReversalThCvdImpulseShort.Value)
                 {
@@ -505,25 +602,6 @@ namespace MyNamespace.Strategies.Orderflow
                     reasons.Add("FAIL: Unzureichender CvdImpulse oder AggPressure.");
                 }
 
-                // Momentum-Shift-Bestätigung (Inflection)
-                bool inflectionBearish = features.InflectionCvd == InflectionType.Bearish || features.InflectionPressure == InflectionType.Bearish;
-                if (inflectionBearish)
-                {
-                    metCriteriaCount++;
-                    reasons.Add("Bearish Inflection in CVD oder AggPressure erkannt.");
-
-                    var detail = new EvaluatedConditionDetail(
-                        "InflectionBearish",
-                        "Bearish",
-                        "InflectionCvd or InflectionPressure == Bearish"
-                    );
-                    metRelConditions.Add(detail);
-                    LoggerHelper.LogDebug(_loggerSource, $"Created MetRel detail: {detail.ToShortString()}");
-                }
-                else
-                {
-                    reasons.Add("FAIL: Keine Bearish Inflection in CVD oder AggPressure erkannt.");
-                }
 
                 // Kriterien-Gruppe 2: Mangel an bullischem Widerstand
                 if (thresholds.MaxCounterDeltaShareBull.HasValue)
@@ -618,7 +696,7 @@ namespace MyNamespace.Strategies.Orderflow
                             "StackedImbalance thresholds matched"
                         );
                         metRelConditions.Add(detail);
-                        LoggerHelper.LogDebug(_loggerSource, $"Created MetRel detail: {detail.ToShortString()}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] MetRel erzeugt: {detail.ToShortString()}");
                     }
                     else
                     {
@@ -639,7 +717,8 @@ namespace MyNamespace.Strategies.Orderflow
             if (metCriteriaCount >= minSignals)
             {
                 decimal confidence = (decimal)metCriteriaCount / (decimal)GetPossibleCriteriaCount(thresholds);
-                LoggerHelper.LogInfo(_loggerSource, $"ReversalBounceMuster erkannt: {Type}, confidence={confidence:F2}, met={metCriteriaCount}");
+                LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceEvaluator] ReversalBounceMuster erkannt: {Type}, confidence={confidence:F2}, met={metCriteriaCount}");
+                LoggerHelper.LogInfo(_loggerSource, BuildCriteriaStatusLog(reasons, metHardConditions, metRelConditions, metDiagnosticConditions));
 
               
                 // Audit-Log: vollständige metHard / metRel Ausgabe (leicht parsebar)
@@ -663,15 +742,21 @@ namespace MyNamespace.Strategies.Orderflow
                     finalMetHardPart += $" | diagnostics={diagCount}: {diagSummary}";
 
                 LoggerHelper.LogInfo(_loggerSource,
-                    $"[PatternSignaturer] Detected {Type} ({Direction}) {finalMetHardPart}, metRel={relCount}: {relSummary}");
+                    $"[ReversalBounceEvaluator] Erkannt: {Type} ({Direction}) {finalMetHardPart}, metRel={relCount}: {relSummary}");
 
-                return PatternEvaluationResult.Detected(Type, confidence, reasons, null, metHardConditions, metRelConditions);
+                return PatternEvaluationResult.Detected(Type, confidence, reasons, new Dictionary<string, object>(), metHardConditions, metRelConditions);
             }
             else
             {
                 reasons.Add($"ReversakBounceMuster NICHT erkannt: {metCriteriaCount} von {minSignals} erforderlichen Signalen wurden erfüllt.");
-                LoggerHelper.LogDebug(_loggerSource, $"Pattern NOT detected: {Type}. Reasons: {string.Join(" | ", reasons)}");
-                LoggerHelper.LogDebug(_loggerSource, $"ReversalBouncePatternEvaluator returning NOT DETECTED. metHard={metHardConditions.Count}, metRel={metRelConditions.Count}. Details: " +
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ReversalBounceEvaluator] NICHT erkannt (Dir={Direction}) met={metCriteriaCount}/{minSignals}, " +
+                    $"hard={metHardConditions.Count}, rel={metRelConditions.Count}. Gründe: {string.Join(" | ", reasons)}"
+                );
+                LoggerHelper.LogInfo(_loggerSource, BuildCriteriaStatusLog(reasons, metHardConditions, metRelConditions, metDiagnosticConditions));
+                LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] Muster NICHT erkannt: {Type}. Gründe: {string.Join(" | ", reasons)}");
+                LoggerHelper.LogDebug(_loggerSource, $"[ReversalBounceEvaluator] Ergebnis NICHT erkannt. metHard={metHardConditions.Count}, metRel={metRelConditions.Count}. Details: " +
                 (metHardConditions.Any() ? string.Join(" | ", metHardConditions.Select(h => h.ToShortString())) : "(no hard)") + " / " +
                 (metRelConditions.Any() ? string.Join(" | ", metRelConditions.Select(r => r.ToShortString())) : "(no rel)"));
 
@@ -680,11 +765,11 @@ namespace MyNamespace.Strategies.Orderflow
                 if (metDiagnosticConditions.Any())
                 {
                     LoggerHelper.LogDebug(_loggerSource,
-                        $"ReversalBouncePatternEvaluator diagnostics ({metDiagnosticConditions.Count}): " +
+                        $"[ReversalBounceEvaluator] Diagnostics ({metDiagnosticConditions.Count}): " +
                         string.Join(" | ", metDiagnosticConditions.Select(d => d.ToShortString())));
                 }
 
-                return PatternEvaluationResult.NotDetected(Type, string.Join(" | ", reasons), null, metHardConditions, metRelConditions);
+                return PatternEvaluationResult.NotDetected(Type, string.Join(" | ", reasons), new Dictionary<string, object>(), metHardConditions, metRelConditions);
             }
         }
 
@@ -693,7 +778,7 @@ namespace MyNamespace.Strategies.Orderflow
         private int GetPossibleCriteriaCount(OrderflowThresholds thresholds)
         {
             int possible = 0;
-            possible++; // Group 1b (either/or inflection) is always checked
+            // possible++; // Inflection entfernt - kein Zählen mehr nötig
 
             if (_direction == OrderDirections.Buy)
             {
@@ -711,6 +796,9 @@ namespace MyNamespace.Strategies.Orderflow
 
             if ((thresholds.ThStackedImbAnyRangeMinDirectional.HasValue && thresholds.ThStackedImbAnyRangeMinDirectional.Value > 0) ||
                 (thresholds.ThStackedImbAnchoredRangeMinDirectional.HasValue && thresholds.ThStackedImbAnchoredRangeMinDirectional.Value > 0)) possible++; // Group 4
+
+            if ((_direction == OrderDirections.Buy && thresholds.ReversalThImbalanceScoreMinLong.HasValue) ||
+                (_direction == OrderDirections.Sell && thresholds.ReversalThImbalanceScoreMaxShort.HasValue)) possible++; // Group 5
 
             return Math.Max(1, possible); // Mindestens 1 mögliches Kriterium
         }
