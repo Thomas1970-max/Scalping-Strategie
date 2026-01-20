@@ -2411,7 +2411,7 @@ namespace MyNamespace.Strategies
             // Jetzt explizit initialisieren ? ?bergibt abh?ngige Ressourcen an den Manager
             _thresholdManager.Initialize(_ofFeaturesHistory, _featureCalculator, _commonConditionsSpecificConfig);
 
-            _patternSignaturer = new PatternSignaturer(_thresholdsResolver, _loggerSource, _strategySetup, new[] { _reversalEvaluator });
+            _patternSignaturer = new PatternSignaturer(_thresholdsResolver, _thresholdManager, _loggerSource, _strategySetup, new[] { _reversalEvaluator });
             // MarketStateEngine braucht history und thresholdManager -> danach anlegen
             var mseSettings = new MarketStateEngineSettings
             {
@@ -2433,14 +2433,9 @@ namespace MyNamespace.Strategies
 
             // Initialisiere den ReversalBouncePatternEvaluator
             _reversalEvaluator = new ReversalBouncePatternEvaluator(OrderDirections.Buy, this);
-            _reversalEvaluator.ThresholdsProvider = () => ReversalThresholds;
             
-            // Setze die globalen Thresholds f?r ALLE Instanzen
-            ReversalBouncePatternEvaluator.GlobalThresholds = ReversalThresholds;
-            
-            // Test-Log zur ?berpr?fung der initialen Werte
+            // Adaptive Thresholds werden vom PatternSignaturer geliefert (keine statischen Overrides)
             this.LogInfo($"[INIT] ReversalThresholds initialisiert: CVD Impulse Long = {ReversalThresholds.ReversalThCvdImpulseLong_UI}");
-            this.LogInfo($"[INIT] GlobalThresholds gesetzt: {ReversalBouncePatternEvaluator.GlobalThresholds != null}");
 
 
             
@@ -4722,6 +4717,16 @@ namespace MyNamespace.Strategies
             // optional: Preise der anchored Stacks (kannst du bei Bedarf loggen)
             public decimal[] BuyTopAnchoredPrices;
             public decimal[] SellBottomAnchoredPrices;
+
+            public int TotalPairs;
+            public int BuyPairsCount;
+            public int SellPairsCount;
+            public decimal AvgBuyImbVol;
+            public decimal AvgSellImbVol;
+            public decimal BaseVolMedian;
+
+            // Guard: zu wenige Preis-Level f?r Imbalance-Berechnung
+            public bool InsufficientLevels;
         }
 
         private List<decimal[]> BuildVolumesArrayForBar(int bar)
@@ -4754,41 +4759,64 @@ namespace MyNamespace.Strategies
                 SellBottomAnchoredPrices = Array.Empty<decimal>()
             };
 
-            if (n < 2) return res;
+            if (n < 2)
+            {
+                res.InsufficientLevels = true;
+                return res;
+            }
 
             decimal ratioFactor = p.ImbalanceRatioPct / 100m;
+            res.TotalPairs = n - 1;
 
             // Flags: wo liegt eine Imbalance vor?
-            // Buy (AskBid): Ask(i+1) > Bid(i) * ratio AND Ask(i+1) > minVol
-            // Sell (BidAsk): Bid(i) > Ask(i+1) * ratio AND Bid(i) > minVol
+            // Buy (Bid/Ask): Bid(i+1) > Ask(i) * ratio AND Bid(i+1) > minVol
+            // Sell (Ask/Bid): Ask(i+1) > Bid(i) * ratio AND Ask(i+1) > minVol
             var buyImb = new bool[n];  // i refers to pair (i, i+1)
             var sellImb = new bool[n];
 
+            var buyImbVolumes = new List<decimal>();
+            var sellImbVolumes = new List<decimal>();
+            var baseVolumes = new List<decimal>(n * 2);
+
             for (int i = 0; i < n - 1; i++)
             {
-                decimal bidLow = vols[i][1];
-                decimal askHigh = vols[i + 1][2];
+                decimal bidHigh = vols[i + 1][1];
+                decimal askLow = vols[i][2];
+                baseVolumes.Add((bidHigh + askLow) / 2m);
 
+                decimal bidFilter = askLow * ratioFactor;
+                if (!(p.IgnoreZeroValues && bidFilter == 0m))
+                {
+                    if (bidHigh > bidFilter && bidHigh > p.ImbalanceVolumeMin)
+                    {
+                        buyImb[i] = true;
+                        buyImbVolumes.Add(bidHigh);
+                    }
+                }
+
+                decimal askHigh = vols[i + 1][2];
+                decimal bidLow = vols[i][1];
+                baseVolumes.Add((askHigh + bidLow) / 2m);
                 decimal askFilter = bidLow * ratioFactor;
                 if (!(p.IgnoreZeroValues && askFilter == 0m))
                 {
                     if (askHigh > askFilter && askHigh > p.ImbalanceVolumeMin)
-                        buyImb[i] = true;
-                }
-
-                decimal askNext = vols[i + 1][2];
-                decimal bidHere = vols[i][1];
-                decimal bidFilter = askNext * ratioFactor;
-                if (!(p.IgnoreZeroValues && bidFilter == 0m))
-                {
-                    if (bidHere > bidFilter && bidHere > p.ImbalanceVolumeMin)
+                    {
                         sellImb[i] = true;
+                        sellImbVolumes.Add(askHigh);
+                    }
                 }
             }
 
             // l?ngster zusammenh?ngender Block irgendwo
             res.BuyCountMax = LongestConsecutiveTrue(buyImb);
             res.SellCountMax = LongestConsecutiveTrue(sellImb);
+
+            res.BuyPairsCount = buyImbVolumes.Count;
+            res.SellPairsCount = sellImbVolumes.Count;
+            res.AvgBuyImbVol = buyImbVolumes.Count > 0 ? buyImbVolumes.Average() : 0m;
+            res.AvgSellImbVol = sellImbVolumes.Count > 0 ? sellImbVolumes.Average() : 0m;
+            res.BaseVolMedian = ComputeMedian(baseVolumes);
 
             // anchored: direkt unter High ? i = n-2 downward, begrenzt durch MaxDepthTicksAnchored
             res.BuyCountTopAnchored = 0;
@@ -4815,6 +4843,7 @@ namespace MyNamespace.Strategies
             int maxPairsBottom = Math.Max(0, Math.Min(p.MaxDepthTicksAnchored, n - 1));
             for (int i = 0; i < maxPairsBottom; i++)
             {
+                if (i >= n - 1) break;
                 if (sellImb[i])
                 {
                     res.SellCountBottomAnchored++;
@@ -4837,6 +4866,16 @@ namespace MyNamespace.Strategies
                 else cur = 0;
             }
             return best;
+        }
+
+        private decimal ComputeMedian(List<decimal> values)
+        {
+            if (values == null || values.Count == 0) return 0m;
+            values.Sort();
+            int mid = values.Count / 2;
+            if (values.Count % 2 == 0)
+                return (values[mid - 1] + values[mid]) / 2m;
+            return values[mid];
         }
         // =========================================================================
         // Stacked-Imbalance | Ende
@@ -6196,6 +6235,11 @@ namespace MyNamespace.Strategies
             _currentLevelsSnapshot.IsBlockedLong = isBlockedLong;
             _currentLevelsSnapshot.IsBlockedShort = isBlockedShort;
 
+            if (isBlockedLong && !_currentLevelsSnapshot.LastBlockResistance.HasValue && blockRes != null && blockRes.Value > 0m)
+                _currentLevelsSnapshot.LastBlockResistance = blockRes.Value;
+            if (isBlockedShort && !_currentLevelsSnapshot.LastBlockSupport.HasValue && blockSup != null && blockSup.Value > 0m)
+                _currentLevelsSnapshot.LastBlockSupport = blockSup.Value;
+
             // optional f?r Logging
             _currentLevelsSnapshot.Extra["IsBlockedLong"] = isBlockedLong ? 1m : 0m;
             _currentLevelsSnapshot.Extra["IsBlockedShort"] = isBlockedShort ? 1m : 0m;
@@ -6600,7 +6644,7 @@ namespace MyNamespace.Strategies
                     
                     // ========== PHASE 4: FEATURES ==========
 
-                    this.LogInfo($"[OnCalculate-OF-FEAT] Aufruf von FeatureCalculator f?r bar {closed} (slopeWin=12, inflectionWin=5, persistDepth=20)");
+                    this.LogDebug($"[OnCalculate-OF-FEAT] Aufruf von FeatureCalculator f?r bar {closed} (slopeWin=12, inflectionWin=5, persistDepth=20)");
 
                     // Aufruf des FeatureCalculators mit dem aktuellen OvSnapshot und der OfHistory
                     var feat = _featureCalculator?.CalculateFeatures(
@@ -6616,12 +6660,12 @@ namespace MyNamespace.Strategies
 
                     if (feat == null)
                     {
-                        this.LogInfo("[OnCalculate-OF-FEAT] Berechnung ergab null (keine Historie oder Fehler).");
+                        this.LogDebug("[OnCalculate-OF-FEAT] Berechnung ergab null (keine Historie oder Fehler).");
                         this.LogDebug($"[OnCalculate-OF-FEAT DEBUG] _ovSnapshotHistory.Count={_ovSnapshotHistory.Count}, _ofFeaturesHistory.Count={(_ofFeaturesHistory != null ? _ofFeaturesHistory.Count.ToString() : "NULL")}");
                     }
                     else
                     {
-                        this.LogInfo($"[OnCalculate-OF-FEAT] Features computed for bar {closed}: VolBurstClass={feat.VolBurstClass}, VolBurstZ={feat.VolBurstZ:F4}, InflectionPressure={feat.InflectionPressure}");
+                        this.LogDebug($"[OnCalculate-OF-FEAT] Features computed for bar {closed}: VolBurstClass={feat.VolBurstClass}, VolBurstZ={feat.VolBurstZ:F4}, InflectionPressure={feat.InflectionPressure}");
                         AddFeatureAndSync(feat);
                     }
 
@@ -6639,10 +6683,10 @@ namespace MyNamespace.Strategies
                                 KCPeriod = 10,
                                 KCMultFactor = 1.5m
                             };
-                            this.LogInfo("[OnCalculate-SQUEEZE] _squeezeCalc war null -> neu initialisiert (defensive).");
+                            this.LogDebug("[OnCalculate-SQUEEZE] _squeezeCalc war null -> neu initialisiert (defensive).");
                         }
 
-                        this.LogInfo($"[OnCalculate-SQUEEZE] _squeezeCalc!=null={_squeezeCalc != null}, _squeezeCalc.Count={_squeezeCalc?.Count}");
+                        this.LogDebug($"[OnCalculate-SQUEEZE] _squeezeCalc!=null={_squeezeCalc != null}, _squeezeCalc.Count={_squeezeCalc?.Count}");
 
                         // Warmup: benutze jetzt public Count aus _squeezeCalc
                         int requiredWarmup = Math.Max(_squeezeCalc.BBPeriod, _squeezeCalc.KCPeriod);
@@ -6756,7 +6800,7 @@ namespace MyNamespace.Strategies
                             }
                             catch (Exception ex)
                             {
-                                this.LogInfo($"[OnCalculate-SQUEEZE] mapping exception (bar {closed}): {ex.GetType().Name}: {ex.Message}");
+                                this.LogDebug($"[OnCalculate-SQUEEZE] mapping exception (bar {closed}): {ex.GetType().Name}: {ex.Message}");
                             }
                         }
                     }
@@ -6866,11 +6910,11 @@ namespace MyNamespace.Strategies
                             var evalsProp = _patternSignaturer?.GetType().GetProperty("Evaluators");
                             if (evalsProp != null)
                             {
-                                this.LogInfo("[OnCalculate DIAG] _patternSignaturer Zeigt ?ffentliche Eigenschaften ?Evaluators? an ? Lesen aus Eigenschaften.");
+                                this.LogDebug("[OnCalculate DIAG] _patternSignaturer Zeigt ?ffentliche Eigenschaften ?Evaluators? an ? Lesen aus Eigenschaften.");
                             }
                             else
                             {
-                                this.LogInfo("[OnCalculate DIAG] _patternSignaturer Gibt die ?ffentliche Eigenschaft ?Evaluators? NICHT frei ? versucht, auf private Felder zur?ckzugreifen..");
+                                this.LogDebug("[OnCalculate DIAG] _patternSignaturer Gibt die ?ffentliche Eigenschaft ?Evaluators? NICHT frei ? versucht, auf private Felder zur?ckzugreifen..");
                             }
 
                             // Sammle und logge beide Quellen parallel f?r Diagnose (wenn vorhanden)
@@ -6901,17 +6945,17 @@ namespace MyNamespace.Strategies
                                             propParts.Add($"prop#{i}:{typeName}[{dir}]id={id}");
                                             i++;
                                         }
-                                        this.LogInfo("[OnCalculate DIAG] evaluators (property) = " + string.Join(" | ", propParts));
+                                        this.LogDebug("[OnCalculate DIAG] evaluators (property) = " + string.Join(" | ", propParts));
                                     }
                                     else
                                     {
-                                        this.LogInfo("[OnCalculate DIAG] evaluators property returned null or not IEnumerable");
+                                        this.LogDebug("[OnCalculate DIAG] evaluators property returned null or not IEnumerable");
                                     }
                                 }
                             }
                             catch (Exception exPropDiag)
                             {
-                                this.LogInfo("[OnCalculate DIAG] reading evaluators property failed: " + exPropDiag.Message);
+                                this.LogDebug("[OnCalculate DIAG] reading evaluators property failed: " + exPropDiag.Message);
                             }
 
                             // private field fallback - auch separat loggen
@@ -6942,21 +6986,21 @@ namespace MyNamespace.Strategies
                                             catch { dir = "err"; }
                                             fieldParts.Add($"field#{i}:{typeName}[{dir}]id={id}");
                                         }
-                                        this.LogInfo("[OnCalculate DIAG] evaluators (field _evaluators) = " + string.Join(" | ", fieldParts));
+                                        this.LogDebug("[OnCalculate DIAG] evaluators (field _evaluators) = " + string.Join(" | ", fieldParts));
                                     }
                                     else
                                     {
-                                        this.LogInfo("[OnCalculate DIAG] private field _evaluators returned null or not IList");
+                                        this.LogDebug("[OnCalculate DIAG] private field _evaluators returned null or not IList");
                                     }
                                 }
                                 else
                                 {
-                                    this.LogInfo("[OnCalculate DIAG] no private field named _evaluators found on _patternSignaturer");
+                                    this.LogDebug("[OnCalculate DIAG] no private field named _evaluators found on _patternSignaturer");
                                 }
                             }
                             catch (Exception exFieldDiag)
                             {
-                                this.LogInfo("[OnCalculate DIAG] reading private field _evaluators failed: " + exFieldDiag.Message);
+                                this.LogDebug("[OnCalculate DIAG] reading private field _evaluators failed: " + exFieldDiag.Message);
                             }
 
                             // Jetzt wie bisher: kompakte Preview (bevorzuge Property, fallback auf Feld)
@@ -6998,7 +7042,7 @@ namespace MyNamespace.Strategies
                         catch (Exception ex)
                         {
                             // defensiv: Fehler loggen, aber nicht die ganze OnCalculate abbrechen
-                            this.LogInfo("[OnCalculate DIAG] evaluator introspection failed: " + ex.Message);
+                            this.LogDebug("[OnCalculate DIAG] evaluator introspection failed: " + ex.Message);
                             evaluatorCount = 0;
                             evaluatorPreview = "n/a";
                         }
@@ -7008,7 +7052,7 @@ namespace MyNamespace.Strategies
                         var ofFeaturesByBarCount = ofFeaturesByBarLocal?.Count ?? 0;
 
                         // final compact Detect-Inputs log (single-line summary)
-                        this.LogInfo(
+                        this.LogDebug(
                             $"[OnCalculate-Detect-Inputs] bar={(feat == null ? -1 : feat.Bar)} time={DateTime.UtcNow:O} historyCount={ofHistCountStr} ofFeaturesByBar={ofFeaturesByBarCount} groups={groupsCount} " +
                             $"snapshotExists={snapExists} Low={snapLow} High={snapHigh} Close={snapClose} VolBurstZ={snapVolBurstZ} StackedBuyImbCount={snapStackedBuy} StackedSellImbCount={snapStackedSell} CvdImpulse={snapCvdImpulse} " +
                             $"VolBurstClass={featVolBurstClass} VolBurstZ={featVolBurstZ} Inflection={featInflection} Momentum={featMomentum} Imbalance={featImbalance} " +
@@ -7114,7 +7158,7 @@ namespace MyNamespace.Strategies
                             // result kann null sein -> weiter behandeln wie bisher
                             if (result == null)
                             {
-                                this.LogInfo("[OnCalculate NEW LOG] DetectDominantOrderflowPattern returned NULL -> treat as no pattern.");
+                                this.LogDebug("[OnCalculate NEW LOG] DetectDominantOrderflowPattern returned NULL -> treat as no pattern.");
 
                                 
                                 // detectedPattern bleibt null (oder du kannst ein leeres DetectedOrderflowPattern setzen, falls n?tig)
@@ -7144,7 +7188,7 @@ namespace MyNamespace.Strategies
                                         : PatternEvaluationResult.NotDetected(detectedPattern.Type, detectedPattern.DetectReason ?? "Conversion failed");
                                 }
 
-                                this.LogInfo($"[OnCalculate NEW LOG] Pattern result: IsDetected={detectedPatternEval.IsDetected}, Type={detectedPatternEval.PatternType}, Confidence={detectedPatternEval.ConfidenceScore:F2}");
+                                this.LogDebug($"[OnCalculate NEW LOG] Pattern result: IsDetected={detectedPatternEval.IsDetected}, Type={detectedPatternEval.PatternType}, Confidence={detectedPatternEval.ConfidenceScore:F2}");
                             }
                         }
 
@@ -7171,7 +7215,7 @@ namespace MyNamespace.Strategies
                                 }
                                 else
                                 {
-                                    this.LogInfo($"[OnCalculate NEW LOG] MarketStateEngine updated state: NewState={(newMarketState.ToString() ?? "object")}");
+                                    this.LogDebug($"[OnCalculate NEW LOG] MarketStateEngine updated state: NewState={(newMarketState.ToString() ?? "object")}");
                                 }
                             }
                             catch (Exception exState)
@@ -7198,7 +7242,7 @@ namespace MyNamespace.Strategies
 
                     try
                     {
-                        this.LogInfo($"[OnCalculate-DBG] bar={bar} _csvWriter=={_csvWriter == null} ovSnapshot=={(ovSnapshot == null)} InstrumentInfo=={(InstrumentInfo == null)} detectedPattern=={(detectedPattern == null)} feat=={(feat == null)}");
+                        this.LogDebug($"[OnCalculate-DBG] bar={bar} _csvWriter=={_csvWriter == null} ovSnapshot=={(ovSnapshot == null)} InstrumentInfo=={(InstrumentInfo == null)} detectedPattern=={(detectedPattern == null)} feat=={(feat == null)}");
                     }
                     catch (Exception ex) { this.LogError($"[OnCalculate] dbg log failed: {ex}"); }
 
@@ -8198,7 +8242,7 @@ namespace MyNamespace.Strategies
             return false;
         }
 
-        private decimal FindNextSignificantLevel(decimal entryPrice, OrderDirections direction, LevelsSnapshot levelsSnapshot, decimal currentPOC, decimal currentVAH, decimal currentVAL)
+        private decimal FindNextSignificantLevel(decimal entryPrice, OrderDirections direction, LevelsSnapshot levelsSnapshot, decimal currentPOC, decimal currentVAH, decimal currentVAL, bool logCandidates = false)
         {
             if (levelsSnapshot == null)
             {
@@ -8206,82 +8250,84 @@ namespace MyNamespace.Strategies
                 return direction == OrderDirections.Buy ? entryPrice + 15 * _tickSize : entryPrice - 15 * _tickSize;
             }
 
-            var significantLevels = new List<decimal>();
+            var significantLevels = new List<(decimal Level, string Source)>();
             
             // Sammle alle relevanten Levels
-            significantLevels.Add(currentPOC);
-            significantLevels.Add(currentVAH);
-            significantLevels.Add(currentVAL);
+            if (currentPOC > 0) significantLevels.Add((currentPOC, "CurrentPOC"));
+            if (currentVAH > 0) significantLevels.Add((currentVAH, "CurrentVAH"));
+            if (currentVAL > 0) significantLevels.Add((currentVAL, "CurrentVAL"));
             
             // F?ge bekannte Level aus levelsSnapshot hinzu
-            significantLevels.Add(levelsSnapshot.CurrentPOC);
-            significantLevels.Add(levelsSnapshot.CurrentVAH);
-            significantLevels.Add(levelsSnapshot.CurrentVAL);
-            significantLevels.Add(levelsSnapshot.PreviousDayPOC);
-            significantLevels.Add(levelsSnapshot.PreviousDayVAH);
-            significantLevels.Add(levelsSnapshot.PreviousDayVAL);
-            significantLevels.Add(levelsSnapshot.PreviousDayHigh);
-            significantLevels.Add(levelsSnapshot.PreviousDayLow);
-            significantLevels.Add(levelsSnapshot.PreviousDayClose);
+            if (levelsSnapshot.CurrentPOC > 0) significantLevels.Add((levelsSnapshot.CurrentPOC, "Levels.CurrentPOC"));
+            if (levelsSnapshot.CurrentVAH > 0) significantLevels.Add((levelsSnapshot.CurrentVAH, "Levels.CurrentVAH"));
+            if (levelsSnapshot.CurrentVAL > 0) significantLevels.Add((levelsSnapshot.CurrentVAL, "Levels.CurrentVAL"));
+            if (levelsSnapshot.PreviousDayPOC > 0) significantLevels.Add((levelsSnapshot.PreviousDayPOC, "Levels.PrevPOC"));
+            if (levelsSnapshot.PreviousDayVAH > 0) significantLevels.Add((levelsSnapshot.PreviousDayVAH, "Levels.PrevVAH"));
+            if (levelsSnapshot.PreviousDayVAL > 0) significantLevels.Add((levelsSnapshot.PreviousDayVAL, "Levels.PrevVAL"));
+            if (levelsSnapshot.PreviousDayHigh > 0) significantLevels.Add((levelsSnapshot.PreviousDayHigh, "Levels.PrevHigh"));
+            if (levelsSnapshot.PreviousDayLow > 0) significantLevels.Add((levelsSnapshot.PreviousDayLow, "Levels.PrevLow"));
+            if (levelsSnapshot.PreviousDayClose > 0) significantLevels.Add((levelsSnapshot.PreviousDayClose, "Levels.PrevClose"));
             
             // Pivot-Levels
-            significantLevels.Add(levelsSnapshot.PP);
-            significantLevels.Add(levelsSnapshot.R1);
-            significantLevels.Add(levelsSnapshot.R2);
-            significantLevels.Add(levelsSnapshot.R3);
-            significantLevels.Add(levelsSnapshot.S1);
-            significantLevels.Add(levelsSnapshot.S2);
-            significantLevels.Add(levelsSnapshot.S3);
+            if (levelsSnapshot.PP > 0) significantLevels.Add((levelsSnapshot.PP, "Pivot.PP"));
+            if (levelsSnapshot.R1 > 0) significantLevels.Add((levelsSnapshot.R1, "Pivot.R1"));
+            if (levelsSnapshot.R2 > 0) significantLevels.Add((levelsSnapshot.R2, "Pivot.R2"));
+            if (levelsSnapshot.R3 > 0) significantLevels.Add((levelsSnapshot.R3, "Pivot.R3"));
+            if (levelsSnapshot.S1 > 0) significantLevels.Add((levelsSnapshot.S1, "Pivot.S1"));
+            if (levelsSnapshot.S2 > 0) significantLevels.Add((levelsSnapshot.S2, "Pivot.S2"));
+            if (levelsSnapshot.S3 > 0) significantLevels.Add((levelsSnapshot.S3, "Pivot.S3"));
             
             // M-Levels
-            significantLevels.Add(levelsSnapshot.M1);
-            significantLevels.Add(levelsSnapshot.M2);
-            significantLevels.Add(levelsSnapshot.M3);
-            significantLevels.Add(levelsSnapshot.M4);
+            if (levelsSnapshot.M1 > 0) significantLevels.Add((levelsSnapshot.M1, "M.M1"));
+            if (levelsSnapshot.M2 > 0) significantLevels.Add((levelsSnapshot.M2, "M.M2"));
+            if (levelsSnapshot.M3 > 0) significantLevels.Add((levelsSnapshot.M3, "M.M3"));
+            if (levelsSnapshot.M4 > 0) significantLevels.Add((levelsSnapshot.M4, "M.M4"));
             
             // Runde Marken
-            if (levelsSnapshot.RoundLevelBelow.HasValue)
-                significantLevels.Add(levelsSnapshot.RoundLevelBelow.Value);
-            if (levelsSnapshot.RoundLevelAbove.HasValue)
-                significantLevels.Add(levelsSnapshot.RoundLevelAbove.Value);
+            if (levelsSnapshot.RoundLevelBelow.HasValue && levelsSnapshot.RoundLevelBelow.Value > 0)
+                significantLevels.Add((levelsSnapshot.RoundLevelBelow.Value, "Round.Below"));
+            if (levelsSnapshot.RoundLevelAbove.HasValue && levelsSnapshot.RoundLevelAbove.Value > 0)
+                significantLevels.Add((levelsSnapshot.RoundLevelAbove.Value, "Round.Above"));
             
             // Session Highs/Lows
             foreach (var sessionHigh in levelsSnapshot.SessionHighs.Where(sh => sh.Value > 0))
-                significantLevels.Add(sessionHigh.Value);
+                significantLevels.Add((sessionHigh.Value, $"SessionHigh.{sessionHigh.Date:yyyyMMdd}"));
             foreach (var sessionLow in levelsSnapshot.SessionLows.Where(sl => sl.Value > 0))
-                significantLevels.Add(sessionLow.Value);
+                significantLevels.Add((sessionLow.Value, $"SessionLow.{sessionLow.Date:yyyyMMdd}"));
             
             // Extra-Levels (beliebige zus?tzliche Levels)
-            foreach (var extraLevel in levelsSnapshot.Extra.Values.Where(v => v > 0))
-                significantLevels.Add(extraLevel);
+            foreach (var extraLevel in levelsSnapshot.Extra.Where(kv => kv.Value > 0))
+                significantLevels.Add((extraLevel.Value, $"Extra.{extraLevel.Key}"));
+
+            // Tracked Levels (wie IsBlocked/OnRender)
+            if (_untouchedLevels != null && _untouchedLevels.Count > 0)
+            {
+                foreach (var level in _untouchedLevels.Where(l => l != null && l.IsActive && l.Value > 0m))
+                {
+                    significantLevels.Add((level.Value, $"Tracked.{level.Label}"));
+                }
+            }
             
-            // NEU: MicroComposite Levels (falls verf?gbar)
-            if (_currentMC != null)
+            // NEU: MicroComposite Levels (falls verfügbar)
+            var mcForLevels = _currentMC ?? GetRollingMicroComposite();
+            if (mcForLevels != null)
             {
                 // Dynamischer POC, VAH, VAL aus MicroComposite
-                if (_currentMC.POC > 0)
-                    significantLevels.Add(_currentMC.POC);
-                if (_currentMC.VAH > 0)
-                    significantLevels.Add(_currentMC.VAH);
-                if (_currentMC.VAL > 0)
-                    significantLevels.Add(_currentMC.VAL);
+                if (mcForLevels.POC > 0)
+                    significantLevels.Add((mcForLevels.POC, "MC.POC"));
+                if (mcForLevels.VAH > 0)
+                    significantLevels.Add((mcForLevels.VAH, "MC.VAH"));
+                if (mcForLevels.VAL > 0)
+                    significantLevels.Add((mcForLevels.VAL, "MC.VAL"));
                 
-                // HVN (High Volume Nodes) - wichtige Support/Resistance Levels
-                foreach (var hvn in _currentMC.HVNs.Where(h => h > 0))
+                // HVN/LVN Zonen (nur HVN-Zonen) -> Kanten nutzen (entspricht gerenderten Rechtecken)
+                foreach (var hvnZone in mcForLevels.HVNZones)
                 {
-                    if (IsStrongHVN(hvn, _currentMC, GetPathConfig(), _tickSize))
-                        significantLevels.Add(hvn);
+                    if (hvnZone.Start > 0) significantLevels.Add((hvnZone.Start, "MC.HVNZone.Start"));
+                    if (hvnZone.End > 0) significantLevels.Add((hvnZone.End, "MC.HVNZone.End"));
                 }
                 
                 // LVN (Low Volume Nodes) werden entfernt - nur HVN f?r TP-Berechnung verwenden
-                
-                // HVN/LVN Zonen (nur HVN-Zonen)
-                foreach (var hvnZone in _currentMC.HVNZones)
-                {
-                    var zoneMid = (hvnZone.Start + hvnZone.End) / 2m;
-                    if (zoneMid > 0 && IsStrongHVN(zoneMid, _currentMC, GetPathConfig(), _tickSize))
-                        significantLevels.Add(zoneMid);
-                }
                 
                 // LVN-Zonen werden entfernt
                 
@@ -8290,9 +8336,15 @@ namespace MyNamespace.Strategies
             }
 
             // Filtere und sortiere Levels basierend auf Richtung
+            if (logCandidates)
+            {
+                this.LogInfo($"[LEVEL] Kandidaten ({direction}) vor Filter: " +
+                              string.Join(" | ", significantLevels.Select(l => $"{l.Level:F2}:{l.Source}")));
+            }
+
             var relevantLevels = direction == OrderDirections.Buy
-                ? significantLevels.Where(level => level > entryPrice).OrderBy(level => level).ToList()
-                : significantLevels.Where(level => level < entryPrice).OrderByDescending(level => level).ToList();
+                ? significantLevels.Where(level => level.Level > entryPrice).OrderBy(level => level.Level).ToList()
+                : significantLevels.Where(level => level.Level < entryPrice).OrderByDescending(level => level.Level).ToList();
 
             if (relevantLevels.Count == 0)
             {
@@ -8301,36 +8353,36 @@ namespace MyNamespace.Strategies
 
             var nextLevel = relevantLevels.First();
             var tpPrice = direction == OrderDirections.Buy 
-                ? nextLevel - _tickSize  // Ein Tick unter dem Level f?r Long
-                : nextLevel + _tickSize;  // Ein Tick ?ber dem Level f?r Short
+                ? nextLevel.Level - _tickSize  // Ein Tick unter dem Level f?r Long
+                : nextLevel.Level + _tickSize;  // Ein Tick ?ber dem Level f?r Short
 
             // Bestimme die Art des Levels f?r besseres Logging
             string levelType = "Unbekannt";
-            if (_currentMC != null)
+            if (mcForLevels != null)
             {
-                if (Math.Abs(nextLevel - _currentMC.POC) < _tickSize * 2) levelType = "MC-POC";
-                else if (Math.Abs(nextLevel - _currentMC.VAH) < _tickSize * 2) levelType = "MC-VAH";
-                else if (Math.Abs(nextLevel - _currentMC.VAL) < _tickSize * 2) levelType = "MC-VAL";
-                else if (_currentMC.HVNs.Any(h => Math.Abs(nextLevel - h) < _tickSize * 2)) levelType = "MC-HVN";
-                else if (_currentMC.LVNs.Any(l => Math.Abs(nextLevel - l) < _tickSize * 2)) levelType = "MC-LVN";
-                else if (_currentMC.HVNZones.Any(z => nextLevel >= z.Start && nextLevel <= z.End)) levelType = "MC-HVN-Zone";
-                else if (_currentMC.LVNZones.Any(z => nextLevel >= z.Start && nextLevel <= z.End)) levelType = "MC-LVN-Zone";
+                if (Math.Abs(nextLevel.Level - mcForLevels.POC) < _tickSize * 2) levelType = "MC-POC";
+                else if (Math.Abs(nextLevel.Level - mcForLevels.VAH) < _tickSize * 2) levelType = "MC-VAH";
+                else if (Math.Abs(nextLevel.Level - mcForLevels.VAL) < _tickSize * 2) levelType = "MC-VAL";
+                else if (mcForLevels.HVNs.Any(h => Math.Abs(nextLevel.Level - h) < _tickSize * 2)) levelType = "MC-HVN";
+                else if (mcForLevels.LVNs.Any(l => Math.Abs(nextLevel.Level - l) < _tickSize * 2)) levelType = "MC-LVN";
+                else if (mcForLevels.HVNZones.Any(z => nextLevel.Level >= z.Start && nextLevel.Level <= z.End)) levelType = "MC-HVN-Zone";
+                else if (mcForLevels.LVNZones.Any(z => nextLevel.Level >= z.Start && nextLevel.Level <= z.End)) levelType = "MC-LVN-Zone";
             }
             
             if (levelType == "Unbekannt")
             {
                 // Pr?fe statische Levels
-                if (Math.Abs(nextLevel - currentPOC) < _tickSize * 2) levelType = "POC";
-                else if (Math.Abs(nextLevel - currentVAH) < _tickSize * 2) levelType = "VAH";
-                else if (Math.Abs(nextLevel - currentVAL) < _tickSize * 2) levelType = "VAL";
-                else if (Math.Abs(nextLevel - levelsSnapshot.PP) < _tickSize * 2) levelType = "PP";
-                else if (Math.Abs(nextLevel - levelsSnapshot.R1) < _tickSize * 2) levelType = "R1";
-                else if (Math.Abs(nextLevel - levelsSnapshot.S1) < _tickSize * 2) levelType = "S1";
-                else if (levelsSnapshot.SessionHighs.Any(sh => Math.Abs(nextLevel - sh.Value) < _tickSize * 2)) levelType = "Session-High";
-                else if (levelsSnapshot.SessionLows.Any(sl => Math.Abs(nextLevel - sl.Value) < _tickSize * 2)) levelType = "Session-Low";
+                if (Math.Abs(nextLevel.Level - currentPOC) < _tickSize * 2) levelType = "POC";
+                else if (Math.Abs(nextLevel.Level - currentVAH) < _tickSize * 2) levelType = "VAH";
+                else if (Math.Abs(nextLevel.Level - currentVAL) < _tickSize * 2) levelType = "VAL";
+                else if (Math.Abs(nextLevel.Level - levelsSnapshot.PP) < _tickSize * 2) levelType = "PP";
+                else if (Math.Abs(nextLevel.Level - levelsSnapshot.R1) < _tickSize * 2) levelType = "R1";
+                else if (Math.Abs(nextLevel.Level - levelsSnapshot.S1) < _tickSize * 2) levelType = "S1";
+                else if (levelsSnapshot.SessionHighs.Any(sh => Math.Abs(nextLevel.Level - sh.Value) < _tickSize * 2)) levelType = "Session-High";
+                else if (levelsSnapshot.SessionLows.Any(sl => Math.Abs(nextLevel.Level - sl.Value) < _tickSize * 2)) levelType = "Session-Low";
             }
 
-            this.LogInfo($"[LEVEL] N?chstes signifikantes Level f?r {direction} (TP): {nextLevel:F2} ({levelType}), TP bei {tpPrice:F2} (Dynamic)");
+            this.LogInfo($"[LEVEL] N?chstes signifikantes Level f?r {direction} (TP): {nextLevel.Level:F2} ({levelType}), TP bei {tpPrice:F2} (Dynamic), Source={nextLevel.Source}");
             return tpPrice;
         }
 
@@ -8352,11 +8404,14 @@ namespace MyNamespace.Strategies
             int riskTicks = GetRiskTicks();
             bool wegFreiLong = true;
             bool wegFreiShort = true;
+            string wegFreiLongBlocker = string.Empty;
+            string wegFreiShortBlocker = string.Empty;
             
             if (EnableMicroCompositeSystem)
             {
-                wegFreiLong = IsPathFreeLongEnhanced(c.Close, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig());
-                wegFreiShort = IsPathFreeShortEnhanced(c.Close, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig());
+                var mcForPath = _currentMC ?? GetRollingMicroComposite();
+                wegFreiLong = IsPathFreeLongEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiLongBlocker);
+                wegFreiShort = IsPathFreeShortEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiShortBlocker);
             }
 
 
@@ -8735,37 +8790,59 @@ namespace MyNamespace.Strategies
             // Log-Zeile erstellen, wenn Abstand zu wenig und Entry blockiert wird
             if (EnableIsBlocked && EnableMicroCompositeSystem)
             {
-                bool wasBlockedByIsBlocked = false;
-                bool wasBlockedByWegFrei = false;
-                
-                // Prüfen, ob Long-Setup durch IsBlocked blockiert wurde
-                if (isBlockedLong)
+                if (detectedPattern.Type == OrderflowPatternType.None)
                 {
-                    wasBlockedByIsBlocked = true;
+                    this.LogInfo($"[SETUP-DIR] Pattern=None -> Setup-Blocker übersprungen (Bar={closed}).");
+                    return;
                 }
-                
-                // Prüfen, ob Long-Setup durch WegFrei blockiert wurde
-                if (!wegFreiLong)
+                bool isLongSetup = detectedPattern.Direction == OrderDirections.Buy;
+                bool isShortSetup = detectedPattern.Direction == OrderDirections.Sell;
+                var setupLabel = isLongSetup ? "Long" : isShortSetup ? "Short" : "Unknown";
+
+                this.LogInfo($"[SETUP-DIR] Pattern={detectedPattern.Type} Dir={detectedPattern.Direction} Setup={setupLabel} Bar={closed}");
+
+                bool blockedByIsBlocked = isLongSetup ? isBlockedLong : isShortSetup ? isBlockedShort : false;
+                bool blockedByWegFrei = isLongSetup ? !wegFreiLong : isShortSetup ? !wegFreiShort : false;
+
+                if (blockedByIsBlocked || blockedByWegFrei)
                 {
-                    wasBlockedByWegFrei = true;
-                }
-                
-                // Prüfen, ob Short-Setup durch IsBlocked blockiert wurde
-                if (isBlockedShort)
-                {
-                    wasBlockedByIsBlocked = true;
-                }
-                
-                // Prüfen, ob Short-Setup durch WegFrei blockiert wurde
-                if (!wegFreiShort)
-                {
-                    wasBlockedByWegFrei = true;
-                }
-                
-                // Log-Zeile erstellen, wenn durch Abstand zu wenig blockiert wurde
-                if (wasBlockedByIsBlocked || wasBlockedByWegFrei)
-                {
-                    this.LogInfo($"[SETUP-BLOCKED] Entry blockiert durch Abstand zu wenig: IsBlocked={wasBlockedByIsBlocked}, WegFrei={!wasBlockedByWegFrei}, ProximityTicksForEntry={ProximityTicksForEntry}, DMinTicks={DMinTicks}");
+                    var blockerInfo = string.Empty;
+                    if (blockedByWegFrei)
+                    {
+                        var wegFreiBlocker = isLongSetup ? wegFreiLongBlocker : isShortSetup ? wegFreiShortBlocker : string.Empty;
+                        if (!string.IsNullOrWhiteSpace(wegFreiBlocker) &&
+                            (wegFreiBlocker.StartsWith("MC.POC", StringComparison.OrdinalIgnoreCase) ||
+                             wegFreiBlocker.StartsWith("MC.VAH", StringComparison.OrdinalIgnoreCase) ||
+                             wegFreiBlocker.StartsWith("MC.VAL", StringComparison.OrdinalIgnoreCase) ||
+                             wegFreiBlocker.StartsWith("MC.HVN", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            blockerInfo += $", WegFreiBlocker={wegFreiBlocker}";
+                        }
+                        else if (!string.IsNullOrWhiteSpace(wegFreiBlocker) &&
+                                 wegFreiBlocker.StartsWith("LVN_PATH", StringComparison.OrdinalIgnoreCase))
+                        {
+                            blockerInfo += $", WegFreiReason={wegFreiBlocker}";
+                        }
+                    }
+                    if (blockedByIsBlocked)
+                    {
+                        if (isLongSetup && levelsSnapshot?.LastBlockResistance.HasValue == true)
+                        {
+                            blockerInfo += $", IsBlockedLevel={levelsSnapshot.LastBlockResistance.Value:F2} (Resistance)";
+                            blockerInfo += ", IsLongBlocker=True";
+                        }
+                        if (isShortSetup && levelsSnapshot?.LastBlockSupport.HasValue == true)
+                        {
+                            blockerInfo += $", IsBlockedLevel={levelsSnapshot.LastBlockSupport.Value:F2} (Support)";
+                            blockerInfo += ", IsShortBlocker=True";
+                        }
+                    }
+                    this.LogInfo(
+                        $"[SETUP-BLOCKED] Blocker aktiv (blockiert, wenn min einer TRUE): Setup={setupLabel}, " +
+                        $"IsBlocked={blockedByIsBlocked}, WegFrei={!blockedByWegFrei}, " +
+                        $"BlockedByIsBlocked={blockedByIsBlocked}, BlockedByWegFrei={blockedByWegFrei}, " +
+                        $"ProximityTicksForEntry={ProximityTicksForEntry}, DMinTicks={DMinTicks}{blockerInfo}"
+                    );
                 }
             }
 
@@ -8849,7 +8926,7 @@ namespace MyNamespace.Strategies
                         longEntryPrice = c.Close + 1 * tickSize;
                         
                         // Berechne dynamischen TP basierend auf n?chstem signifikanten Level
-                        var dynamicTpLevel = FindNextSignificantLevel(longEntryPrice, OrderDirections.Buy, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit);
+                        var dynamicTpLevel = FindNextSignificantLevel(longEntryPrice, OrderDirections.Buy, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit, logCandidates: true);
                         var dynamicTpTicks = (dynamicTpLevel - longEntryPrice) / tickSize;
                         
                         // Setup-Parameter f?r Reversal Long mit dynamischem TP und festem SL
@@ -8950,7 +9027,7 @@ namespace MyNamespace.Strategies
                         shortEntryPrice = c.Close - 1 * tickSize;
                        
                         // Berechne dynamischen TP basierend auf n?chstem signifikanten Level
-                        var dynamicTpLevelShort = FindNextSignificantLevel(shortEntryPrice, OrderDirections.Sell, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit);
+                        var dynamicTpLevelShort = FindNextSignificantLevel(shortEntryPrice, OrderDirections.Sell, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit, logCandidates: true);
                         var dynamicTpTicksShort = (shortEntryPrice - dynamicTpLevelShort) / tickSize;
                         
                         // Setup-Parameter f?r Reversal Short mit dynamischem TP und festem SL
@@ -9305,9 +9382,11 @@ namespace MyNamespace.Strategies
             MicroComposite mcCurr,
             MicroComposite mcPrev,
             decimal tickSize,
-            PathConfig cfg
+            PathConfig cfg,
+            out string blocker
         )
         {
+            blocker = string.Empty;
             if (mcCurr == null || tickSize <= 0m || dMinTicks <= 0)
             {
                 //this.LogInfo($"PathLong: bypass mcCurr={mcCurr == null} tickSize={tickSize} dMinTicks={dMinTicks} ? true");
@@ -9331,6 +9410,7 @@ namespace MyNamespace.Strategies
             if (lvnCount < cfg.RequiredLVNsInPath)
             {
                 //this.LogInfo($"PathLong: lvnCount {lvnCount} < erforderlich {cfg.RequiredLVNsInPath} ? false");
+                blocker = $"LVN_PATH<{cfg.RequiredLVNsInPath}";
                 return false;
             }
 
@@ -9338,6 +9418,7 @@ namespace MyNamespace.Strategies
             if (IsInRangeOben(mcCurr.POC, currentPrice, upperThreshold))
             {
                 //this.LogInfo($"PathLong: POC {mcCurr.POC:F2} blocks in range ? false");
+                blocker = $"MC.POC@{mcCurr.POC:F2}";
                 return false;
             }
 
@@ -9387,8 +9468,16 @@ namespace MyNamespace.Strategies
             if (vahBlocks)
             {
                 //this.LogInfo($"PathLong: VAH {mcCurr.VAH:F2} in range; insideValue={insideValue} relax={cfg.RelaxVAEdgesWhenOutsideValue}");
-                if (insideValue) return false;
-                if (!cfg.RelaxVAEdgesWhenOutsideValue) return false;
+                if (insideValue)
+                {
+                    blocker = $"MC.VAH@{mcCurr.VAH:F2}";
+                    return false;
+                }
+                if (!cfg.RelaxVAEdgesWhenOutsideValue)
+                {
+                    blocker = $"MC.VAH@{mcCurr.VAH:F2}";
+                    return false;
+                }
             }
 
             if (closestStrongBlocker.HasValue)
@@ -9396,7 +9485,11 @@ namespace MyNamespace.Strategies
                 int distTicks = TicksBetweenAbs(closestStrongBlocker.Value, currentPrice);
                 int minAllowed = Math.Max(dMinTicks, riskTicks * cfg.MinBlockerDistanceTicksVsRisk);
                 //this.LogInfo($"PathLong: closestStrongBlocker={closestStrongBlocker.Value:F2} distTicks={distTicks} dMinTicks={dMinTicks} riskTicks={riskTicks} minAllowed={minAllowed}");
-                if (distTicks < minAllowed) return false;
+                if (distTicks < minAllowed)
+                {
+                    blocker = $"MC.HVN@{closestStrongBlocker.Value:F2}";
+                    return false;
+                }
             }
 
             //this.LogInfo("PathLong: ? true");
@@ -9413,9 +9506,11 @@ namespace MyNamespace.Strategies
             MicroComposite mcCurr,
             MicroComposite mcPrev,
             decimal tickSize,
-            PathConfig cfg
+            PathConfig cfg,
+            out string blocker
         )
         {
+            blocker = string.Empty;
             if (mcCurr == null || tickSize <= 0m || dMinTicks <= 0)
             {
                 //this.LogInfo($"PathShort: bypass mcCurr={mcCurr == null} tickSize={tickSize} dMinTicks={dMinTicks} ? true");
@@ -9439,12 +9534,14 @@ namespace MyNamespace.Strategies
             if (lvnCount < cfg.RequiredLVNsInPath)
             {
                 //this.LogInfo($"PathShort: lvnCount {lvnCount} < erforderlich {cfg.RequiredLVNsInPath} ? false");
+                blocker = $"LVN_PATH<{cfg.RequiredLVNsInPath}";
                 return false;
             }
 
             if (IsInRangeUnten(mcCurr.POC, currentPrice, lowerThreshold))
             {
                 //this.LogInfo($"PathShort: POC {mcCurr.POC:F2} blocks in range ? false");
+                blocker = $"MC.POC@{mcCurr.POC:F2}";
                 return false;
             }
 
@@ -9496,8 +9593,16 @@ namespace MyNamespace.Strategies
             if (valBlocks)
             {
                 //this.LogInfo($"PathShort: VAL {mcCurr.VAL:F2} in range; insideValue={insideValue} relax={cfg.RelaxVAEdgesWhenOutsideValue}");
-                if (insideValue) return false;
-                if (!cfg.RelaxVAEdgesWhenOutsideValue) return false;
+                if (insideValue)
+                {
+                    blocker = $"MC.VAL@{mcCurr.VAL:F2}";
+                    return false;
+                }
+                if (!cfg.RelaxVAEdgesWhenOutsideValue)
+                {
+                    blocker = $"MC.VAL@{mcCurr.VAL:F2}";
+                    return false;
+                }
             }
 
             if (closestStrongBlocker.HasValue)
@@ -9506,7 +9611,10 @@ namespace MyNamespace.Strategies
                 int minAllowed = Math.Max(dMinTicks, riskTicks * cfg.MinBlockerDistanceTicksVsRisk);
                 //this.LogInfo($"PathShort: closestStrongBlocker={closestStrongBlocker.Value:F2} distTicks={distTicks} dMinTicks={dMinTicks} riskTicks={riskTicks} minAllowed={minAllowed}");
                 if (distTicks < minAllowed)
+                {
+                    blocker = $"MC.HVN@{closestStrongBlocker.Value:F2}";
                     return false;
+                }
             }
             //this.LogInfo("PathShort: ? true");
             return true;
@@ -10191,8 +10299,8 @@ namespace MyNamespace.Strategies
             {
                 var tickSize = InstrumentInfo?.TickSize ?? _tickSize;
                 int riskTicks = GetRiskTicks();
-                wegFreiLong = IsPathFreeLongEnhanced(_entryFillPrice, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig());
-                wegFreiShort = IsPathFreeShortEnhanced(_entryFillPrice, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig());
+                wegFreiLong = IsPathFreeLongEnhanced(_entryFillPrice, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig(), out _);
+                wegFreiShort = IsPathFreeShortEnhanced(_entryFillPrice, DMinTicks, riskTicks, _currentMC, null, tickSize, GetPathConfig(), out _);
             }
 
             var tpSlContext = new TpSlContext
@@ -11452,8 +11560,8 @@ namespace MyNamespace.Strategies
             {
                 int riskTicksResearch = GetRiskTicks();
                 bool frei = (dir == MyNamespace.Strategies.TradeManagement.ResearchDirection.Long)
-                    ? IsPathFreeLongEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig())
-                    : IsPathFreeShortEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig());
+                    ? IsPathFreeLongEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig(), out _)
+                    : IsPathFreeShortEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig(), out _);
 
                 isWegFrei = frei ? 1 : 0;
             }
