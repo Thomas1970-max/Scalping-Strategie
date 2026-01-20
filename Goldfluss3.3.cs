@@ -4821,6 +4821,18 @@ namespace MyNamespace.Strategies
             res.AvgSellImbVol = sellImbVolumes.Count > 0 ? sellImbVolumes.Average() : 0m;
             res.BaseVolMedian = ComputeMedian(baseVolumes);
 
+            if (res.BuyPairsCount > 0 && res.AvgBuyImbVol < p.ImbalanceVolumeMin)
+            {
+                res.BuyPairsCount = 0;
+                res.AvgBuyImbVol = 0m;
+            }
+
+            if (res.SellPairsCount > 0 && res.AvgSellImbVol < p.ImbalanceVolumeMin)
+            {
+                res.SellPairsCount = 0;
+                res.AvgSellImbVol = 0m;
+            }
+
             res.ImbalanceScore = ComputeImbalanceScore(res, p, out var scoreLabel);
             res.ImbalanceScoreLabel = scoreLabel;
 
