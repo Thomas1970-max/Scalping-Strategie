@@ -5702,6 +5702,44 @@ namespace MyNamespace.Strategies
                 this.LogWarn($"[OnCalculate-Imbalance] Serien null: buy={_stackedBuyImbCount == null}, sell={_stackedSellImbCount == null}, top={_stackedBuyImbTopCount == null}, bottom={_stackedSellImbBottomCount == null}");
             }
 
+            // Structured Imbalance-Score Log
+            const decimal wCoverage = 0.5m;
+            const decimal wAnchored = 0.3m;
+            const decimal wVolume = 0.2m;
+            decimal totalPairs = Math.Max(1, r.TotalPairs);
+            decimal coverageBuy = ClampLocal(r.BuyCountMax / totalPairs, 0m, 1m);
+            decimal coverageSell = ClampLocal(r.SellCountMax / totalPairs, 0m, 1m);
+            decimal anchoredBuy = _imbMaxDepthTicksAnchored > 0
+                ? ClampLocal((decimal)r.BuyCountTopAnchored / _imbMaxDepthTicksAnchored, 0m, 1m)
+                : 0m;
+            decimal anchoredSell = _imbMaxDepthTicksAnchored > 0
+                ? ClampLocal((decimal)r.SellCountBottomAnchored / _imbMaxDepthTicksAnchored, 0m, 1m)
+                : 0m;
+            decimal volBuyNorm = r.BaseVolMedian > 0m ? r.AvgBuyImbVol / (r.BaseVolMedian + 1e-6m) : 0m;
+            decimal volSellNorm = r.BaseVolMedian > 0m ? r.AvgSellImbVol / (r.BaseVolMedian + 1e-6m) : 0m;
+            decimal volBuyScore01 = (ClampLocal(volBuyNorm - 1m, -1m, 1m) + 1m) / 2m;
+            decimal volSellScore01 = (ClampLocal(volSellNorm - 1m, -1m, 1m) + 1m) / 2m;
+            decimal weightedBuy = (wCoverage * coverageBuy) + (wAnchored * anchoredBuy) + (wVolume * volBuyScore01);
+            decimal weightedSell = (wCoverage * coverageSell) + (wAnchored * anchoredSell) + (wVolume * volSellScore01);
+
+            string fmtDec6Local(decimal v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+
+            this.LogInfo(
+                $"[ImbalanceScore] {{" +
+                $"\"BarIndex\":{b},\"TotalPairs\":{r.TotalPairs}," +
+                $"\"BuyMax\":{r.BuyCountMax},\"SellMax\":{r.SellCountMax}," +
+                $"\"BuyAnch\":{r.BuyCountTopAnchored},\"SellAnch\":{r.SellCountBottomAnchored}," +
+                $"\"BuyPairs\":{r.BuyPairsCount},\"SellPairs\":{r.SellPairsCount}," +
+                $"\"AvgBuyVol\":{fmtDec6Local(r.AvgBuyImbVol)},\"AvgSellVol\":{fmtDec6Local(r.AvgSellImbVol)}," +
+                $"\"BaseVol\":{fmtDec6Local(r.BaseVolMedian)}," +
+                $"\"coverageBuy\":{fmtDec6Local(coverageBuy)},\"coverageSell\":{fmtDec6Local(coverageSell)}," +
+                $"\"anchoredBuy\":{fmtDec6Local(anchoredBuy)},\"anchoredSell\":{fmtDec6Local(anchoredSell)}," +
+                $"\"volBuyNorm\":{fmtDec6Local(volBuyNorm)},\"volSellNorm\":{fmtDec6Local(volSellNorm)}," +
+                $"\"volBuyScore01\":{fmtDec6Local(volBuyScore01)},\"volSellScore01\":{fmtDec6Local(volSellScore01)}," +
+                $"\"weightedBuy\":{fmtDec6Local(weightedBuy)},\"weightedSell\":{fmtDec6Local(weightedSell)}," +
+                $"\"score\":{fmtDec6Local(r.ImbalanceScore)},\"label\":\"{r.ImbalanceScoreLabel}\"" +
+                $"}}");
+
 
 
             _currentCandleData = c;
