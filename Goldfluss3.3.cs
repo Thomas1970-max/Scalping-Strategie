@@ -4909,21 +4909,21 @@ namespace MyNamespace.Strategies
                 return 0m;
             }
 
-            decimal coverageBuy = Clamp01((decimal)result.BuyCountMax / result.TotalPairs);
-            decimal coverageSell = Clamp01((decimal)result.SellCountMax / result.TotalPairs);
+            decimal coverageBuy = Clamp01Local((decimal)result.BuyCountMax / result.TotalPairs);
+            decimal coverageSell = Clamp01Local((decimal)result.SellCountMax / result.TotalPairs);
 
             decimal anchoredBuy = p.MaxDepthTicksAnchored > 0
-                ? Clamp01((decimal)result.BuyCountTopAnchored / p.MaxDepthTicksAnchored)
+                ? Clamp01Local((decimal)result.BuyCountTopAnchored / p.MaxDepthTicksAnchored)
                 : 0m;
             decimal anchoredSell = p.MaxDepthTicksAnchored > 0
-                ? Clamp01((decimal)result.SellCountBottomAnchored / p.MaxDepthTicksAnchored)
+                ? Clamp01Local((decimal)result.SellCountBottomAnchored / p.MaxDepthTicksAnchored)
                 : 0m;
 
             decimal volBuyNorm = result.BaseVolMedian > 0m ? result.AvgBuyImbVol / (result.BaseVolMedian + eps) : 0m;
             decimal volSellNorm = result.BaseVolMedian > 0m ? result.AvgSellImbVol / (result.BaseVolMedian + eps) : 0m;
 
-            decimal volBuyScore = Clamp(volBuyNorm - 1m, -1m, 1m);
-            decimal volSellScore = Clamp(volSellNorm - 1m, -1m, 1m);
+            decimal volBuyScore = ClampLocal(volBuyNorm - 1m, -1m, 1m);
+            decimal volSellScore = ClampLocal(volSellNorm - 1m, -1m, 1m);
             decimal volBuyScore01 = (volBuyScore + 1m) / 2m;
             decimal volSellScore01 = (volSellScore + 1m) / 2m;
 
@@ -4931,7 +4931,7 @@ namespace MyNamespace.Strategies
             decimal weightedSell = (wCoverage * coverageSell) + (wAnchored * anchoredSell) + (wVolume * volSellScore01);
             decimal raw = weightedBuy - weightedSell;
             decimal score = raw / (wCoverage + wAnchored + wVolume);
-            score = Clamp(score, -1m, 1m);
+            score = ClampLocal(score, -1m, 1m);
 
             if (score >= 0.5m) label = "strong_buy";
             else if (score >= 0.2m) label = "buy";
@@ -4942,9 +4942,9 @@ namespace MyNamespace.Strategies
             return score;
         }
 
-        private static decimal Clamp01(decimal value) => Clamp(value, 0m, 1m);
+        private static decimal Clamp01Local(decimal value) => ClampLocal(value, 0m, 1m);
 
-        private static decimal Clamp(decimal value, decimal min, decimal max)
+        private static decimal ClampLocal(decimal value, decimal min, decimal max)
             => value < min ? min : (value > max ? max : value);
         // =========================================================================
         // Stacked-Imbalance | Ende
