@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using MyNamespace.Strategies.Models;
-// using ATAS.DataFeedsCore; // Vermutlich nicht direkt hier benötigt, aber falls ja, beibehalten
+// using ATAS.DataFeedsCore; // Vermutlich nicht direkt hier benï¿½tigt, aber falls ja, beibehalten
 // using MyNamespace.Strategies.Models; // Behalten, falls du Modelle hier verwendest
 // using static MyNamespace.Strategies.Goldfluss3_3; // Behalten, falls du statische Member der Strategie hier verwendest
 
@@ -11,21 +11,21 @@ using MyNamespace.Strategies.Models;
 namespace MyNamespace.Strategies.Orderflow
 {
 
-    // Definiert wie Ihre Gesamtstrategie derzeit agiert(z.B.risikoreicher, schneller), unabhängig vom spezifischen Orderflow-Muster.    
+    // Definiert wie Ihre Gesamtstrategie derzeit agiert(z.B.risikoreicher, schneller), unabhï¿½ngig vom spezifischen Orderflow-Muster.    
     public class ModeSpec
     {
-        // Beispiel: Placeholder für Modus-spezifische Parameter Ihrer GESAMTEN STRATEGIE.
-        // NICHT für Orderflow-Muster-Gating-Metriken.
+        // Beispiel: Placeholder fï¿½r Modus-spezifische Parameter Ihrer GESAMTEN STRATEGIE.
+        // NICHT fï¿½r Orderflow-Muster-Gating-Metriken.
         public bool IsFastModeActive { get; set; } = false;
         public decimal GlobalRiskMultiplier { get; set; } = 1.0m;
-        public int GlobalMinSignalsRequired { get; set; } = 2; // Dies könnte die alte MinSignalsRequired ersetzen, aber als globaler Wert
+        public int GlobalMinSignalsRequired { get; set; } = 2; // Dies kï¿½nnte die alte MinSignalsRequired ersetzen, aber als globaler Wert
 
-        // Fügen Sie hier weitere Parameter hinzu, die den aktuellen Betriebsmodus der Strategie beschreiben
-        // (z.B. Lookback-Perioden, Schwellenwerte, etc., die sich mit dem "Modus" Ihrer Strategie ändern)
+        // Fï¿½gen Sie hier weitere Parameter hinzu, die den aktuellen Betriebsmodus der Strategie beschreiben
+        // (z.B. Lookback-Perioden, Schwellenwerte, etc., die sich mit dem "Modus" Ihrer Strategie ï¿½ndern)
     }
 
-    // --- ModeSpecsEntry (Vorlagen für harte/relevante Metriken nach Kategorie) ---
-    // Die Eigenschaft 'Mode' wurde entfernt, da die Kategorie bereits durch den Schlüssel im Map-Dictionary gegeben ist.
+    // --- ModeSpecsEntry (Vorlagen fï¿½r harte/relevante Metriken nach Kategorie) ---
+    // Die Eigenschaft 'Mode' wurde entfernt, da die Kategorie bereits durch den Schlï¿½ssel im Map-Dictionary gegeben ist.
     public class ModeSpecsEntry
     {
         public GateMetric HardRequired { get; set; }
@@ -48,7 +48,7 @@ namespace MyNamespace.Strategies.Orderflow
             new Dictionary<PatternCategory, ModeSpecsEntry>
         {
             // BREAKOUT:
-            // - HardRequired: VolBurstZ + TradeRateZ (ohne Volumenimpuls / erhöhte Trade-Rate kein echter Breakout)
+            // - HardRequired: VolBurstZ + TradeRateZ (ohne Volumenimpuls / erhï¿½hte Trade-Rate kein echter Breakout)
             // - Relevant: Volumenimpulse, TradeRate, Delta-Proxy, Imbalance
             {
                 PatternCategory.Breakout,
@@ -104,11 +104,12 @@ namespace MyNamespace.Strategies.Orderflow
                         | GateMetric.CvdCoherence
                         | GateMetric.InterTradeTimeZ
                         | GateMetric.StackedImbalanceAnyDirectional
+                        | GateMetric.Efficiency
                 }
             },
 
             // CONTINUATION (Trendfortsetzung):
-            // - HardRequired: VolBurstZ + TradeRateZ (Trend braucht Impuls + anhaltende Aktivität)
+            // - HardRequired: VolBurstZ + TradeRateZ (Trend braucht Impuls + anhaltende Aktivitï¿½t)
             // - Relevant: wie Breakout, aber ohne Imbalance-Pflicht, eher Flow-/Tempo-orientiert
             {
                 PatternCategory.Continuation,

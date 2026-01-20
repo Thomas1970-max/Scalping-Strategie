@@ -900,6 +900,11 @@ namespace MyNamespace.Strategies
         [Description("??berschreibt existierende CSV-Dateien statt anzuh?ngen (n?tzlich f?r Backtests)")]
         public bool OverwriteExistingCsv { get; set; } = false;
 
+        [OFTParameter]
+        [Category("CSV Export")]
+        [DisplayName("ImbalanceScore CSV Export")]
+        [Description("Schreibt eine separate CSV nur mit Imbalance-Score Werten")]
+        public bool EnableImbalanceScoreCsvExport { get; set; } = true;
 
         // ... F?GE HIER WEITERE GLOBALE [OFTParameter]-PROPERTIES F?R ALLE COMMON CONDITIONS HINZU,
         // DIE DU ?BER DAS ATAS-UI STEUERN M?CHTEST (z.B. VolBurst, CvdImpulseRisingSequence etc.)
@@ -924,6 +929,9 @@ namespace MyNamespace.Strategies
         private string _currentCsvDate;
         private string _storedBacktestDate; // Gespeichertes Backtest-Datum wie im ResearchCollector
 
+        private BackgroundCsvWriter _imbScoreCsvWriter;
+        private string _imbScoreCsvPath;
+
         private const string CsvHeader =
         "BarIndex,Time_ISO,Instrument,Open,High,Low,Close,Volume,Delta,Ask,Bid,MaxCounterShareBull,MaxCounterShareBear,VolBurstZ,CvdImpulse,CvdCoherence,AggPressure,TradeRateZ," +
         "Efficiency,BuyTrades,SellTrades,TotalTrades,IttZ,SweepUp,SweepDn,StackedBuyImbCount,StackedSellImbCount,StackedBuyImbTopCount,StackedSellImbBottomCount,StackedImbRatioPct,StackedImbMinVolPerLevel," +
@@ -933,6 +941,9 @@ namespace MyNamespace.Strategies
         // neu: Pattern- und OfFeatures-Felder (Text/Num)
         "PatternType,PatternDirection,PatternCategory,PatternLevel,PatternConfidence,PatternScore,PatternCombinedConf,VolBurstClass,VolBurstCooldownLeft,SlopeCvd,SlopePressure,SlopeEff,SlopeTradeRate,PersistBull,PersistBear,InflectionCvd,InflectionPressure," +
         "BacktestRunId,CommitHash,FeatureFlags";
+
+        private const string ImbalanceScoreCsvHeader =
+        "BarIndex,Time_ISO,ImbalanceScore,Label,TotalPairs,BuyMax,SellMax,BuyPairs,SellPairs,AvgBuyVol,AvgSellVol,BaseVol,coverageBuy,coverageSell,anchoredBuy,anchoredSell,volBuyNorm,volSellNorm,weightedBuy,weightedSell";
 
 
 
@@ -4968,7 +4979,10 @@ namespace MyNamespace.Strategies
         private void CheckAndRecreateCsvWriterIfNeeded()
         {
             if (!EnableCsvExport || !UseDailyCsvFiles)
-                return;
+            {
+                if (!EnableImbalanceScoreCsvExport || !UseDailyCsvFiles)
+                    return;
+            }
                 
             // Wenn noch kein Writer existiert, erstmalig erstellen
             if (_csvWriter == null)
@@ -4984,7 +4998,19 @@ namespace MyNamespace.Strategies
                     // Noch keine gültigen Bars, warten
                     return;
                 }
-                return;
+            }
+
+            if (EnableImbalanceScoreCsvExport && _imbScoreCsvWriter == null)
+            {
+                if (CurrentBar >= 0)
+                {
+                    this.LogInfo("[CheckAndRecreateCsvWriterIfNeeded] ImbalanceScore CSV Writer will be created on first valid bar");
+                    InitializeDailyImbalanceScoreCsvWriter();
+                }
+                else
+                {
+                    return;
+                }
             }
                 
             // WICHTIG: Nicht mehr GetCurrentBarDate() aufrufen!
@@ -5033,6 +5059,43 @@ namespace MyNamespace.Strategies
             catch (Exception ex)
             {
                 this.LogError($"[InitializeDailyCsvWriter] Failed to initialize CSV writer: {ex.Message}");
+            }
+        }
+
+        private void InitializeDailyImbalanceScoreCsvWriter()
+        {
+            try
+            {
+                string backtestDate = GetBacktestDateFromFirstBar();
+                string instrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
+                foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
+                    instrumentName = instrumentName.Replace(ch, '_');
+
+                string timeframeLabel = _researchTimeframeLabel ?? "TF";
+                string outDir = @"C:\Users\User\Documents\Strategieauswertung";
+                System.IO.Directory.CreateDirectory(outDir);
+
+                _imbScoreCsvPath = System.IO.Path.Combine(outDir, $"{instrumentName}_{timeframeLabel}_imbalance_score_{backtestDate}.csv");
+
+                if (OverwriteExistingCsv && System.IO.File.Exists(_imbScoreCsvPath))
+                {
+                    try
+                    {
+                        System.IO.File.Delete(_imbScoreCsvPath);
+                        this.LogInfo($"[InitializeDailyImbalanceScoreCsvWriter] Existing CSV file deleted: {_imbScoreCsvPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        this.LogWarn($"[InitializeDailyImbalanceScoreCsvWriter] Could not delete existing CSV file {_imbScoreCsvPath}: {ex.Message}");
+                    }
+                }
+
+                _imbScoreCsvWriter = new BackgroundCsvWriter(_imbScoreCsvPath, ImbalanceScoreCsvHeader);
+                this.LogInfo($"[InitializeDailyImbalanceScoreCsvWriter] CSV Writer created -> path={_imbScoreCsvPath}");
+            }
+            catch (Exception ex)
+            {
+                this.LogError($"[InitializeDailyImbalanceScoreCsvWriter] Failed to initialize CSV writer: {ex.Message}");
             }
         }
 
@@ -5751,6 +5814,47 @@ namespace MyNamespace.Strategies
             {
                 this.LogInfo(imbalanceLog.Replace("{", "{{").Replace("}", "}}"));
                 _lastImbalanceLogBar = imbBar;
+            }
+
+            if (EnableImbalanceScoreCsvExport && _imbScoreCsvWriter != null && imbBar >= 0)
+            {
+                try
+                {
+                    var imbCandle = GetCandle(imbBar);
+                    string timeIso = imbCandle != null
+                        ? imbCandle.Time.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                        : string.Empty;
+                    string fmtDec3Local(decimal v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+                    string line = string.Join(",",
+                        imbBar.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        timeIso,
+                        fmtDec6Local(r.ImbalanceScore),
+                        r.ImbalanceScoreLabel ?? string.Empty,
+                        r.TotalPairs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        r.BuyCountMax.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        r.SellCountMax.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        r.BuyPairsCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        r.SellPairsCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        fmtDec6Local(r.AvgBuyImbVol),
+                        fmtDec6Local(r.AvgSellImbVol),
+                        fmtDec6Local(r.BaseVolMedian),
+                        fmtDec3Local(coverageBuy),
+                        fmtDec3Local(coverageSell),
+                        fmtDec3Local(anchoredBuy),
+                        fmtDec3Local(anchoredSell),
+                        fmtDec3Local(volBuyNorm),
+                        fmtDec3Local(volSellNorm),
+                        fmtDec3Local(weightedBuy),
+                        fmtDec3Local(weightedSell)
+                    );
+
+                    _imbScoreCsvWriter.EnqueueLine(line);
+                }
+                catch (Exception ex)
+                {
+                    this.LogWarn($"[ImbalanceScore CSV] Failed to enqueue line for bar={imbBar}: {ex.Message}");
+                }
             }
 
 

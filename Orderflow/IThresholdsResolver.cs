@@ -20,6 +20,20 @@ namespace MyNamespace.Strategies.Orderflow
             int? barIndex = null
         );
 
+        ReversalContextThresholdsResult CalculateReversalContextThresholds(
+            OrderflowPatternType? assumedOrderflowPatternType,
+            PatternCategory? patternCategory,
+            MarketRegime regime,
+            OfFeaturesHistory? history,
+            IReadOnlyDictionary<int, OfFeatures>? featuresByBar,
+            ModeSpecsEntry categorySpecs,
+            SetupConditionConfig patternConditionConfig,
+            SetupConfiguration globalStratConfig,
+            int lookbackBars,
+            OrderflowThresholds? initialThresholds = null,
+            int? barIndex = null
+        );
+
         OrderflowThresholds? Clone(OrderflowThresholds original);
 
         // Neu: zuletzt berechnetes Ergebnis (kann null sein)

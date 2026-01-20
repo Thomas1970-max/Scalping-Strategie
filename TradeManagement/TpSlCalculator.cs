@@ -141,6 +141,7 @@ namespace MyNamespace.Strategies.TradeManagement
             {
                 decimal tpTicks = setup.TpTicks ?? DefaultTpTicks;
                 tpPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
+                debugMessages.Add("TP_SOURCE: Ticks");
                 debugMessages.Add($"TP_TICKS angewandt: {tpTicks} -> {tpPrice:F5}");
             }
             else if (tpType.Equals("Vorgeschlagen", StringComparison.OrdinalIgnoreCase))
@@ -460,13 +461,100 @@ namespace MyNamespace.Strategies.TradeManagement
             return stages;
         }
 
+        private decimal ResolveTpPriceFromSetup(decimal entryPrice, TpSlContext ctx, List<string> debugMessages)
+        {
+            var setup = ctx.SetupParams;
+            var tick = ctx.Tick;
+            var tpType = setup.TpType ?? DefaultTpType;
+            debugMessages.Add($"TP_TYPE: {tpType}");
+
+            if (tpType.Equals("Level", StringComparison.OrdinalIgnoreCase))
+            {
+                var tpLevelKey = setup.TpLevelKey;
+                if (!string.IsNullOrWhiteSpace(tpLevelKey))
+                {
+                    if (TryFindClosestVwapLevelInDirection(ctx, tpLevelKey, entryPrice, ctx.Direction, out var closestLevelPrice, out var actualLevelKey))
+                    {
+                        decimal offsetTicks = setup.TpLevelOffsetTicks ?? 0m;
+                        if (offsetTicks != 0)
+                        {
+                            closestLevelPrice += ctx.Direction == OrderDirections.Buy ? offsetTicks * tick : -offsetTicks * tick;
+                            debugMessages.Add($"TP_LEVEL_OFFSET_TICKS applied: {offsetTicks} ticks.");
+                        }
+                        debugMessages.Add($"TP_SOURCE: Level({tpLevelKey}->{actualLevelKey})");
+                        debugMessages.Add($"TP_LEVEL '{tpLevelKey}' resolved to '{actualLevelKey}' and applied: {closestLevelPrice:F5}");
+                        return closestLevelPrice;
+                    }
+
+                    decimal fallbackTicks = setup.TpTicks ?? DefaultTpTicks;
+                    var fallback = TpSlHelpers.PriceFromTicks(ctx, entryPrice, fallbackTicks, ctx.Direction);
+                    debugMessages.Add($"TP_SOURCE: LevelFallback(Ticks)");
+                    debugMessages.Add($"WARNING: TP_LEVEL '{tpLevelKey}' nicht gefunden oder ungültig. Rückfall auf Ticks-basiert TP: {fallbackTicks} -> {fallback:F5}");
+                    ctx.Logger?.Invoke($"[TpSlCalc] WARNING: TP_LEVEL '{tpLevelKey}' nicht gefunden oder ungültig. Rückfall auf Ticks-basiert TP: {fallbackTicks} -> {fallback:F5}");
+                    return fallback;
+                }
+
+                decimal defaultTicks = setup.TpTicks ?? DefaultTpTicks;
+                var defaultTp = TpSlHelpers.PriceFromTicks(ctx, entryPrice, defaultTicks, ctx.Direction);
+                debugMessages.Add($"TP_SOURCE: LevelFallback(Ticks)");
+                debugMessages.Add($"WARNING: TP_LEVEL_KEY nicht angegeben für TpType='Level'. Zurückfall auf Ticks-basiert TP: {defaultTicks} -> {defaultTp:F5}");
+                ctx.Logger?.Invoke($"[TpSlCalc] WARNING: TP_LEVEL_KEY nicht angegeben für TpType='Level'. Zurückfall auf Ticks-basiert TP: {defaultTicks} -> {defaultTp:F5}");
+                return defaultTp;
+            }
+
+            if (tpType.Equals("Ticks", StringComparison.OrdinalIgnoreCase))
+            {
+                decimal tpTicks = setup.TpTicks ?? DefaultTpTicks;
+                var tpPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
+                debugMessages.Add($"TP_TICKS angewandt: {tpTicks} -> {tpPrice:F5}");
+                return tpPrice;
+            }
+
+            if (tpType.Equals("Vorgeschlagen", StringComparison.OrdinalIgnoreCase))
+            {
+                if (setup.SuggestedTargetPrice > 0m)
+                {
+                    var suggestedTp = setup.SuggestedTargetPrice;
+                    var tpDistance = Math.Abs(suggestedTp - entryPrice) / ctx.Tick;
+                    var maxDist = setup.MaxDynamicTpDistanceTicks ?? 20m;
+
+                    if (tpDistance > maxDist)
+                    {
+                        var fallback = TpSlHelpers.PriceFromTicks(ctx, entryPrice, DefaultTpTicks, ctx.Direction);
+                        debugMessages.Add("TP_SOURCE: VorgeschlagenFallback(Ticks)");
+                        debugMessages.Add($"DYNAMIC_TP_LIMITED: {tpDistance:F1} > {maxDist} -> Fallback {DefaultTpTicks} Ticks -> {fallback:F5}");
+                        ctx.Logger?.Invoke($"[TpSlCalc] DYNAMIC_TP_LIMITED: {tpDistance:F1} > {maxDist} -> Fallback {DefaultTpTicks} Ticks -> {fallback:F5}");
+                        return fallback;
+                    }
+
+                    debugMessages.Add("TP_SOURCE: Vorgeschlagen");
+                    debugMessages.Add($"DYNAMIC_TP_APPLIED: {tpDistance:F1} Ticks -> {suggestedTp:F5}");
+                    ctx.Logger?.Invoke($"[TpSlCalc] DYNAMIC_TP_APPLIED: {tpDistance:F1} Ticks -> {suggestedTp:F5}");
+                    return suggestedTp;
+                }
+
+                decimal tpTicks = setup.TpTicks ?? DefaultTpTicks;
+                var fallbackTp = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
+                debugMessages.Add("TP_SOURCE: VorgeschlagenFallback(Ticks)");
+                debugMessages.Add($"WARNING: SuggestedTargetPrice nicht verfügbar. Rückfall auf Ticks-basiert TP: {tpTicks} -> {fallbackTp:F5}");
+                ctx.Logger?.Invoke($"[TpSlCalc] WARNING: SuggestedTargetPrice nicht verfügbar. Rückfall auf Ticks-basiert TP: {tpTicks} -> {fallbackTp:F5}");
+                return fallbackTp;
+            }
+
+            var unknownTicks = setup.TpTicks ?? DefaultTpTicks;
+            var unknownTp = TpSlHelpers.PriceFromTicks(ctx, entryPrice, unknownTicks, ctx.Direction);
+            debugMessages.Add("TP_SOURCE: UnknownTypeFallback(Ticks)");
+            debugMessages.Add($"WARNING: Unbekannt TP_TYPE '{tpType}'. Zurückfall auf Ticks-basiert TP: {unknownTicks} -> {unknownTp:F5}");
+            ctx.Logger?.Invoke($"[TpSlCalc] WARNING: Unbekannt TP_TYPE '{tpType}'. Zurückfall auf Ticks-basiert TP: {unknownTicks} -> {unknownTp:F5}");
+            return unknownTp;
+        }
+
         private TpSlResult CalculateLevelBasedTpSl(decimal entryPrice, TpSlContext ctx, List<string> debugMessages)
         {
             var setup = ctx.SetupParams;
             var tick = ctx.Tick;
             
-            decimal tpPrice = entryPrice + (ctx.Direction == OrderDirections.Buy ? 
-                (setup.TpTicks ?? DefaultTpTicks) * tick : -(setup.TpTicks ?? DefaultTpTicks) * tick);
+            decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
             decimal slPrice = entryPrice + (ctx.Direction == OrderDirections.Buy ? 
                 -(setup.SlTicks ?? DefaultSlTicks) * tick : (setup.SlTicks ?? DefaultSlTicks) * tick);
             
@@ -487,10 +575,9 @@ namespace MyNamespace.Strategies.TradeManagement
             var setup = ctx.SetupParams;
             var tick = ctx.Tick;
             
+            decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
             decimal tpTicks = (setup.TpTicks ?? DefaultTpTicks) * 0.8m;
             decimal slTicks = (setup.SlTicks ?? DefaultSlTicks) * 1.2m;
-            
-            decimal tpPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
             decimal slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks, 
                 ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
             
@@ -511,10 +598,9 @@ namespace MyNamespace.Strategies.TradeManagement
             var setup = ctx.SetupParams;
             var tick = ctx.Tick;
             
+            decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
             decimal tpTicks = setup.TpTicks ?? DefaultTpTicks;
             decimal slTicks = (setup.SlTicks ?? DefaultSlTicks) * 0.9m;
-            
-            decimal tpPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
             decimal slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks, 
                 ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
             

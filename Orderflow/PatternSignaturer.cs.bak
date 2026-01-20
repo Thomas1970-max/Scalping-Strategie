@@ -449,8 +449,6 @@ namespace MyNamespace.Strategies.Orderflow
 
             // KORREKT: konkrete generische Liste deklarieren
             var detectedCandidates = new List<DetectedOrderflowPattern>();
-            var skippedSummaries = new List<string>();
-            var notDetectedSummaries = new List<string>();
 
             foreach (var evaluator in _evaluators)
             {
@@ -459,7 +457,6 @@ namespace MyNamespace.Strategies.Orderflow
                 if (_strategySetup?.PatternConditionConfigs == null || !_strategySetup.PatternConditionConfigs.TryGetValue(evaluator.Type, out var conditionConfig))
                 {
                     _loggerSource.LogDebug($"[PatternSignaturer] No SetupConditionConfig for {evaluator.Type}, skipping evaluator.");
-                    skippedSummaries.Add($"{evaluator.Type}:no-config");
                     continue;
                 }
 
@@ -467,14 +464,12 @@ namespace MyNamespace.Strategies.Orderflow
                 if (patternCategory == PatternCategory.Unknown)
                 {
                     _loggerSource.LogDebug($"[PatternSignaturer] Skipping evaluator due to Unknown category. EvaluatorType={evaluator.Type}, Direction={evaluator.Direction}, evaluatorClass={evaluator.GetType().Name}.");
-                    skippedSummaries.Add($"{evaluator.Type}:unknown-category");
                     continue;
                 }
 
                 if (!PatternCategorySpecs.Map.TryGetValue(patternCategory, out var categorySpecificSpecs))
                 {
                     _loggerSource.LogDebug($"[PatternSignaturer] No ModeSpecsEntry for category {patternCategory}, skipping {evaluator.Type}.");
-                    skippedSummaries.Add($"{evaluator.Type}:no-category-spec");
                     continue;
                 }
 
@@ -505,7 +500,6 @@ namespace MyNamespace.Strategies.Orderflow
                         reversalDirection.HasValue && reversalDirection.Value != evaluator.Direction)
                     {
                         _loggerSource.LogDebug($"[PatternSignaturer] Skip Reversal evaluator due to direction mismatch: evaluator={evaluator.Direction}, reversal={reversalDirection.Value}, barsSince={barsSince}.");
-                        skippedSummaries.Add($"{evaluator.Type}:direction-mismatch");
                         continue;
                     }
                     if (barsSince >= 1 && barsSince <= 3)
@@ -576,7 +570,6 @@ namespace MyNamespace.Strategies.Orderflow
                 if (evaluationResult == null)
                 {
                     _loggerSource.LogDebug($"[PatternSignaturer] Evaluator {evaluator.Type} returned null result. Skipping.");
-                    skippedSummaries.Add($"{evaluator.Type}:null-eval");
                     continue;
                 }
 
@@ -664,11 +657,6 @@ namespace MyNamespace.Strategies.Orderflow
                         signature: SmartLogger.ComputeHashHex(string.Join("|", reasonList)),
                         backendLogAction: s => _loggerSource.LogDebug(s)
                     );
-
-                    var reasonSnippet = reasonList.Any()
-                        ? string.Join("; ", reasonList.Take(3))
-                        : "(no reasons)";
-                    notDetectedSummaries.Add($"{evaluator.Type}:{reasonSnippet}");
                 }
                 else if (confidence >= 0.75m)
                 {
@@ -716,7 +704,6 @@ namespace MyNamespace.Strategies.Orderflow
                     if (metHard.Count < minSignalsReq)
                     {
                         _loggerSource.LogDebug($"[PatternSignaturer] {evaluator.Type} detected but metHard ({metHard.Count}) < MinSignalsRequired ({minSignalsReq}). Skipping as hard-gate not passed.");
-                        skippedSummaries.Add($"{evaluator.Type}:metHard<{minSignalsReq}");
                         continue;
                     }
 
@@ -806,20 +793,6 @@ namespace MyNamespace.Strategies.Orderflow
             // Konfliktauflösung: wenn mehrere Kandidaten vorhanden sind, nutze ConflictResolver (zentralisierte Regeln).
             if (detectedCandidates != null && detectedCandidates.Count > 0)
             {
-                if (detectedCandidates.Count == 1)
-                {
-                    var sole = detectedCandidates[0];
-                    var soleMsg = $"[PatternSignaturer] Single candidate -> return directly: {sole.Type} ({sole.Direction}) conf={sole.ConfidenceScore:F2} score={sole.Score:F2} comb={sole.CombinedConfidence:F2} (bar={bar})";
-                    SmartLogger.Instance.LogIfChanged(
-                        category: "PatternDetection",
-                        sourceId: "PatternSignaturer",
-                        barIndex: bar,
-                        message: soleMsg,
-                        signature: SmartLogger.ComposeSignature(("sole", sole.Type.ToString()), ("dir", sole.Direction.ToString()), ("conf", sole.ConfidenceScore.ToString("F2"))),
-                        backendLogAction: s => _loggerSource.LogInfo(s)
-                    );
-                    return sole;
-                }
                 var resolver = new ConflictResolver
                 {
                     UsePerformanceFactorInScore = false,
@@ -853,13 +826,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
             else
             {
-                var skippedInfo = skippedSummaries.Count > 0
-                    ? $" Skipped=[{string.Join(", ", skippedSummaries)}]"
-                    : string.Empty;
-                var notDetectedInfo = notDetectedSummaries.Count > 0
-                    ? $" NotDetected=[{string.Join(" | ", notDetectedSummaries)}]"
-                    : string.Empty;
-                _loggerSource.LogInfo($"[PatternSignaturer] Keine Pattern-Kandidaten (bar={bar}) -> Pattern=None.{skippedInfo}{notDetectedInfo}");
+                _loggerSource.LogInfo($"[PatternSignaturer] Keine Pattern-Kandidaten (bar={bar}) -> Pattern=None");
             }
 
             var defaultNoPattern = new DetectedOrderflowPattern(

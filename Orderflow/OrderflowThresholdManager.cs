@@ -36,6 +36,7 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly ConcurrentDictionary<string, OrderflowThresholds> _cache = new();
         // neuer Snapshot-Cache (vier Biases)
         private readonly ConcurrentDictionary<string, FullThresholdSnapshot> _fullSnapshotCache = new();
+        private readonly ConcurrentDictionary<string, ReversalContextThresholdsResult> _reversalContextCache = new();
         private readonly Dictionary<string, DateTime> _lastLogTimeByContext = new Dictionary<string, DateTime>();
         private readonly TimeSpan _logCooldown = TimeSpan.FromSeconds(10);
         private bool _disposed;
@@ -76,6 +77,46 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (maxCacheEntries > 0) _maxCacheEntries = maxCacheEntries;
             SmartLogInfo($"OrderflowThresholdManager constructed (lightweight). MaxCacheEntries={_maxCacheEntries}.", extraParts: ("phase", "ctor"));
+        }
+
+        public ReversalContextThresholdsResult GetReversalContextThresholds(
+            OrderflowPatternType? patternType,
+            PatternCategory patternCategory,
+            MarketRegime regime,
+            int lookbackBars,
+            int? barIndex = null)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(OrderflowThresholdManager));
+            EnsureInitialized();
+
+            var historyVersion = _ofFeaturesHistory?.Count ?? 0;
+            string cacheKey = $"REVCTX_{patternType}_{patternCategory}_{regime}_{lookbackBars}_{historyVersion}_{barIndex?.ToString() ?? "NA"}";
+
+            if (_reversalContextCache.TryGetValue(cacheKey, out var cached))
+            {
+                SmartLogDebug($"OrderflowThresholdManager: Rückgabe des zwischengespeicherten ReversalContextThresholds für {cacheKey}", extraParts: ("cacheKey", cacheKey));
+                return cached;
+            }
+
+            var modeSpecs = CreateDefaultModeSpecsEntry();
+            var conditionConfig = _defaultConditionConfig ?? CreateDefaultConditionConfig();
+
+            var result = _thresholdsResolver.CalculateReversalContextThresholds(
+                assumedOrderflowPatternType: patternType,
+                patternCategory: patternCategory,
+                regime: regime,
+                history: _ofFeaturesHistory,
+                featuresByBar: null,
+                categorySpecs: modeSpecs,
+                patternConditionConfig: conditionConfig,
+                globalStratConfig: _globalConfig,
+                lookbackBars: lookbackBars,
+                initialThresholds: null,
+                barIndex: barIndex
+            );
+
+            _reversalContextCache[cacheKey] = result;
+            return result;
         }
 
         /// <summary>

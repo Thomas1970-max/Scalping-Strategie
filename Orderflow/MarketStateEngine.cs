@@ -86,7 +86,7 @@ namespace MyNamespace.Strategies.Orderflow
                 LoggerHelper.LogWarn(_loggerSource, "[MarketStateEngine] ofHistory war beim Erstellen null – unter Verwendung eines leeren OfFeaturesHistory-Fallbacks.");
             }
 
-            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] initialisiert. Initial bias: {_currentBias}");
+            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] initialisiert. Initial bias: {_currentBias}");
 
             // Detector init (defaults tuned)
 
@@ -155,7 +155,7 @@ namespace MyNamespace.Strategies.Orderflow
 
         private void LogCheck(string prefix, string name, decimal value, decimal? threshold, string comparator, bool result)
         {
-            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {prefix}: {name}={value:F6} {comparator} {threshold?.ToString() ?? "null"} => {result}");
+            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {prefix}: {name}={value:F6} {comparator} {threshold?.ToString() ?? "null"} => {result}");
         }
 
         private OrderflowThresholds GetThresholdsForBias(FullThresholdSnapshot snapshot, MarketDirectionalBias bias)
@@ -235,7 +235,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"MarketStateEngine: Verwendung FullThresholdSnapshot für Regime={currentMarketRegime}, HistoryVersion={snapshot.HistoryVersion}, PatternHint={snapshotPattern}",
                 signature: snapshotSig,
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
 
             var thBullBase = snapshot.Bullish ?? new OrderflowThresholds();
@@ -260,7 +260,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"Thresholds (Regime={currentMarketRegime}): Bullish: {FormatThresholds(localThBull)}",
                 signature: thresholdsSig + SmartLogger.ComposeSignature(("which", "Bullish")),
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
             SmartLogger.Instance.LogIfChanged(
                 category: "MarketState",
@@ -268,7 +268,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"Thresholds (Regime={currentMarketRegime}): Bearish: {FormatThresholds(localThBear)}",
                 signature: thresholdsSig + SmartLogger.ComposeSignature(("which", "Bearish")),
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
             SmartLogger.Instance.LogIfChanged(
                 category: "MarketState",
@@ -276,7 +276,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"Thresholds (Regime={currentMarketRegime}): Choppy: {FormatThresholds(localThChoppy)}",
                 signature: thresholdsSig + SmartLogger.ComposeSignature(("which", "Choppy")),
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
             SmartLogger.Instance.LogIfChanged(
                 category: "MarketState",
@@ -284,7 +284,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"Thresholds (Regime={currentMarketRegime}): Sideways: {FormatThresholds(localThSide)}",
                 signature: thresholdsSig + SmartLogger.ComposeSignature(("which", "Sideways")),
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
 
 
@@ -300,7 +300,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"Squeeze: {squeeze?.ToString() ?? "null"}, VolScore={squeezeVolScore:F2}, DirScore={squeezeDirScore:F3}, IsReady={SqueezeUtils.IsSqueezeReady(squeeze)}",
                 signature: squeezeSig,
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
 
             // --- RANGE STRUCTURE: AddBar (nur bei abgeschlossenen Rangebars) ---
@@ -341,7 +341,7 @@ namespace MyNamespace.Strategies.Orderflow
                 // Neue AddBar-Signatur erwartet ticks als int
                 _rangeDetector.AddBar(barDir, isTrendBar, ticks);
 
-                LoggerHelper.LogInfo(
+                LoggerHelper.LogDebug(
                     _loggerSource,
                     $"[MarketStateEngine] Range.AddBar: barDir={barDir}, isTrendBar={isTrendBar}, bodyTicks={bodyTicksDecimal:F3}, ticks={ticks} " +
                     $"(trend={trendTicksInt}, rev={revTicksInt}, tickTol={tickTolerance}, tolDecimal={tolDecimal}), eff={currentOfFeatures.Efficiency:F3}"
@@ -365,13 +365,13 @@ namespace MyNamespace.Strategies.Orderflow
             decimal runTrendUpNorm = runTrendNorm;
             decimal runTrendDownNorm = runTrendNorm;
 
-            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] RangeStruct: RunTrend={rsFeat.RunTrend}, RunTrendUp={(rsFeat.RunTrend != 0 ? runTrendUpNorm.ToString("F3") : "NA")}, RunTrendDown={(rsFeat.RunTrend != 0 ? runTrendDownNorm.ToString("F3") : "NA")}, flip={rsFeat.FlipRate:F3}, rev={rsFeat.RevShare:F3}, eff={rsFeat.Efficiency:F3}, N={rsFeat.Window}");
+            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] RangeStruct: RunTrend={rsFeat.RunTrend}, RunTrendUp={(rsFeat.RunTrend != 0 ? runTrendUpNorm.ToString("F3") : "NA")}, RunTrendDown={(rsFeat.RunTrend != 0 ? runTrendDownNorm.ToString("F3") : "NA")}, flip={rsFeat.FlipRate:F3}, rev={rsFeat.RevShare:F3}, eff={rsFeat.Efficiency:F3}, N={rsFeat.Window}");
 
             if (_currentBias == MarketDirectionalBias.Undefined)
             {
                 if (_ofFeaturesHistory == null || _ofFeaturesHistory.Count < 3)
                 {
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] waiting for history to fill (need >=10). Current: {_ofFeaturesHistory?.Count ?? 0}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] waiting for history to fill (need >=10). Current: {_ofFeaturesHistory?.Count ?? 0}");
                     newState.DirectionalBias = MarketDirectionalBias.Undefined;
                     newState.Confidence = 0m;
 
@@ -385,7 +385,7 @@ namespace MyNamespace.Strategies.Orderflow
                         barIndex: currentOfFeatures.Bar,
                         message: $"MarketStateEngine: MarketStateUpdated invoked for bar={currentOfFeatures.Bar} (insufficient history).",
                         signature: updSig,
-                        backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                        backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
                     );
 
                     // statt return: erlauben wir initiale Erkennung auch ohne Historie; RangeFeatures werden dann 0 sein
@@ -401,7 +401,7 @@ namespace MyNamespace.Strategies.Orderflow
                 int persistReqInitialBull = Math.Max(1, (localThBull.ThPersistBull ?? 1)) + persistOffsetLocal;
                 int persistReqInitialBear = Math.Max(0, (localThBear.ThPersistBear ?? DefaultPersistBear)) + persistOffsetLocal;
 
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (BullishTrend): CvdLong={thCvdLongBull}, Agg>{thAggBull}, Vol>{thVolBull}, Eff>{thEffBull}, Persist>={persistReqInitialBull}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (BullishTrend): CvdLong={thCvdLongBull}, Agg>{thAggBull}, Vol>{thVolBull}, Eff>{thEffBull}, Persist>={persistReqInitialBull}");
 
                 bool condCvd = currentOfFeatures.CvdImpulse > thCvdLongBull;
                 LogCheck("Initial", "CvdImpulse", currentOfFeatures.CvdImpulse, thCvdLongBull, ">", condCvd);
@@ -411,7 +411,7 @@ namespace MyNamespace.Strategies.Orderflow
                 LogCheck("Initial", "AggPressure", currentOfFeatures.AggPressure, thAggBull, ">", condAgg);
 
                 bool condPersist = currentOfFeatures.PersistBull >= persistReqInitialBull;
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: PersistBull={currentOfFeatures.PersistBull} >= {persistReqInitialBull} => {condPersist}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: PersistBull={currentOfFeatures.PersistBull} >= {persistReqInitialBull} => {condPersist}");
 
                 bool condSlope = currentOfFeatures.SlopeCvd > 0m;
                 LogCheck("Initial", "SlopeCvd", currentOfFeatures.SlopeCvd, 0m, ">", condSlope);
@@ -431,7 +431,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bullSatisfied += condSlope ? 1 : 0; bullDetails.Append($"SlopeCvd={currentOfFeatures.SlopeCvd:F6} > 0 => {condSlope}; ");
                 bullSatisfied += condVol ? 1 : 0; bullDetails.Append($"VolBurstZ={currentOfFeatures.VolBurstZ:F6} > {thVolBull:F6} => {condVol}; ");
                 bullSatisfied += condEff ? 1 : 0; bullDetails.Append($"Efficiency={currentOfFeatures.Efficiency:F6} > {thEffBull:F6} => {condEff}; ");
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial Bull Checks: zufrieden={bullSatisfied}/{bullPossible}. Details: {bullDetails.ToString()}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial Bull Checks: zufrieden={bullSatisfied}/{bullPossible}. Details: {bullDetails.ToString()}");
                 int bullRequire = 4;
                 bool isBullishInitial = bullSatisfied >= bullRequire;
 
@@ -439,7 +439,7 @@ namespace MyNamespace.Strategies.Orderflow
                 if (isBullishInitial)
                 {
                     _currentBias = MarketDirectionalBias.BullishTrend;
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set Bias -> BullishTrend at bar {currentOfFeatures.Bar} (bullSatisfied={bullSatisfied}/{bullPossible})");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set Bias -> BullishTrend at bar {currentOfFeatures.Bar} (bullSatisfied={bullSatisfied}/{bullPossible})");
                 }
                 else
                 {
@@ -448,7 +448,7 @@ namespace MyNamespace.Strategies.Orderflow
                     decimal thVolBear = localThBear.ThVolBurstZ ?? DefaultVolBurstZ;
                     decimal thEffBear = localThBear.ThEfficiency ?? DefaultEfficiency;
 
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (BearishTrend): CvdShort={thCvdShortBear}, Agg<{thAggBear}, Vol>{thVolBear}, Eff>{thEffBear}, Persist>={persistReqInitialBear}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (BearishTrend): CvdShort={thCvdShortBear}, Agg<{thAggBear}, Vol>{thVolBear}, Eff>{thEffBear}, Persist>={persistReqInitialBear}");
 
                     bool condCvdB = currentOfFeatures.CvdImpulse < thCvdShortBear;
                     LogCheck("Initial", "CvdImpulse (bear)", currentOfFeatures.CvdImpulse, thCvdShortBear, "<", condCvdB);
@@ -457,7 +457,7 @@ namespace MyNamespace.Strategies.Orderflow
                     LogCheck("Initial", "AggPressure (bear)", currentOfFeatures.AggPressure, thAggBear, "<", condAggB);
 
                     bool condPersistB = currentOfFeatures.PersistBear >= persistReqInitialBear;
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: PersistBear={currentOfFeatures.PersistBear} >= {persistReqInitialBear} => {condPersistB}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: PersistBear={currentOfFeatures.PersistBear} >= {persistReqInitialBear} => {condPersistB}");
 
                     bool condSlopeB = currentOfFeatures.SlopeCvd < 0m;
                     LogCheck("Initial", "SlopeCvd (bear)", currentOfFeatures.SlopeCvd, 0m, "<", condSlopeB);
@@ -478,7 +478,7 @@ namespace MyNamespace.Strategies.Orderflow
                     bearSatisfied += condVolB ? 1 : 0; bearDetails.Append($"VolBurstZ={currentOfFeatures.VolBurstZ:F6} > {thVolBear:F6} => {condVolB}; ");
                     bearSatisfied += condEffB ? 1 : 0; bearDetails.Append($"Efficiency={currentOfFeatures.Efficiency:F6} > {thEffBear:F6} => {condEffB}; ");
 
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial Bear Checks: satisfied={bearSatisfied}/{bearPossible}. Details: {bearDetails.ToString()}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial Bear Checks: satisfied={bearSatisfied}/{bearPossible}. Details: {bearDetails.ToString()}");
                     int bearRequire = 4;
                     bool isBearishInitial = bearSatisfied >= bearRequire;
 
@@ -486,7 +486,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (isBearishInitial)
                     {
                         _currentBias = MarketDirectionalBias.BearishTrend;
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set Bias -> BearishTrend at bar {currentOfFeatures.Bar} (bearSatisfied={bearSatisfied}/{bearPossible})");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set Bias -> BearishTrend at bar {currentOfFeatures.Bar} (bearSatisfied={bearSatisfied}/{bearPossible})");
                     }
                     else
                     {
@@ -495,20 +495,20 @@ namespace MyNamespace.Strategies.Orderflow
                         decimal thChoppyCvdHalf = Math.Abs(localThChoppy.ThCvdImpulseLong ?? DefaultCvdImpulse) / 2m;
                         decimal thChoppyRate = Math.Abs(localThChoppy.ThTradeRateZBreakout ?? Math.Abs(currentOfFeatures.TradeRateZ));
 
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (Choppy): Eff<{thChoppyEff}, Abs(Cvd)<{thChoppyCvdHalf}, |TradeRateZ|>{thChoppyRate}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (Choppy): Eff<{thChoppyEff}, Abs(Cvd)<{thChoppyCvdHalf}, |TradeRateZ|>{thChoppyRate}");
 
                         bool condChoppyEff = currentOfFeatures.Efficiency < thChoppyEff;
                         LogCheck("Initial", "Efficiency (choppy)", currentOfFeatures.Efficiency, thChoppyEff, "<", condChoppyEff);
 
                         bool condChoppyCvd = Math.Abs(currentOfFeatures.CvdImpulse) < thChoppyCvdHalf;
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: Abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thChoppyCvdHalf:F6} => {condChoppyCvd}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: Abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thChoppyCvdHalf:F6} => {condChoppyCvd}");
 
                         bool condChoppyRate = Math.Abs(currentOfFeatures.TradeRateZ) > thChoppyRate;
                         LogCheck("Initial", "TradeRateZ (choppy)", Math.Abs(currentOfFeatures.TradeRateZ), thChoppyRate, ">", condChoppyRate);
 
                         bool condChoppyCounter = currentOfFeatures.MaxCounterShareBull > (localThChoppy.MaxCounterDeltaShareBull ?? 0m)
                                                 && currentOfFeatures.MaxCounterShareBear > (localThChoppy.MaxCounterDeltaShareBear ?? 0m);
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: MaxCounterShareBull={currentOfFeatures.MaxCounterShareBull:F6}, MaxCounterShareBear={currentOfFeatures.MaxCounterShareBear:F6}, condBoth={condChoppyCounter}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: MaxCounterShareBull={currentOfFeatures.MaxCounterShareBull:F6}, MaxCounterShareBear={currentOfFeatures.MaxCounterShareBear:F6}, condBoth={condChoppyCounter}");
 
 
                         bool isChoppyInitial = currentMarketRegime == MarketRegime.Fast && condChoppyEff && condChoppyCvd && (condChoppyRate || condChoppyCounter);
@@ -516,7 +516,7 @@ namespace MyNamespace.Strategies.Orderflow
                         if (isChoppyInitial)
                         {
                             _currentBias = MarketDirectionalBias.Choppy;
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set bias to Choppy at bar {currentOfFeatures.Bar}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set bias to Choppy at bar {currentOfFeatures.Bar}");
                         }
                         else
                         {
@@ -524,13 +524,13 @@ namespace MyNamespace.Strategies.Orderflow
                             decimal thSideCvdQuarter = Math.Abs(localThSide.ThCvdImpulseLong ?? DefaultCvdImpulse) / 4m;
                             decimal thSideVol = localThSide.ThVolBurstZ ?? DefaultVolBurstZ;
                             decimal thSideEff = localThSide.ThEfficiency ?? DefaultEfficiency;
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (Sideways): Abs(Cvd)<{thSideCvdQuarter}, Agg in (0.4,0.6) approx, Vol<{thSideVol}, Eff<{thSideEff}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine-Anfängliche Erkennungsschwellen (Sideways): Abs(Cvd)<{thSideCvdQuarter}, Agg in (0.4,0.6) approx, Vol<{thSideVol}, Eff<{thSideEff}");
 
                             bool condSideCvd = Math.Abs(currentOfFeatures.CvdImpulse) < thSideCvdQuarter;
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: Abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thSideCvdQuarter:F6} => {condSideCvd}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: Abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thSideCvdQuarter:F6} => {condSideCvd}");
 
                             bool condSideAgg = currentOfFeatures.AggPressure > 0.4m && currentOfFeatures.AggPressure < 0.6m;
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: AggPressure={currentOfFeatures.AggPressure:F6} > 0.4 < 0.6 => {condSideAgg}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: AggPressure={currentOfFeatures.AggPressure:F6} > 0.4 < 0.6 => {condSideAgg}");
 
                             bool condSideVol = currentOfFeatures.VolBurstZ < thSideVol;
                             LogCheck("Initial", "VolBurstZ (sideways)", currentOfFeatures.VolBurstZ, thSideVol, "<", condSideVol);
@@ -539,9 +539,9 @@ namespace MyNamespace.Strategies.Orderflow
                             LogCheck("Initial", "Efficiency (sideways)", currentOfFeatures.Efficiency, thSideEff, "<", condSideEff);
 
                             bool condSidePersist = currentOfFeatures.PersistBull < (2 + persistOffsetLocal) && currentOfFeatures.PersistBear < (2 + persistOffsetLocal);
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial: PersistBull={currentOfFeatures.PersistBull}, PersistBear={currentOfFeatures.PersistBear}, condBothPersist={condSidePersist}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial: PersistBull={currentOfFeatures.PersistBull}, PersistBear={currentOfFeatures.PersistBear}, condBothPersist={condSidePersist}");
 
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial Choppy Checks: eff<{thChoppyEff} => {condChoppyEff}, abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thChoppyCvdHalf:F6} => {condChoppyCvd}, tradeRateCond => {condChoppyRate}, countersCond => {condChoppyCounter}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial Choppy Checks: eff<{thChoppyEff} => {condChoppyEff}, abs(Cvd)={Math.Abs(currentOfFeatures.CvdImpulse):F6} < {thChoppyCvdHalf:F6} => {condChoppyCvd}, tradeRateCond => {condChoppyRate}, countersCond => {condChoppyCounter}");
                             bool isSidewaysInitial =
                                 (currentMarketRegime == MarketRegime.Normal || currentMarketRegime == MarketRegime.Slow)
                                 && condSideCvd && condSideAgg && condSideVol && condSideEff && condSidePersist;
@@ -549,8 +549,8 @@ namespace MyNamespace.Strategies.Orderflow
                             if (isSidewaysInitial)
                             {
                                 _currentBias = MarketDirectionalBias.Sideways;
-                                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set bias to Sideways at bar {currentOfFeatures.Bar}");
-                                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Initial Sideways Checks: AbsCvd<{thSideCvdQuarter} => {condSideCvd}, AggCenter => {condSideAgg}, Vol<{thSideVol} => {condSideVol}, Eff<{thSideEff} => {condSideEff}, PersistBoth<{2 + persistOffsetLocal} => {condSidePersist}");
+                                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Initial detection set bias to Sideways at bar {currentOfFeatures.Bar}");
+                                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Initial Sideways Checks: AbsCvd<{thSideCvdQuarter} => {condSideCvd}, AggCenter => {condSideAgg}, Vol<{thSideVol} => {condSideVol}, Eff<{thSideEff} => {condSideEff}, PersistBoth<{2 + persistOffsetLocal} => {condSidePersist}");
                             }
                         }
                     }
@@ -566,7 +566,7 @@ namespace MyNamespace.Strategies.Orderflow
                     barIndex: currentOfFeatures.Bar,
                     message: $"StateTransition: Bewertung von Übergängen für currentBias={_currentBias}, bar={currentOfFeatures.Bar}",
                     signature: transSig,
-                    backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                    backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
                 );
 
                 var currentBiasThresholds = GetThresholdsForBias(snapshot, _currentBias);
@@ -679,13 +679,13 @@ namespace MyNamespace.Strategies.Orderflow
                 decimal scoreChop = Clamp01(ofWeight * ofChoppy + rsWeight * rsChoppy);
 
                 // Log subscores
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Scores (OF/RS weights: {ofWeight:F2}/{rsWeight:F2}): ofBull={ofBull:F3}, rsBull={rsBull:F3}, bull={scoreBull:F3}; ofBear={ofBear:F3}, rsBear={rsBear:F3}, bear={scoreBear:F3}; ofSide={ofSide:F3}, rsSide={rsSide:F3}, side={scoreSide:F3}; ofChop={ofChoppy:F3}, rsChop={rsChoppy:F3}, chop={scoreChop:F3}");
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] RangeFeatures(window={rsFeat.Window}): run={rsFeat.RunTrend}, runUp={runTrendUpNorm_local:F3}, runDown={runTrendDownNorm_local:F3}, flip={rsFeat.FlipRate:F3}, rev={rsFeat.RevShare:F3}, eff={rsFeat.Efficiency:F3}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Scores (OF/RS weights: {ofWeight:F2}/{rsWeight:F2}): ofBull={ofBull:F3}, rsBull={rsBull:F3}, bull={scoreBull:F3}; ofBear={ofBear:F3}, rsBear={rsBear:F3}, bear={scoreBear:F3}; ofSide={ofSide:F3}, rsSide={rsSide:F3}, side={scoreSide:F3}; ofChop={ofChoppy:F3}, rsChop={rsChoppy:F3}, chop={scoreChop:F3}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] RangeFeatures(window={rsFeat.Window}): run={rsFeat.RunTrend}, runUp={runTrendUpNorm_local:F3}, runDown={runTrendDownNorm_local:F3}, flip={rsFeat.FlipRate:F3}, rev={rsFeat.RevShare:F3}, eff={rsFeat.Efficiency:F3}");
 
                 // Wenn genug Range-History, erhöhe Einfluss (rangePriority wurde gesetzt) - bereits berücksichtigt.
                 // Entscheidung: wähle höchsten Score, aber mit relativer Dominanz-Regel wenn absolute Schwelle nicht erreicht
                 decimal SCORE_THRESHOLD = rsFeat.Window >= _settings.RangeWindowN ? 0.6m : 0.5m;
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Score verwendete Entscheidungsschwelle: {SCORE_THRESHOLD:F3} (RangeWindow={rsFeat.Window}, needed={_settings.RangeWindowN})");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Score verwendete Entscheidungsschwelle: {SCORE_THRESHOLD:F3} (RangeWindow={rsFeat.Window}, needed={_settings.RangeWindowN})");
                 // Build ranking for dominance logic
                 var scoresList = new[]
                 {
@@ -711,17 +711,17 @@ namespace MyNamespace.Strategies.Orderflow
                     if (top.score - runnerUp.score >= DOMINANCE_DELTA && top.score >= MIN_DOMINANT_SCORE)
                     {
                         candidateBias = top.bias;
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Candidate selected by dominance rule: top={top.bias}, topScore={top.score:F3}, runnerUp={runnerUp.bias}, runnerUpScore={runnerUp.score:F3}, delta={top.score - runnerUp.score:F3}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Candidate selected by dominance rule: top={top.bias}, topScore={top.score:F3}, runnerUp={runnerUp.bias}, runnerUpScore={runnerUp.score:F3}, delta={top.score - runnerUp.score:F3}");
                     }
                     else
                     {
                         // explicit reason for undefined candidate
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Candidate undefined: top={top.bias}({top.score:F3}), runnerUp={runnerUp.bias}({runnerUp.score:F3}), delta={top.score - runnerUp.score:F3}, threshold={SCORE_THRESHOLD:F3}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Candidate undefined: top={top.bias}({top.score:F3}), runnerUp={runnerUp.bias}({runnerUp.score:F3}), delta={top.score - runnerUp.score:F3}, threshold={SCORE_THRESHOLD:F3}");
                         candidateBias = MarketDirectionalBias.Undefined;
                     }
                 }
 
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] CandidateBias derived: {candidateBias}, scores: bull={scoreBull:F3}, bear={scoreBear:F3}, chop={scoreChop:F3}, side={scoreSide:F3}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] CandidateBias derived: {candidateBias}, scores: bull={scoreBull:F3}, bear={scoreBear:F3}, chop={scoreChop:F3}, side={scoreSide:F3}");
 
                 // --- CONFIRMATION / HYSTERESE (M Bars) statt direkter Setzung ---
                 if (candidateBias == _currentBias)
@@ -737,7 +737,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (candidateBias == MarketDirectionalBias.Undefined)
                     {
                         _undefinedPersistCount++;
-                        LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Candidate is Undefined; undefinedPersistCount={_undefinedPersistCount} at bar {currentOfFeatures.Bar}");
+                        LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Candidate is Undefined; undefinedPersistCount={_undefinedPersistCount} at bar {currentOfFeatures.Bar}");
 
                         // If opposite direction shows dominance vs currentBias, decay confidence to allow faster flips later
                         bool oppositeDominantAgainstCurrent = false;
@@ -750,7 +750,7 @@ namespace MyNamespace.Strategies.Orderflow
                         {
                             // Apply confidence decay to lower resistance to flip
                             // We don't store a persistent confidence here; we affect newState.Confidence later. Log for debug.
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Opposite dominance detected while candidate undefined; will apply confidence decay. currentBias={_currentBias}, bar={currentOfFeatures.Bar}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Opposite dominance detected while candidate undefined; will apply confidence decay. currentBias={_currentBias}, bar={currentOfFeatures.Bar}");
                             // Note: we'll later reduce newState.Confidence after computing it below.
                         }
 
@@ -767,7 +767,7 @@ namespace MyNamespace.Strategies.Orderflow
                             _pendingBias = candidateBias;
                             _confirmCount = 1;
 
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Pending bias candidate={candidateBias} set (count=1) at bar {currentOfFeatures.Bar}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Pending bias candidate={candidateBias} set (count=1) at bar {currentOfFeatures.Bar}");
                         }
                         else
                         {
@@ -775,7 +775,7 @@ namespace MyNamespace.Strategies.Orderflow
                             _confirmCount++;
                             // Determine required confirmations based on whether this is opposite vs same
                             int required = candidateBias == _currentBias ? _settings.ConfirmBarsSame : _settings.ConfirmBarsOpposite;
-                            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Pending bias candidate={candidateBias} confirmed count={_confirmCount} / {required} at bar {currentOfFeatures.Bar}");
+                            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Pending bias candidate={candidateBias} confirmed count={_confirmCount} / {required} at bar {currentOfFeatures.Bar}");
                             if (_confirmCount >= required && candidateBias != MarketDirectionalBias.Undefined)
                             {
                                 var previous = _currentBias;
@@ -869,7 +869,7 @@ namespace MyNamespace.Strategies.Orderflow
                     // decay
                     decimal oldConf = newState.Confidence ?? 0m;
                     newState.Confidence = Clamp01(oldConf * 0.75m);
-                    LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Confidence decayed due to undefined candidate with opposite dominance. oldConf={oldConf:F3}, newConf={newState.Confidence:F3} at bar {currentOfFeatures.Bar}");
+                    LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Confidence decayed due to undefined candidate with opposite dominance. oldConf={oldConf:F3}, newConf={newState.Confidence:F3} at bar {currentOfFeatures.Bar}");
                 }
             }
 
@@ -883,11 +883,11 @@ namespace MyNamespace.Strategies.Orderflow
                 var squeezeComposite = dirStrength;
                 var mixed = newState.Confidence * (1m - squeezeWeight) + squeezeComposite * squeezeWeight;
                 newState.Confidence = Clamp01(mixed ?? 0m);
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Squeeze soft blending applied (dir only): dirStrength={dirStrength:F3}, oldConf={confidence:F3}, newConf={newState.Confidence:F3}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Squeeze soft blending applied (dir only): dirStrength={dirStrength:F3}, oldConf={confidence:F3}, newConf={newState.Confidence:F3}");
             }
             else
             {
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] Squeeze not ready (null/unknown/warmup). Skipping squeeze blending for bar={currentOfFeatures.Bar}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] Squeeze not ready (null/unknown/warmup). Skipping squeeze blending for bar={currentOfFeatures.Bar}");
             }
 
             // --- NEU: RangeScore Mixing in Confidence ---
@@ -918,7 +918,7 @@ namespace MyNamespace.Strategies.Orderflow
             decimal oldConf2 = newState.Confidence ?? 0m;
             decimal blended = Clamp01(oldConf2 * (1m - rangeWeight) + rangeScore * rangeWeight);
             newState.Confidence = blended;
-            LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] RangeScore blended: rangeScore={rangeScore:F3}, oldConfidence={oldConf2:F3}, newConfidence={blended:F3}");
+            LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] RangeScore blended: rangeScore={rangeScore:F3}, oldConfidence={oldConf2:F3}, newConfidence={blended:F3}");
 
             LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Endzustand bei bar={currentOfFeatures.Bar}: Bias={newState.DirectionalBias}, Confidence={newState.Confidence:F3}, possible={possible}, satisfied={satisfied}");
 
@@ -933,7 +933,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (newState.IsBreakingOut)
             {
-                LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Breaking out detected at bar {currentOfFeatures.Bar}. Bias={newState.DirectionalBias}, VolBurstZ={currentOfFeatures.VolBurstZ:F6}, CvdImpulse={currentOfFeatures.CvdImpulse:F6}");
+                LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] MarketStateEngine: Breaking out detected at bar {currentOfFeatures.Bar}. Bias={newState.DirectionalBias}, VolBurstZ={currentOfFeatures.VolBurstZ:F6}, CvdImpulse={currentOfFeatures.CvdImpulse:F6}");
             }
 
             _currentMarketState = newState;
@@ -946,7 +946,7 @@ namespace MyNamespace.Strategies.Orderflow
                 barIndex: currentOfFeatures.Bar,
                 message: $"MarketStateEngine: MarketStateUpdated aufgerufen für bar={currentOfFeatures.Bar}",
                 signature: finalSig,
-                backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
             );
 
             if (previousBias != _currentBias)
@@ -970,7 +970,7 @@ namespace MyNamespace.Strategies.Orderflow
                     barIndex: currentOfFeatures.Bar,
                     message: $"MarketStateEngine: Bias remains {_currentBias} at bar {currentOfFeatures.Bar}. Confidence={newState.Confidence:F2}",
                     signature: remainSig,
-                    backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[MarketStateEngine] {s}")
+                    backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[MarketStateEngine] {s}")
                 );
             }
 

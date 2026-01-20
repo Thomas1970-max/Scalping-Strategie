@@ -30,7 +30,7 @@ namespace MyNamespace.Strategies.Orderflow
             _loggerSource = loggerSource ?? throw new ArgumentNullException(nameof(loggerSource));
             _detailedLoggingEnabled = detailedLoggingEnabled;
 
-            LoggerHelper.LogInfo(_loggerSource, "[ThresholdsResolver] Instance created.");
+            LoggerHelper.LogDebug(_loggerSource, "[ThresholdsResolver] Instance created.");
             // Initialisiere den ThresholdsPruner-Logger (einmalig; InitializeLogger ist idempotent)
             ThresholdsPruner.InitializeLogger(
                 logInfoAction: msg => { /* Pruner nicht für Info-Ausgaben nutzen */ },
@@ -95,7 +95,7 @@ namespace MyNamespace.Strategies.Orderflow
                         barIndex: sigBar,
                         message: $"[ThresholdsResolver:Result] pruned={SerializeThresholdsCompact(prunedSnapshot)} | full={compact}",
                         signature: sig,
-                        backendLogAction: s => LoggerHelper.LogInfo(_loggerSource, $"[ThresholdsResolver] {s}")
+                        backendLogAction: s => LoggerHelper.LogDebug(_loggerSource, $"[ThresholdsResolver] {s}")
                     );
                     // Entscheide, ob ausführliche INFO-Summary geschrieben werden soll:
                     bool isNewBar = !_lastLoggedThresholdsBar.HasValue || _lastLoggedThresholdsBar.Value != sigBar;
@@ -294,6 +294,11 @@ namespace MyNamespace.Strategies.Orderflow
                     AddSummary($"CvdStability=OK(pos={countLong},neg={countShort})");
                 }
 
+                AddSummary($"Sources: VolBurst={(volBurstZValues.Any() ? "computed" : "default")}, " +
+                           $"CvdLong={(thresholds.ThCvdImpulseLong.HasValue ? "computed" : "default")}, " +
+                           $"CvdShort={(thresholds.ThCvdImpulseShort.HasValue ? "computed" : "default")}, " +
+                           $"Eff={(thresholds.ThEfficiency.HasValue ? "default/kept" : "null")}");
+
                 // --- CvdCoherence adjustments for InterTradeTimeZ ---
                 if (thresholds.ThCvdCoherence.HasValue && thresholds.ThCvdCoherence > 0.8m)
                 {
@@ -467,7 +472,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (nullifiedListSorted.Any())
                     {
                         AddSummary($"Pruner:nullified={nullifiedJoined}(Bar={currentBar})");
-                        LoggerHelper.LogInfo(_loggerSource,
+                        LoggerHelper.LogDebug(_loggerSource,
                             $"[ThresholdsResolver] [Pruner] Ungültige Felder: {nullifiedJoined} Context: Bar={currentBar} Pattern={currentPatternName} | before={SerializeThresholdsCompact(fullSnapshotBeforePrune)} | after={SerializeThresholdsCompact(thresholds)}");
                     }
                     else
@@ -516,6 +521,131 @@ namespace MyNamespace.Strategies.Orderflow
                 LoggerHelper.LogError(_loggerSource, $"[CalculateAdaptiveThresholds] Exception: {ex.Message}\n{ex.StackTrace}");
                 throw;
             }
+        }
+
+        public ReversalContextThresholdsResult CalculateReversalContextThresholds(
+            OrderflowPatternType? assumedOrderflowPatternType,
+            PatternCategory? patternCategory,
+            MarketRegime regime,
+            OfFeaturesHistory? history,
+            IReadOnlyDictionary<int, OfFeatures>? featuresByBar,
+            ModeSpecsEntry categorySpecs,
+            SetupConditionConfig patternConditionConfig,
+            SetupConfiguration globalStratConfig,
+            int lookbackBars,
+            OrderflowThresholds? initialThresholds = null,
+            int? barIndex = null)
+        {
+            int safeLookback = Math.Max(1, lookbackBars);
+            var historyVersion = history?.Count ?? 0;
+
+            if (history == null || history.Count == 0)
+            {
+                return new ReversalContextThresholdsResult
+                {
+                    Bar1 = null,
+                    Bar2 = null,
+                    Bar3 = null,
+                    LookbackBars = safeLookback,
+                    HistoryVersion = historyVersion,
+                    ResolvedCategory = patternCategory ?? PatternCategory.Unknown,
+                    CreatedAtUtc = DateTime.UtcNow
+                };
+            }
+
+            var recentFeatures = history.GetLast(safeLookback);
+            var shortHistory = new OfFeaturesHistory(safeLookback, _loggerSource);
+            foreach (var feature in recentFeatures)
+                shortHistory.Add(feature);
+
+            var baseResult = CalculateAdaptiveThresholds(
+                assumedOrderflowPatternType,
+                patternCategory,
+                regime,
+                shortHistory,
+                featuresByBar,
+                categorySpecs,
+                patternConditionConfig,
+                globalStratConfig,
+                initialThresholds,
+                barIndex
+            );
+
+            var baseThresholds = baseResult?.Pruned ?? baseResult?.Full;
+            var bar1 = baseThresholds != null ? Clone(baseThresholds) : null;
+            var bar2 = baseThresholds != null ? Clone(baseThresholds) : null;
+            var bar3 = baseThresholds != null ? Clone(baseThresholds) : null;
+
+            if (baseThresholds != null)
+            {
+                var recentSnapshots = recentFeatures
+                    ?.Select(of => of?.Snapshot)
+                    ?.Where(s => s != null)
+                    ?.ToList()
+                    ?? new List<OvSnapshot>();
+                var hasVolBurst = recentSnapshots.Select(s => Math.Abs(s.VolBurstZ)).Any(v => v > 0);
+                var sourcesLine =
+                    $"Sources: VolBurst={(hasVolBurst ? "computed" : "default")}, " +
+                    $"CvdLong={(baseThresholds.ThCvdImpulseLong.HasValue ? "computed" : "default")}, " +
+                    $"CvdShort={(baseThresholds.ThCvdImpulseShort.HasValue ? "computed" : "default")}, " +
+                    $"Eff={(baseThresholds.ThEfficiency.HasValue ? "default/kept" : "null")}";
+
+                LoggerHelper.LogInfo(
+                    _loggerSource,
+                    $"[ThresholdsResolver:ReversalContext] {sourcesLine} (lookback={safeLookback}, historyVer={historyVersion}, bar={barIndex?.ToString() ?? "n/a"})");
+            }
+
+            ApplyReversalBarScaling(bar1, cvdMultiplier: 0.75m, pressureMultiplier: 0.80m, volBurstMultiplier: 0.85m, effMultiplier: 0.85m);
+            ApplyReversalBarScaling(bar2, cvdMultiplier: 1.00m, pressureMultiplier: 1.00m, volBurstMultiplier: 1.00m, effMultiplier: 1.00m);
+            ApplyReversalBarScaling(bar3, cvdMultiplier: 1.20m, pressureMultiplier: 1.15m, volBurstMultiplier: 1.10m, effMultiplier: 1.10m);
+
+            return new ReversalContextThresholdsResult
+            {
+                Bar1 = bar1,
+                Bar2 = bar2,
+                Bar3 = bar3,
+                LookbackBars = safeLookback,
+                HistoryVersion = historyVersion,
+                ResolvedCategory = baseResult?.ResolvedCategory ?? (patternCategory ?? PatternCategory.Unknown),
+                CreatedAtUtc = DateTime.UtcNow
+            };
+        }
+
+        private static void ApplyReversalBarScaling(
+            OrderflowThresholds? thresholds,
+            decimal cvdMultiplier,
+            decimal pressureMultiplier,
+            decimal volBurstMultiplier,
+            decimal effMultiplier)
+        {
+            if (thresholds == null)
+                return;
+
+            thresholds.ReversalThCvdImpulseLong = ScaleIfPresent(thresholds.ReversalThCvdImpulseLong, cvdMultiplier);
+            thresholds.ReversalThCvdImpulseShort = ScaleIfPresent(thresholds.ReversalThCvdImpulseShort, cvdMultiplier);
+            thresholds.ThCvdImpulseLong = ScaleIfPresent(thresholds.ThCvdImpulseLong, cvdMultiplier);
+            thresholds.ThCvdImpulseShort = ScaleIfPresent(thresholds.ThCvdImpulseShort, cvdMultiplier);
+            thresholds.ReversalThCvdImpulseMinForLongReversal = ScaleIfPresent(thresholds.ReversalThCvdImpulseMinForLongReversal, cvdMultiplier);
+            thresholds.ReversalThCvdImpulseMaxForShortReversal = ScaleIfPresent(thresholds.ReversalThCvdImpulseMaxForShortReversal, cvdMultiplier);
+
+            thresholds.ReversalThAggPressureBreakoutBull = ScaleIfPresent(thresholds.ReversalThAggPressureBreakoutBull, pressureMultiplier);
+            thresholds.ReversalThAggPressureBreakoutBear = ScaleIfPresent(thresholds.ReversalThAggPressureBreakoutBear, pressureMultiplier);
+            thresholds.ThAggPressureBreakoutBull = ScaleIfPresent(thresholds.ThAggPressureBreakoutBull, pressureMultiplier);
+            thresholds.ThAggPressureBreakoutBear = ScaleIfPresent(thresholds.ThAggPressureBreakoutBear, pressureMultiplier);
+
+            thresholds.ThVolBurstZ = ScaleIfPresent(thresholds.ThVolBurstZ, volBurstMultiplier);
+            thresholds.ReversalThVolBurstZ = ScaleIfPresent(thresholds.ReversalThVolBurstZ, volBurstMultiplier);
+
+            thresholds.ThEfficiency = ScaleIfPresent(thresholds.ThEfficiency, effMultiplier);
+            thresholds.ReversalThEfficiency = ScaleIfPresent(thresholds.ReversalThEfficiency, effMultiplier);
+        }
+
+        private static decimal? ScaleIfPresent(decimal? value, decimal multiplier)
+        {
+            if (!value.HasValue)
+                return value;
+
+            return value.Value * multiplier;
         }
 
         public OrderflowThresholds? Clone(OrderflowThresholds original)
@@ -606,3 +736,4 @@ namespace MyNamespace.Strategies.Orderflow
         #endregion
     }
 }
+
