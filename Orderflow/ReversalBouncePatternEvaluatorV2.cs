@@ -147,6 +147,45 @@ namespace MyNamespace.Strategies.Orderflow
             return (int)Math.Round(priceDelta / tickSize, MidpointRounding.AwayFromZero);
         }
 
+        private static decimal ComputeMedian(IReadOnlyList<decimal> values)
+        {
+            if (values == null || values.Count == 0)
+                return 0m;
+            var tmp = values.ToList();
+            tmp.Sort();
+            int n = tmp.Count;
+            if ((n & 1) == 1)
+                return tmp[n / 2];
+            return (tmp[(n / 2) - 1] + tmp[n / 2]) * 0.5m;
+        }
+
+        private static decimal GetAdaptiveAbsNetDeltaMin(OfFeaturesHistory history, OvSnapshot curr, int lookbackBars, decimal multiplier)
+        {
+            if (history == null || curr == null)
+                return 0m;
+
+            int want = Math.Max(5, lookbackBars);
+            var vals = new List<decimal>(want);
+            for (int i = 0; i < Math.Min(history.Count, 600); i++)
+            {
+                var s = history.GetOfFeatures(i)?.Snapshot;
+                if (s == null)
+                    continue;
+                if (s.Bar >= curr.Bar)
+                    continue;
+                vals.Add(Math.Abs(s.NetDeltaTotal));
+                if (vals.Count >= want)
+                    break;
+            }
+
+            if (vals.Count == 0)
+                return 0m;
+            decimal median = ComputeMedian(vals);
+            if (median < 1m)
+                median = 1m;
+            return Math.Max(0m, median * multiplier);
+        }
+
         private static AllowPath DetermineAllowPath(
             OfFeaturesHistory history,
             OvSnapshot curr,
@@ -176,9 +215,13 @@ namespace MyNamespace.Strategies.Orderflow
                 return AllowPath.UaToFa;
 
             const int W = 5;
-            const int ProgressTicksMin = 4;
+            const int ProgressTicksMinMultiFa = 6;
+            const int CloseAwayTicksMinFaQuality = 2;
             int maxBar = curr.Bar;
             int minBar = Math.Max(0, maxBar - (W - 1));
+            int consecutiveTouches = 0;
+            int maxConsecutiveTouches = 0;
+            int strongFaAtZoneW = 0;
 
             for (int b = minBar; b <= maxBar; b++)
             {
@@ -192,20 +235,38 @@ namespace MyNamespace.Strategies.Orderflow
                     continue;
 
                 if (TouchesZone(s, zone))
+                {
                     touchesW++;
+                    consecutiveTouches++;
+                    if (consecutiveTouches > maxConsecutiveTouches)
+                        maxConsecutiveTouches = consecutiveTouches;
+                }
+                else
+                {
+                    consecutiveTouches = 0;
+                }
 
                 bool isFa = IsFinishedAuction(s, thresholds, dir);
                 if (isFa && IsFinishedAuctionAtZone(s, zone, tickSize, dir))
                 {
                     faAtZoneW++;
 
+                    int closeAwayTicks;
+                    if (dir == OrderDirections.Buy)
+                        closeAwayTicks = RoundTicks(Math.Max(0m, s.Close - zone.High), tickSize);
+                    else
+                        closeAwayTicks = RoundTicks(Math.Max(0m, zone.Low - s.Close), tickSize);
+
+                    if (closeAwayTicks >= CloseAwayTicksMinFaQuality)
+                        strongFaAtZoneW++;
+
                     decimal need;
                     if (dir == OrderDirections.Buy)
-                        need = zone.High + (ProgressTicksMin * tickSize);
+                        need = zone.High + (ProgressTicksMinMultiFa * tickSize);
                     else
-                        need = zone.Low - (ProgressTicksMin * tickSize);
+                        need = zone.Low - (ProgressTicksMinMultiFa * tickSize);
 
-                    decimal best = dir == OrderDirections.Buy ? s.High : s.Low;
+                    decimal best = s.Close;
                     for (int nb = b + 1; nb <= Math.Min(maxBar, b + 2); nb++)
                     {
                         OvSnapshot? ns = null;
@@ -216,9 +277,9 @@ namespace MyNamespace.Strategies.Orderflow
                         if (ns == null)
                             continue;
                         if (dir == OrderDirections.Buy)
-                            best = Math.Max(best, ns.High);
+                            best = Math.Max(best, ns.Close);
                         else
-                            best = Math.Min(best, ns.Low);
+                            best = Math.Min(best, ns.Close);
                     }
 
                     if (dir == OrderDirections.Buy)
@@ -234,11 +295,14 @@ namespace MyNamespace.Strategies.Orderflow
                 }
             }
 
-            bool multiFaDefense = faAtZoneW >= 2 && progressOk;
+            bool multiFaDefense = strongFaAtZoneW >= 2 && progressOk;
             if (!multiFaDefense)
                 return AllowPath.None;
 
             if (touchesW >= 4)
+                return AllowPath.None;
+
+            if (maxConsecutiveTouches >= 3)
                 return AllowPath.None;
 
             return AllowPath.MultiFaDefense;
@@ -378,6 +442,9 @@ namespace MyNamespace.Strategies.Orderflow
             bool diagnosticSoftWhenBlocked = false)
         {
             const decimal EntryThreshold = 6m;
+            const int AdaptiveLookback = 30;
+            const decimal AbsNetDeltaMedianMultiplier = 1.0m;
+            decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, curr, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
 
             int touchesW;
             int faAtZoneW;
@@ -408,7 +475,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                     bool diagAbsorption = false;
                     if (prev != null)
-                        diagAbsorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir);
+                        diagAbsorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir, absNetDeltaMin);
                     var diagProxEval = diagAbsorption ? EvaluateAbsorptionProximity(curr, zone, tickSize, dir) : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
                     decimal diagAbsorptionPts = diagAbsorption ? (2m * diagProxEval.Factor) : 0m;
                     softScore += diagAbsorptionPts;
@@ -494,14 +561,48 @@ namespace MyNamespace.Strategies.Orderflow
 
             decimal score = baseScore;
 
-            bool deltaFlip = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
-            decimal deltaPts = deltaFlip ? 2m : 0m;
+            const decimal DeltaShiftMin = 20m;
+            const decimal ProximityMinFactor = 0.5m;
+            var deltaFlipProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
+            bool deltaFlipQualified = false;
+            decimal deltaPts = 0m;
+            string deltaFlipText = "Delta-Flip: NEIN";
+            if (deltaFlipProxEval.Factor >= ProximityMinFactor)
+            {
+                bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
+                if (deltaFlipRaw && prev != null)
+                {
+                    decimal shift = Math.Abs(curr.PocDelta - prev.PocDelta);
+                    if (shift >= DeltaShiftMin)
+                    {
+                        deltaFlipQualified = true;
+                        deltaPts = 2m * deltaFlipProxEval.Factor;
+                        deltaFlipText = $"Delta-Flip: JA (Shift={shift:0}, Prox={deltaFlipProxEval.Factor:0.0}) -> +{deltaPts:0.0}";
+                    }
+                    else
+                    {
+                        deltaFlipText = $"Delta-Flip: NEIN (Magnitude {shift:0} < {DeltaShiftMin:0})";
+                    }
+                }
+                else if (deltaFlipRaw)
+                {
+                    deltaFlipText = "Delta-Flip: NEIN (kein prev für Magnitude-Check)";
+                }
+                else
+                {
+                    deltaFlipText = "Delta-Flip: NEIN (kein Flip im Fenster)";
+                }
+            }
+            else
+            {
+                deltaFlipText = $"Delta-Flip: NEIN (Zonennähe {deltaFlipProxEval.Factor:0.0} < {ProximityMinFactor:0.0})";
+            }
             score += deltaPts;
-            items.Add(new ScoreItem { Key = "DeltaFlip", Points = deltaPts, TextDe = $"Delta-Change: {(deltaFlip ? "JA" : "NEIN")} ({(deltaFlip ? "+2" : "+0")})" });
+            items.Add(new ScoreItem { Key = "DeltaFlip", Points = deltaPts, TextDe = deltaFlipText });
 
             bool absorption = false;
             if (prev != null)
-                absorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir);
+                absorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir, absNetDeltaMin);
 
             var proxEval = absorption ? EvaluateAbsorptionProximity(curr, zone, tickSize, dir) : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
             decimal prox = proxEval.Factor;
@@ -516,14 +617,23 @@ namespace MyNamespace.Strategies.Orderflow
                     : "Absorption (Imbalance ohne Anschluss): NEIN -> +0"
             });
 
+            const int PocShiftMinTicks = 1;
             decimal pocPts = 0m;
             if (prev != null)
             {
                 decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
-                bool pocOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
+                int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
+                bool dirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
+                bool magnitudeOk = pocShiftTicks >= PocShiftMinTicks;
+                var pocProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
+                bool proximityOk = pocProxEval.Factor >= 0.5m;
+                bool pocOk = dirOk && magnitudeOk && proximityOk;
                 pocPts = pocOk ? 1m : 0m;
+                string reason = pocOk
+                    ? $"POC-Shift: OK (Shift={pocShiftTicks} Ticks, Prox={pocProxEval.Factor:0.0}) -> +1"
+                    : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Prox={proximityOk}) -> +0";
                 score += pocPts;
-                items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = $"POC-Shift: {(pocOk ? "OK" : "nicht OK")} ({(pocOk ? "+1" : "+0")})" });
+                items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = reason });
             }
             else
             {
@@ -578,6 +688,7 @@ namespace MyNamespace.Strategies.Orderflow
                 Items = items
             };
         }
+
         private void LogExplainMultilineOnce(int bar, int zoneId, string stage, IEnumerable<string> lines)
         {
             try
@@ -605,7 +716,6 @@ namespace MyNamespace.Strategies.Orderflow
             }
         }
 
-        
         public PatternEvaluationResult Evaluate(
             OvSnapshot currentSnapshot,
             OfFeatures features,
@@ -1325,7 +1435,8 @@ namespace MyNamespace.Strategies.Orderflow
 
             return SessionEvalOutcome.Continue;
         }
-                private void LogSessionProtocol(
+
+        private void LogSessionProtocol(
             ZoneTracker tracker,
             MarketStructureContext.Zone zone,
             OfFeaturesHistory history,
@@ -1345,7 +1456,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 const decimal EntryThreshold = 6m;
                 var lines = new List<string>(64);
-                string szenario = tracker.SessionKind == SessionType.Immediate ? "A" : "B";
+                string szenario = tracker.SessionKind == SessionType.Immediate ? "Immediate" : "Retest";
                 string dirDe = _direction == OrderDirections.Buy ? "Long" : "Short";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
                 string zoneStateDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
@@ -1820,7 +1931,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             int needPrev = Math.Max(1, windowBars - 1);
             var prevs = new List<OvSnapshot>(needPrev);
-            for (int i = 0; i < Math.Min(history.Count, 200); i++)
+            for (int i = 0; i < Math.Min(history.Count, 600); i++)
             {
                 var s = history.GetOfFeatures(i)?.Snapshot;
                 if (s == null) continue;
@@ -1875,29 +1986,35 @@ namespace MyNamespace.Strategies.Orderflow
             OvSnapshot curr,
             MarketStructureContext.Zone z,
             decimal tickSize,
-            OrderDirections dir)
+            OrderDirections dir,
+            decimal absNetDeltaMin)
         {
             decimal oneTick = tickSize;
+            if (absNetDeltaMin < 0m)
+                absNetDeltaMin = 0m;
 
             if (dir == OrderDirections.Buy)
             {
-                bool hasSellImb = (curr.StackedSellImbBottomCount > 0 || curr.StackedSellImbCount > 0) && curr.NetDeltaTotal < 0m;
+                bool hasSellImb = curr.StackedSellImbBottomCount > 0 && curr.NetDeltaTotal < 0m;
                 if (!hasSellImb)
                     return false;
+                if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
+                    return false;
 
-                // no further downside: low not meaningfully below previous low; and close rejects upwards
                 bool noFurtherDown = curr.Low >= prev.Low - oneTick;
-                bool rejection = curr.Close >= Math.Max(z.High, prev.Close);
+                bool rejection = curr.Close >= z.High;
                 return noFurtherDown && rejection;
             }
             else
             {
-                bool hasBuyImb = (curr.StackedBuyImbTopCount > 0 || curr.StackedBuyImbCount > 0) && curr.NetDeltaTotal > 0m;
+                bool hasBuyImb = curr.StackedBuyImbTopCount > 0 && curr.NetDeltaTotal > 0m;
                 if (!hasBuyImb)
+                    return false;
+                if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
                     return false;
 
                 bool noFurtherUp = curr.High <= prev.High + oneTick;
-                bool rejection = curr.Close <= Math.Min(z.Low, prev.Close);
+                bool rejection = curr.Close <= z.Low;
                 return noFurtherUp && rejection;
             }
         }
