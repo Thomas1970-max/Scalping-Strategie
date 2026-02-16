@@ -342,3 +342,6 @@ FodyWeavers.xsd
 *.psm1
 *.psd1
 *.ps1xml
+
+*.bak
+*.backup

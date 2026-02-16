@@ -1,0 +1,143 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using ATAS.DataFeedsCore;
+using MyNamespace.Strategies.MarketAnalysis;
+using MyNamespace.Strategies.Models;
+using Utils.Common.Logging;
+using static MyNamespace.Strategies.Goldfluss3_3;
+
+namespace MyNamespace.Strategies.Orderflow
+{
+    public sealed class PatternRunner
+    {
+        private readonly ILoggerSource? _loggerSource;
+        private readonly decimal _tickSize;
+        private readonly IPatternEvaluator _reversalLong;
+        private readonly IPatternEvaluator _reversalShort;
+
+        public IReadOnlyList<IPatternEvaluator> Evaluators { get; }
+
+        public PatternRunner(
+            IPatternEvaluator reversalLong,
+            IPatternEvaluator reversalShort,
+            ILoggerSource? loggerSource,
+            decimal tickSize)
+        {
+            _reversalLong = reversalLong ?? throw new ArgumentNullException(nameof(reversalLong));
+            _reversalShort = reversalShort ?? throw new ArgumentNullException(nameof(reversalShort));
+            _loggerSource = loggerSource;
+            _tickSize = tickSize > 0m ? tickSize : 0.25m;
+
+            Evaluators = new List<IPatternEvaluator> { _reversalLong, _reversalShort };
+        }
+
+        public DetectedOrderflowPattern DetectDominantOrderflowPattern(
+            int bar,
+            OfFeaturesHistory history,
+            Dictionary<int, OfFeatures> ofFeaturesByBar,
+            MarketRegime currentRegime,
+            MarketBiasV2 currentDirectionalBias,
+            MarketStateV2 currentMarketState,
+            MarketStructureContext currentMarketStructureContext,
+            int? currentBar = null)
+        {
+            if (ofFeaturesByBar == null)
+                throw new ArgumentNullException(nameof(ofFeaturesByBar));
+            if (history == null)
+                throw new ArgumentNullException(nameof(history));
+
+            if (!ofFeaturesByBar.TryGetValue(bar, out var currentFeatures) || currentFeatures?.Snapshot == null)
+            {
+                return new DetectedOrderflowPattern(
+                    OrderflowPatternType.None,
+                    OrderDirections.Buy,
+                    PatternCategory.Unknown,
+                    null,
+                    new SetupEvaluationDetails(),
+                    0m);
+            }
+
+            var thresholds = new OrderflowThresholds
+            {
+                TickSizeDecimal = _tickSize,
+                FinishedAuctionMaxAskAtLow = 0m,
+                FinishedAuctionMaxBidAtHigh = 0m
+            };
+
+            var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(2);
+
+            PatternEvaluationResult? TryEval(IPatternEvaluator ev)
+            {
+                try
+                {
+                    return ev.Evaluate(
+                        currentFeatures.Snapshot,
+                        currentFeatures,
+                        history,
+                        thresholds,
+                        currentRegime,
+                        currentDirectionalBias,
+                        currentMarketState,
+                        currentMarketStructureContext);
+                }
+                catch (Exception ex)
+                {
+                    if (_loggerSource != null)
+                    {
+                        LoggerHelper.LogWarn(_loggerSource,
+                            $"[PatternRunner] Evaluator {ev?.GetType().Name ?? "(null)"} threw: {ex.GetType().Name}: {ex.Message}");
+                    }
+                    return null;
+                }
+            }
+
+            var r1 = TryEval(_reversalLong);
+            if (r1 != null) evals.Add((_reversalLong, r1));
+            var r2 = TryEval(_reversalShort);
+            if (r2 != null) evals.Add((_reversalShort, r2));
+
+            var detected = evals
+                .Where(x => x.res != null && x.res.IsDetected)
+                .OrderByDescending(x => x.res.ConfidenceScore)
+                .ToList();
+
+            if (detected.Count == 0)
+            {
+                return new DetectedOrderflowPattern(
+                    OrderflowPatternType.None,
+                    OrderDirections.Buy,
+                    PatternCategory.Unknown,
+                    null,
+                    new SetupEvaluationDetails(),
+                    0m);
+            }
+
+            var winner = detected[0];
+            var winnerCategory = winner.ev.Type.GetCategory();
+            var confidence = winner.res.ConfidenceScore;
+
+            var p = new DetectedOrderflowPattern(
+                type: winner.res.PatternType,
+                direction: winner.ev.Direction,
+                category: winnerCategory,
+                ofDerivedLevelCandidate: null,
+                setupEvaluationDetails: new SetupEvaluationDetails(),
+                confidenceScore: confidence,
+                score: 0d,
+                combinedConfidence: confidence);
+
+            p.Evaluation = winner.res;
+            p.Reasons = winner.res.Reasons?.ToList() ?? new List<string>();
+            p.MatchedCriteriaValues = winner.res.MatchedCriteriaValues ?? new Dictionary<string, object>();
+            p.MetHardConditions = winner.res.MetHardConditions ?? new List<EvaluatedConditionDetail>();
+            p.MetRelevantConditions = winner.res.MetRelevantConditions ?? new List<EvaluatedConditionDetail>();
+            p.MetDiagnosticConditions = winner.res.MetDiagnosticConditions ?? new List<EvaluatedConditionDetail>();
+            p.MetCriteriaCount = winner.res.MetCriteriaCount;
+            p.PossibleCriteriaCount = winner.res.PossibleCriteriaCount;
+            p.DetectReason = winner.res.DetectReason ?? string.Empty;
+
+            return p;
+        }
+    }
+}

@@ -37,6 +37,7 @@ namespace MyNamespace.Strategies.TradeManagement
         public bool UseDynamicLevelTp { get; set; } = false;
         public decimal DynamicLevelTpOffsetTicks { get; set; } = 1m; // Offset vom nächsten Level
         public decimal? MaxDynamicTpDistanceTicks { get; set; } = 12m; // Maximale Distanz für dynamisches TP
+        public decimal? MinDynamicTpDistanceTicks { get; set; } = 0m;  // Minimale Distanz für dynamisches TP (Fallback wenn zu nah)
 
         // NEU: SL Calculation Strategy
         public string? SlType { get; set; } // z.B. "Ticks", "ATR", "Level"

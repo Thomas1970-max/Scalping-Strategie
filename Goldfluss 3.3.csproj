@@ -48,6 +48,18 @@
     <Reference Include="OFT.Localization">
       <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Localization.dll</HintPath>
     </Reference>
+    <Reference Include="OFT.Controls">
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Controls.dll</HintPath>
+    </Reference>
+    <Reference Include="OFT.Docking">
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Docking.dll</HintPath>
+    </Reference>
+    <Reference Include="OFT.Platform.Core">
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Platform.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="OFT.Platform">
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Platform.dll</HintPath>
+    </Reference>
     <Reference Include="OFT.Rendering">
       <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\OFT.Rendering.dll</HintPath>
     </Reference>
@@ -66,10 +78,58 @@
     <Reference Include="Utils.Common">
       <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\Utils.Common.dll</HintPath>
     </Reference>
+    <Reference Include="Utils.Windows">
+      <HintPath>..\..\..\..\..\..\Program Files (x86)\ATAS Platform\Utils.Windows.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>
     <Compile Remove="Scalping-Strategie.Tests\**\*.cs" />
+    <Compile Remove="Orderflow\MarketStateEngine.cs" />
+    <Compile Remove="Orderflow\OrderflowThresholdManager.cs" />
+    <Compile Remove="Orderflow\ThresholdsResolver.cs" />
+    <Compile Remove="Orderflow\IThresholdsResolver.cs" />
+    <Compile Remove="Orderflow\ThresholdsPruner.cs" />
+    <Compile Remove="Orderflow\PatternCategorySpecs.cs" />
+    <Compile Remove="Orderflow\RangeBarAnalyzer.cs" />
+    <Compile Remove="Orderflow\RangeBarPatternDefinitions.cs" />
+    <Compile Remove="Orderflow\RangeStructureDetector.cs" />
+    <Compile Remove="Orderflow\RangeUSSequenceAnalyzer.cs" />
+    <Compile Remove="Orderflow\ConflictResolver.cs" />
+    <Compile Remove="Orderflow\AdaptiveThresholdsResult.cs" />
+    <Compile Remove="Orderflow\SetupConditionConfig.cs" />
+    <Compile Remove="Orderflow\Condition.cs" />
+    <Compile Remove="Orderflow\RegimeDetector.cs" />
+    <Compile Remove="Orderflow\EvaluatedConditionDetailExtensions.cs" />
+    <Compile Remove="Orderflow\ReversalContextThresholdsResult.cs" />
+    <Compile Remove="Orderflow\BreakoutPatternEvaluator .cs" />
+    <Compile Remove="Orderflow\ContinuationPatternEvaluator .cs" />
+    <Compile Remove="Orderflow\ReversalBouncePatternEvaluator.cs" />
+    <Compile Remove="Orderflow\PatternSignaturer.cs" />
+    <Compile Remove="TradeManagement\ResearchCollector.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EditorConfigFiles Remove="C:\Users\User\source\repos\Scalping-Strategie\.editorconfig" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="C:\Users\User\source\repos\Scalping-Strategie\.editorconfig" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Update="Properties\Settings.Designer.cs">
+      <DesignTimeSharedInput>True</DesignTimeSharedInput>
+      <AutoGen>True</AutoGen>
+      <DependentUpon>Settings.settings</DependentUpon>
+    </Compile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Properties\Settings.settings">
+      <Generator>SettingsSingleFileGenerator</Generator>
+      <LastGenOutput>Settings.Designer.cs</LastGenOutput>
+    </None>
   </ItemGroup>
 
 </Project>

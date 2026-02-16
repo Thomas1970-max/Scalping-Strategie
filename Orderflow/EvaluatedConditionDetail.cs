@@ -8,8 +8,8 @@ using static MyNamespace.Strategies.Goldfluss3_3;
 namespace MyNamespace.Strategies.Orderflow
 {
     /// <summary>
-    /// Repräsentiert eine spezifische Bedingung, die von einem Muster-Evaluator geprüft wurde und als erfüllt galt.
-    /// Wird verwendet, um detaillierte Informationen über die erfüllten Bedingungen zu speichern.
+    /// ReprÃ¤sentiert eine spezifische Bedingung, die von einem Muster-Evaluator geprÃ¼ft wurde und als erfÃ¼llt galt.
+    /// Wird verwendet, um detaillierte Informationen Ã¼ber die erfÃ¼llten Bedingungen zu speichern.
     /// </summary>
     public class EvaluatedConditionDetail
     {
@@ -19,7 +19,7 @@ namespace MyNamespace.Strategies.Orderflow
         public string ConditionName { get; }
 
         /// <summary>
-        /// Der Wert, der die Bedingung erfüllt hat (z.B. der aktuelle CvdImpulse-Wert "1234.56").
+        /// Der Wert, der die Bedingung erfÃ¼llt hat (z.B. der aktuelle CvdImpulse-Wert "1234.56").
         /// </summary>
         public string MetValue { get; }
 

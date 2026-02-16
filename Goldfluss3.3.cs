@@ -5,12 +5,12 @@ using System.Linq;
 using OFT.Rendering.Context;
 using OFT.Rendering.Tools;
 using ATAS.Indicators;
-using ATAS.Indicators.Technical;         
-using ATAS.Strategies.Chart;             
+using ATAS.Indicators.Technical;
+using ATAS.Strategies.Chart;
 using ATAS.DataFeedsCore;
-using Utils.Common.Logging;                
+using Utils.Common.Logging;
 using ATAS.Indicators.Drawing;
-using System.Drawing;                    
+using System.Drawing;
 using System.Windows.Media;
 using System.Reflection;
 using ATAS.Strategies;
@@ -29,13 +29,17 @@ using System.Reflection.Emit;
 using static ATAS.Indicators.Technical.SampleProperties;
 using static MyNamespace.Strategies.Goldfluss3_3;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.ConstrainedExecution;
 using System.Security.Cryptography;
-using System.Security.Policy;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Reflection;
 using System.Xml.Linq;
 using Utils.Common;
 using DevExpress.Xpf.Core.Native;
+using MyNamespace.Strategies.MarketAnalysis;
 using MyNamespace.Strategies;
 using System.Collections.Generic;
 using System.Collections;
@@ -77,6 +81,73 @@ namespace MyNamespace.Strategies
 
         public bool ShowZoneRects { get; set; } = true;
         public bool ShowZoneCenters { get; set; } = true; // eine Centerline je finaler Zone
+
+        [OFTParameter]
+        [Category("Visualisierung")]
+        [DisplayName("MarketStructure Zonen anzeigen")]
+        public bool ShowMarketStructureZones { get; set; } = true;
+
+        [OFTParameter]
+        [Category("Visualisierung")]
+        [DisplayName("MarketStateV2 Status oben anzeigen")]
+        public bool ShowMarketStateV2Overlay { get; set; } = true;
+
+        [OFTParameter]
+        [Category("Visualisierung")]
+        [DisplayName("MarketStructure Zonen-Labels")]
+        public bool ShowMarketStructureZoneLabels { get; set; } = true;
+
+        [OFTParameter]
+        [Category("MarketStructure")]
+        [DisplayName("Zonen-Sensitivität (0-10)")]
+        [Description("Bündelt die ZigZag-/Zonen-Strenge. Höher = weniger, aber signifikantere Zonen (größere Mindestbewegung, mehr Left/Right-Bars, stärkere Konsolidierung).")]
+        [DefaultValue(3)]
+        [Range(0, 10)]
+        public int MarketStructureZigZagSensitivity { get; set; } = 3;
+
+        [OFTParameter]
+        [Category("MarketStructure")]
+        [DisplayName("Wick-Mindestlänge (Ticks)")]
+        [Description("Mindestlänge des relevanten Wicks (in Ticks), damit aus einem Swing eine Zone gebaut wird. Größer = weniger Zonen, dafür stärker gefiltert.")]
+        [DefaultValue(4)]
+        [Range(1, 50)]
+        public int MarketStructureWickMinTicks { get; set; } = 4;
+
+        [OFTParameter]
+        [Category("MarketStructure")]
+        [DisplayName("Wick-Min. an Volatilität koppeln")]
+        [Description("Wenn aktiv, wird die Wick-Mindestlänge automatisch je Volatilitäts-Regime skaliert (Slow/Normal/Fast).")]
+        [DefaultValue(true)]
+        public bool MarketStructureAdaptiveWickByRegime { get; set; } = true;
+
+        [OFTParameter]
+        [Category("MarketStructure")]
+        [DisplayName("Wick-Multiplikator (Slow)")]
+        [Description("Skalierung der Wick-Mindestlänge im Slow-Regime. Beispiel 0.8 = 20% weniger Wick-Anforderung in ruhigem Markt.")]
+        [DefaultValue(0.8)]
+        [Range(0.1, 5.0)]
+        public decimal MarketStructureAdaptiveWickSlowMult { get; set; } = 0.8m;
+
+        [OFTParameter]
+        [Category("MarketStructure")]
+        [DisplayName("Wick-Multiplikator (Fast)")]
+        [Description("Skalierung der Wick-Mindestlänge im Fast-Regime. Beispiel 1.4 = 40% mehr Wick-Anforderung in volatilen Phasen.")]
+        [DefaultValue(1.4)]
+        [Range(0.1, 5.0)]
+        public decimal MarketStructureAdaptiveWickFastMult { get; set; } = 1.4m;
+
+        [OFTParameter]
+        [Category("Visualisierung")]
+        [DisplayName("Synthetic Tick900 Debug")]
+        public bool ShowSyntheticTick900CandlesDebug { get; set; } = false;
+
+        [OFTParameter]
+        [Category("Orderflow - ReversalBounce")]
+        [DisplayName("Compression Gap (Ticks)")]
+        [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks).")]
+        [DefaultValue(12)]
+        [Range(0, 100)]
+        public int ReversalCompressionGapTicks { get; set; } = 12;
 
 
 
@@ -140,21 +211,1562 @@ namespace MyNamespace.Strategies
             }
         }
 
+        private int GetEffectiveMarketStructureWickMinTicks(MarketRegime regime)
+        {
+            int baseTicks = Math.Max(1, MarketStructureWickMinTicks);
+            if (!MarketStructureAdaptiveWickByRegime)
+                return baseTicks;
+
+            decimal mult = 1.0m;
+            if (regime == MarketRegime.Slow)
+                mult = MarketStructureAdaptiveWickSlowMult;
+            else if (regime == MarketRegime.Fast)
+                mult = MarketStructureAdaptiveWickFastMult;
+
+            if (mult <= 0m)
+                mult = 1.0m;
+
+            int eff = (int)Math.Round(baseTicks * mult, MidpointRounding.AwayFromZero);
+            return Math.Max(1, eff);
+        }
+
+        private void EnsureTick900BackfillRequested(int bar)
+        {
+            void LogGateOnce(string reason)
+            {
+                if (_msBackfillGateDiagLogged)
+                    return;
+                _msBackfillGateDiagLogged = true;
+                try
+                {
+                    int curBar = -1;
+                    try { curBar = CurrentBar; } catch { }
+
+                    DateTime t0 = default;
+                    DateTime tLast = default;
+                    DateTime tLastLast = default;
+                    try
+                    {
+                        var c0 = GetCandle(0);
+                        if (c0 != null)
+                            t0 = c0.Time;
+                    }
+                    catch { }
+                    try
+                    {
+                        var idx = Math.Max(0, curBar - 1);
+                        var cl = GetCandle(idx);
+                        if (cl != null)
+                        {
+                            tLast = cl.Time;
+                            tLastLast = cl.LastTime;
+                        }
+                    }
+                    catch { }
+
+                    //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Backfill gate blocked: reason='{reason}' bar={bar} CurrentBar={curBar} firstTime={t0:O} lastTime={tLast:O} lastLastTime={tLastLast:O} requested={_msTick900BackfillRequested} completed={_msTick900BackfillCompleted} tickBars={_msTick900Bar}");
+                }
+                catch { }
+            }
+
+            if (!IsMarketStructureLeader())
+            {
+                LogGateOnce("not-leader");
+                return;
+            }
+            if (_msTick900BackfillRequested)
+            {
+                LogGateOnce("already-requested");
+                return;
+            }
+            if (_msTick900Aggregator == null || _marketStructureContext == null)
+            {
+                LogGateOnce("null-aggregator-or-context");
+                return;
+            }
+
+            // Wenn ATAS beim Reload/Template-Apply kurzzeitig mehrere Instanzen gleichzeitig laufen lässt,
+            // darf nur die neueste Instanz Backfill/MarketStructure erzeugen.
+            if (_msGeneration != Volatile.Read(ref _msGlobalGeneration))
+            {
+                LogGateOnce("not-latest-generation");
+                return;
+            }
+
+            // Backfill nur am rechten Rand auslösen. Während der historischen Berechnung ruft ATAS OnCalculate
+            // für viele Bars auf, wobei CurrentBar/LastTime noch im Aufbau ist. Ein zu früher Request führt zu
+            // Teilbereichen (z.B. nur bis 00:13) und verschobenen Zonen.
+            if (bar < Math.Max(0, CurrentBar - 1))
+            {
+                LogGateOnce("not-at-right-edge");
+                return;
+            }
+
+            try
+            {
+                if (CurrentBar <= 0)
+                {
+                    LogGateOnce("CurrentBar<=0");
+                    return;
+                }
+
+                var lastIdx = Math.Max(0, CurrentBar - 1);
+                var lastCandle = GetCandle(lastIdx);
+                if (lastCandle == null)
+                {
+                    LogGateOnce("lastCandle-null");
+                    return;
+                }
+
+                var firstCandle = GetCandle(0);
+                if (firstCandle == null)
+                {
+                    LogGateOnce("firstCandle-null");
+                    return;
+                }
+
+                var endTime = lastCandle.LastTime;
+                if (endTime == default)
+                {
+                    LogGateOnce("endTime-default");
+                    return;
+                }
+
+                // Backtest/Replay Reload kann den Chart-Zeitraum zurücksetzen (EndTime springt rückwärts).
+                // In diesem Fall darf die globale Watermark den neuen Request NICHT blockieren.
+                // Wir resetten die Watermark und lokalen Tick900-Zustand, sodass ein neuer Backfill möglich ist.
+                try
+                {
+                    var globalEndTicks0 = Volatile.Read(ref _msGlobalBackfillRequestedEndTimeTicks);
+                    // Only treat this as a true reset if the time jump is meaningful.
+                    // During replay/load, ATAS can temporarily report slightly earlier endTime while building the chart.
+                    var backJump = globalEndTicks0 != 0 ? (globalEndTicks0 - endTime.Ticks) : 0;
+                    if (globalEndTicks0 != 0 && backJump > TimeSpan.FromMinutes(5).Ticks)
+                    {
+                        Interlocked.Exchange(ref _msGlobalBackfillRequestedEndTimeTicks, 0);
+                        _msTick900BackfillRequestedEndTime = default;
+                        _msTick900BackfillRequested = false;
+                        _msTick900BackfillCompleted = false;
+                        _msTick900ResetOnNextBackfillResponse = true;
+                        ClearSyntheticTick900Debug();
+                        _msBackfillGateDiagLogged = false;
+                        //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Detected backward chart time jump -> reset global watermark and Tick900 state. endTime={endTime:O} prevGlobalTicks={globalEndTicks0}");
+                    }
+                }
+                catch { }
+
+                // Wenn wir bereits einen Backfill abgeschlossen haben, aber der Chart inzwischen weiter nach rechts
+                // nachgeladen wurde, müssen wir nachziehen. Sonst bleiben Tick900-Candles/Zonen auf dem frühen Stand.
+                // Wir rebuilden bewusst komplett, weil MarketStructureContext auf Sequenz-Logik basiert.
+                if (_msTick900BackfillCompleted && _msTick900BackfillRequestedEndTime != default)
+                {
+                    if (!IsNearRealTime(endTime))
+                        return;
+
+                    var minAdvance = TimeSpan.FromSeconds(30);
+                    if (endTime <= _msTick900BackfillRequestedEndTime.Add(minAdvance))
+                        return;
+
+                    // Avoid constant rebuilds while replay/live trades are streaming.
+                    // In that case, we should rely on OnNewTrade aggregation rather than re-backfilling every few seconds.
+                    try
+                    {
+                        var nowUtc = DateTime.UtcNow;
+                        var liveLag = nowUtc - _msLastLiveTradeWallClockUtc;
+                        if (_msLastLiveTradeWallClockUtc != default && liveLag > TimeSpan.FromSeconds(15))
+                        {
+                            _msTick900RebuildAfterResumeNeeded = true;
+                            return;
+                        }
+                        if (!_msTick900RebuildAfterResumeNeeded && _msLastLiveTradeWallClockUtc != default && liveLag < TimeSpan.FromSeconds(2))
+                            return;
+                    }
+                    catch { }
+
+                    // Cooldown on refresh requests.
+                    try
+                    {
+                        var nowUtc = DateTime.UtcNow;
+                        if (_msLastBackfillRequestWallClockUtc != default && nowUtc - _msLastBackfillRequestWallClockUtc < TimeSpan.FromSeconds(10))
+                            return;
+                    }
+                    catch { }
+
+                    // Wichtig: nicht sofort resetten, sonst "blitzen" Zonen (Render sieht ActiveZones=0)
+                    // während der neue Backfill noch in-flight ist.
+                    // Reset erfolgt atomar beim Eintreffen der nächsten Backfill-Response.
+                    _msTick900ResetOnNextBackfillResponse = true;
+                    _msTick900BackfillCompleted = false;
+                    _msTick900RebuildAfterResumeNeeded = false;
+
+					_msTick900BackfillRequested = false;
+					_msTick900BackfillRequestDiagLogged = false;
+                }
+
+                // Prozessweiter Guard: über alle Strategie-Instanzen hinweg nie ein älteres/gleiches EndTime anfordern.
+                // Sonst kann eine spätere zweite Instanz den Zustand mit einem Backfill für einen früheren Tag überschreiben.
+                var globalEndTicks = Volatile.Read(ref _msGlobalBackfillRequestedEndTimeTicks);
+                if (globalEndTicks != 0 && endTime.Ticks <= globalEndTicks)
+                {
+                    try
+                    {
+                        bool localEmpty = !_msTick900BackfillCompleted && _msTick900Bar == 0 && (_msTick900ClosedCandles == null || _msTick900ClosedCandles.Count == 0);
+                        if (localEmpty)
+                        {
+                            Interlocked.Exchange(ref _msGlobalBackfillRequestedEndTimeTicks, 0);
+                            _msBackfillGateDiagLogged = false;
+                            globalEndTicks = 0;
+                        }
+                    }
+                    catch { }
+
+                    if (globalEndTicks != 0)
+                    {
+                        LogGateOnce("global-endtime-watermark-block");
+                        return;
+                    }
+                }
+
+                var firstTime = firstCandle.Time;
+                if (firstTime == default)
+                {
+                    LogGateOnce("firstTime-default");
+                    return;
+                }
+
+                // Replay/History kann den Chart-Zeitraum anfangs in Blöcken nachladen.
+                // Ein "warte auf mehrere stabile Calls"-Gate kann dazu führen, dass bei pausiertem Replay
+                // gar kein Backfill ausgelöst wird (nur 1 Calculate-Call auf dem letzten Bar).
+                // Daher tracken wir die Kandidaten weiterhin, blockieren den Request aber nicht mehr.
+                if (firstTime != _msTick900BackfillCandidateFirstTime || endTime != _msTick900BackfillCandidateEndTime)
+                {
+                    _msTick900BackfillCandidateFirstTime = firstTime;
+                    _msTick900BackfillCandidateEndTime = endTime;
+                    _msTick900BackfillCandidateStableCount = 0;
+                }
+                else
+                {
+                    _msTick900BackfillCandidateStableCount++;
+                }
+
+                // Guard: Wenn wir bereits ein neueres/gleiches EndTime angefordert hatten, nie "rückwärts" neu anfordern.
+                if (_msTick900BackfillRequestedEndTime != default && endTime <= _msTick900BackfillRequestedEndTime)
+                {
+                    LogGateOnce("instance-endtime-not-advancing");
+                    return;
+                }
+
+                DateTime startTime;
+                try
+                {
+                    var chartEnd = NormalizeToChartTime(endTime);
+                    var chartMidnight = new DateTime(chartEnd.Year, chartEnd.Month, chartEnd.Day, 0, 0, 0, chartEnd.Kind);
+
+                    if (endTime.Kind == DateTimeKind.Utc)
+                        startTime = chartMidnight.Kind == DateTimeKind.Utc ? chartMidnight : DateTime.SpecifyKind(chartMidnight, DateTimeKind.Local).ToUniversalTime();
+                    else if (endTime.Kind == DateTimeKind.Local)
+                        startTime = chartMidnight.Kind == DateTimeKind.Local ? chartMidnight : DateTime.SpecifyKind(chartMidnight, DateTimeKind.Local);
+                    else
+                        startTime = DateTime.SpecifyKind(chartMidnight, DateTimeKind.Unspecified);
+                }
+                catch
+                {
+                    startTime = new DateTime(endTime.Year, endTime.Month, endTime.Day, 0, 0, 0, endTime.Kind);
+                }
+
+                if (startTime == default)
+                    startTime = new DateTime(endTime.Year, endTime.Month, endTime.Day, 0, 0, 0, endTime.Kind);
+
+                var request = new CumulativeTradesRequest(startTime, endTime, 0, 0);
+                _msTick900BackfillRequested = true;
+                _msTick900BackfillRequestedEndTime = endTime;
+                try { _msLastBackfillRequestWallClockUtc = DateTime.UtcNow; } catch { }
+
+                if (!_msTick900BackfillRequestDiagLogged)
+                {
+                    _msTick900BackfillRequestDiagLogged = true;
+                    this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Request cumulative trades: {startTime:yyyy-MM-dd HH:mm:ss}..{endTime:yyyy-MM-dd HH:mm:ss} (end={endTime:O}) CurrentBar={CurrentBar}");
+                }
+
+                // Prozessweite Watermark setzen (monoton steigend). Falls parallel ein anderer Thread/Instanz ebenfalls
+                // etwas setzen will, gewinnt das höhere EndTime.
+                long newTicks = endTime.Ticks;
+                while (true)
+                {
+                    var cur = Volatile.Read(ref _msGlobalBackfillRequestedEndTimeTicks);
+                    if (cur >= newTicks)
+                        break;
+                    if (Interlocked.CompareExchange(ref _msGlobalBackfillRequestedEndTimeTicks, newTicks, cur) == cur)
+                        break;
+                }
+
+                RequestForCumulativeTrades(request);
+                //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Requesting cumulative trades: {startTime:O}..{endTime:O} firstTime={firstTime:O} endTime={endTime:O} CurrentBar={CurrentBar}");
+            }
+            catch (Exception ex)
+            {
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Request failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        protected override void OnCumulativeTradesResponse(CumulativeTradesRequest request, IEnumerable<CumulativeTrade> cumulativeTrades)
+        {
+            if (!IsMarketStructureLeader())
+                return;
+            if (!UseTick900ForMarketStructure)
+                return;
+            if (_msTick900Aggregator == null || _marketStructureContext == null)
+                return;
+
+            if (_msGeneration != Volatile.Read(ref _msGlobalGeneration))
+                return;
+
+            // Prozessweiter Guard: nur die Antwort zum neuesten angeforderten EndTime verarbeiten.
+            // Damit kann eine zweite Instanz (oder ein späteres, älteres Request) den Zustand nicht mehr "zurücksetzen".
+            try
+            {
+                var globalEndTicks = Volatile.Read(ref _msGlobalBackfillRequestedEndTimeTicks);
+                if (globalEndTicks != 0 && request != null && request.EndTime.Ticks < globalEndTicks)
+                    return;
+            }
+            catch { }
+
+            if (_msTick900ResetOnNextBackfillResponse)
+            {
+                _msTick900ResetOnNextBackfillResponse = false;
+                this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Reset Tick900 state on backfill response. endTime={request?.EndTime:O}");
+                try
+                {
+                    _marketStructureContext.Reset();
+                }
+                catch { }
+
+                try
+                {
+                    _msTick900Aggregator.Reset();
+                    _msTick900BucketSessionStart = DateTime.MinValue;
+                    _msTick900Bar = 0;
+                    _msTick900LiveTradeBuffer.Clear();
+                    _msTick900ClosedCandles.Clear();
+                    _msChartTimeKind = null;
+                }
+                catch { }
+            }
+
+            try
+            {
+                _msTick900Aggregator.Reset();
+                _msTick900BucketSessionStart = DateTime.MinValue;
+                _msTick900Bar = 0;
+                _msTick900BackfillSawTicks = false;
+                _msTick900ClosedCandles.Clear();
+                _msChartTimeKind = null;
+
+                var list = cumulativeTrades?.ToList() ?? new List<CumulativeTrade>();
+                if (list.Count > 1)
+                    list.Sort((a, b) => a.Time.CompareTo(b.Time));
+
+                bool processedAllTicks = false;
+                try
+                {
+                    var allTicks = new List<MarketDataArg>(Math.Max(1024, list.Count * 4));
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var tks = list[i]?.Ticks;
+                        if (tks == null)
+                            continue;
+
+                        try
+                        {
+                            allTicks.AddRange(tks);
+                        }
+                        catch
+                        {
+                            foreach (var tk in tks)
+                                allTicks.Add(tk);
+                        }
+                    }
+
+                    if (allTicks.Count > 0)
+                    {
+                        _msTick900BackfillSawTicks = true;
+                        List<(DateTime T, MarketDataArg A)> allTicksByChartTime;
+                        DateTime maxTickChartTime = default;
+                        try
+                        {
+                            allTicksByChartTime = new List<(DateTime, MarketDataArg)>(allTicks.Count);
+                            for (int i = 0; i < allTicks.Count; i++)
+                            {
+                                var a = allTicks[i];
+                                if (a == null) continue;
+                                var tt = NormalizeToChartTime(a.Time);
+                                if (maxTickChartTime == default || tt > maxTickChartTime)
+                                    maxTickChartTime = tt;
+                                allTicksByChartTime.Add((tt, a));
+                            }
+                            if (allTicksByChartTime.Count > 1)
+                                allTicksByChartTime.Sort((x, y) => x.T.CompareTo(y.T));
+                        }
+                        catch
+                        {
+                            allTicksByChartTime = null;
+                        }
+
+                        var src = allTicksByChartTime != null
+                            ? allTicksByChartTime.Select(x => x.A)
+                            : allTicks;
+
+                        foreach (var tick in src)
+                        {
+                            var tt = NormalizeToChartTime(tick.Time);
+
+                            var sessStart = GetSessionStartTimeForSwingSeed(tt);
+                            if (_msTick900BucketSessionStart == DateTime.MinValue)
+                                _msTick900BucketSessionStart = sessStart;
+                            else if (sessStart != _msTick900BucketSessionStart)
+                            {
+                                _msTick900Aggregator.Reset();
+                                _msTick900BucketSessionStart = sessStart;
+                            }
+
+                            decimal incNetDeltaTick = 0m;
+                            try
+                            {
+                                var dir = tick.Direction.ToString();
+                                if (dir == "Buy")
+                                    incNetDeltaTick = tick.Volume;
+                                else if (dir == "Sell")
+                                    incNetDeltaTick = -tick.Volume;
+                            }
+                            catch { }
+
+                            if (_msTick900Aggregator.AddTrade(tt, tick.Price, tick.Volume, incNetDeltaTick, out var closedFromTick) && closedFromTick != null)
+                            {
+                                _msTick900Bar++;
+                                RecordSyntheticTick900ClosedCandle(closedFromTick);
+                                _marketStructureContext.Update(
+                                    _msTick900Bar,
+                                    closedFromTick,
+                                    snapshot: null,
+                                    tickSize: _tickSize,
+                                    vwap: 0m,
+                                    recentOf: null,
+                                    allowZoneCreation: true,
+                                    allowZoneLifecycle: false);
+                            }
+                        }
+
+                        processedAllTicks = true;
+
+                        try
+                        {
+                            this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Backfill tick stats: ticks={allTicks.Count} maxTickChartTime={maxTickChartTime:O} endTime={request?.EndTime:O}");
+                        }
+                        catch { }
+                    }
+                }
+                catch
+                {
+                    processedAllTicks = false;
+                }
+
+                CumulativeTrade prev = null;
+
+                foreach (var ct in list)
+                {
+                    if (processedAllTicks)
+                        break;
+                    // Prefer true trade-by-trade ticks if available (align with ATAS indicators like TapePattern).
+                    // This yields correct 900-tick candles, instead of counting each CumulativeTrade as one tick.
+                    bool processedTicks = false;
+                    try
+                    {
+                        var ticks = ct.Ticks;
+                        if (ticks != null)
+                        {
+                            _msTick900BackfillSawTicks = true;
+                            List<MarketDataArg> tickEnum;
+                            try
+                            {
+                                tickEnum = ticks.ToList();
+                                if (tickEnum.Count > 1)
+                                    tickEnum.Sort((a, b) => a.Time.CompareTo(b.Time));
+                            }
+                            catch
+                            {
+                                tickEnum = null;
+                            }
+
+                            var sourceEnum = (IEnumerable<MarketDataArg>)(tickEnum ?? ticks);
+                            foreach (var tick in sourceEnum)
+                            {
+                                // Normalize tick time to chart/local time (ATAS indicators often apply InstrumentInfo.TimeZone).
+                                // For our bucketing/zone alignment, we must be consistent with GetCandle(...) times.
+                                var tt = NormalizeToChartTime(tick.Time);
+
+                                var sessStart = GetSessionStartTimeForSwingSeed(tt);
+                                if (_msTick900BucketSessionStart == DateTime.MinValue)
+                                    _msTick900BucketSessionStart = sessStart;
+                                else if (sessStart != _msTick900BucketSessionStart)
+                                {
+                                    _msTick900Aggregator.Reset();
+                                    _msTick900BucketSessionStart = sessStart;
+                                }
+
+                                decimal incNetDeltaTick = 0m;
+                                try
+                                {
+                                    var dir = tick.Direction.ToString();
+                                    if (dir == "Buy")
+                                        incNetDeltaTick = tick.Volume;
+                                    else if (dir == "Sell")
+                                        incNetDeltaTick = -tick.Volume;
+                                }
+                                catch { }
+
+                                if (_msTick900Aggregator.AddTrade(tt, tick.Price, tick.Volume, incNetDeltaTick, out var closedFromTick) && closedFromTick != null)
+                                {
+                                    _msTick900Bar++;
+                                    RecordSyntheticTick900ClosedCandle(closedFromTick);
+                                    _marketStructureContext.Update(
+                                        _msTick900Bar,
+                                        closedFromTick,
+                                        snapshot: null,
+                                        tickSize: _tickSize,
+                                        vwap: 0m,
+                                        recentOf: null,
+                                        allowZoneCreation: true,
+                                        allowZoneLifecycle: false);
+                                }
+                            }
+
+                            processedTicks = true;
+                        }
+                    }
+                    catch
+                    {
+                        processedTicks = false;
+                    }
+
+                    if (processedTicks)
+                    {
+                        prev = ct;
+                        continue;
+                    }
+
+                    if (!_msTick900BackfillSawTicks && !_msTick900BackfillTicksDiagLogged)
+                    {
+                        _msTick900BackfillTicksDiagLogged = true;
+                        //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Backfill response has no per-trade tick list (ct.Ticks==null). 900-tick candles are approximate and may desync vs ATAS Tick(900) chart.");
+                    }
+
+                    // Fallback: bucket by cumulative-trade timestamp
+                    var t = NormalizeToChartTime(ct.Time);
+                    var sessStart2 = GetSessionStartTimeForSwingSeed(t);
+                    if (_msTick900BucketSessionStart == DateTime.MinValue)
+                        _msTick900BucketSessionStart = sessStart2;
+                    else if (sessStart2 != _msTick900BucketSessionStart)
+                    {
+                        _msTick900Aggregator.Reset();
+                        _msTick900BucketSessionStart = sessStart2;
+                    }
+
+                    // CumulativeTrade kann als "Update" des letzten Trades gesendet werden.
+                    // In diesem Fall darf nur das Inkrement in Volume/Delta verarbeitet werden.
+                    bool isUpdateOfPrev = false;
+                    if (prev != null)
+                    {
+                        try
+                        {
+                            // ATAS liefert i.d.R. IsEqual für CumulativeTrade (siehe z.B. TapePattern/PublicActiveVolume).
+                            // Falls das aus irgendeinem Grund nicht verfügbar ist, fallback auf Heuristik.
+                            isUpdateOfPrev = prev.IsEqual(ct);
+                        }
+                        catch
+                        {
+                            try
+                            {
+                                isUpdateOfPrev = prev.Time == ct.Time && prev.FirstPrice == ct.FirstPrice;
+                            }
+                            catch { }
+                        }
+                    }
+
+                    decimal incVol;
+                    decimal incNetDelta;
+                    try
+                    {
+                        incVol = isUpdateOfPrev ? (ct.Volume - prev.Volume) : ct.Volume;
+                    }
+                    catch
+                    {
+                        incVol = ct.Volume;
+                    }
+
+                    try
+                    {
+                        var ask = ct.NewAsk.Volume;
+                        var bid = ct.NewBid.Volume;
+
+                        if (isUpdateOfPrev)
+                        {
+                            var prevAsk = prev.NewAsk.Volume;
+                            var prevBid = prev.NewBid.Volume;
+                            incNetDelta = (ask - prevAsk) - (bid - prevBid);
+                        }
+                        else
+                        {
+                            incNetDelta = ask - bid;
+                        }
+                    }
+                    catch
+                    {
+                        incNetDelta = 0m;
+                    }
+
+                    prev = ct;
+
+                    if (incVol == 0m && incNetDelta == 0m)
+                        continue;
+
+                    if (_msTick900Aggregator.AddTrade(t, ct.FirstPrice, incVol, incNetDelta, out var closedTickCandle) && closedTickCandle != null)
+                    {
+                        _msTick900Bar++;
+                        RecordSyntheticTick900ClosedCandle(closedTickCandle);
+                        _marketStructureContext.Update(
+                            _msTick900Bar,
+                            closedTickCandle,
+                            snapshot: null,
+                            tickSize: _tickSize,
+                            vwap: 0m,
+                            recentOf: null,
+                            allowZoneCreation: true,
+                            allowZoneLifecycle: false);
+                    }
+                }
+
+                _msTick900BackfillCompleted = true;
+                if (_msTick900LiveTradeBuffer.Count > 0)
+                {
+                    int liveBufApplied = 0;
+                    int liveBufSkipped = 0;
+                    foreach (var a in _msTick900LiveTradeBuffer)
+                    {
+                        if (a == null) continue;
+                        // Verhindere Doppelzählung: Trades, die zeitlich im Backfill-Fenster liegen, dürfen nicht
+                        // nochmal in den Aggregator (sonst verschieben sich 900-Tick-Candle-Grenzen und Zonen driften).
+                        try
+                        {
+                            if (_msTick900BackfillRequestedEndTime != default)
+                            {
+                                var at = NormalizeToChartTime(a.Time);
+                                var et = NormalizeToChartTime(_msTick900BackfillRequestedEndTime);
+                                if (at <= et)
+                                {
+                                    liveBufSkipped++;
+                                    continue;
+                                }
+                            }
+                        }
+                        catch { }
+                        liveBufApplied++;
+                        var localTime = NormalizeToChartTime(a.Time);
+                        var sessStart3 = GetSessionStartTimeForSwingSeed(localTime);
+                        if (_msTick900BucketSessionStart == DateTime.MinValue)
+                            _msTick900BucketSessionStart = sessStart3;
+                        else if (sessStart3 != _msTick900BucketSessionStart)
+                        {
+                            _msTick900Aggregator.Reset();
+                            _msTick900BucketSessionStart = sessStart3;
+                        }
+
+                        decimal incNetDeltaTick = 0m;
+                        try
+                        {
+                            var dir = a.Direction.ToString();
+                            if (dir == "Buy")
+                                incNetDeltaTick = a.Volume;
+                            else if (dir == "Sell")
+                                incNetDeltaTick = -a.Volume;
+                        }
+                        catch { }
+
+                        if (_msTick900Aggregator.AddTrade(localTime, a.Price, a.Volume, incNetDeltaTick, out var closedTickCandle2) && closedTickCandle2 != null)
+                        {
+                            _msTick900Bar++;
+                            RecordSyntheticTick900ClosedCandle(closedTickCandle2);
+                            var vwapNow = _currentVwapSnapshot?.Current ?? 0m;
+                            _marketStructureContext.Update(
+                                _msTick900Bar,
+                                closedTickCandle2,
+                                snapshot: null,
+                                tickSize: _tickSize,
+                                vwap: vwapNow,
+                                recentOf: null,
+                                allowZoneCreation: true,
+                                allowZoneLifecycle: false);
+                        }
+                    }
+                    _msTick900LiveTradeBuffer.Clear();
+
+					try
+					{
+						_msTick900LiveBufAppliedLastBackfill = liveBufApplied;
+						_msTick900LiveBufSkippedLastBackfill = liveBufSkipped;
+					}
+					catch { }
+                }
+                else
+                {
+					try
+					{
+						_msTick900LiveBufAppliedLastBackfill = 0;
+						_msTick900LiveBufSkippedLastBackfill = 0;
+					}
+					catch { }
+                }
+
+                NormalizeZonesAfterBackfill();
+
+                try
+                {
+                    var zc = _marketStructureContext?.ActiveZones?.Count ?? 0;
+                    //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Zones after backfill: active={zc}");
+                }
+                catch { }
+
+                if (IsMarketStructureLeader())
+                    WriteZonesSnapshot();
+
+                
+
+                try
+                {
+                    //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Backfill tick-list availability: ctTicksPresent={_msTick900BackfillSawTicks}");
+                }
+                catch { }
+
+                try
+                {
+                    var lastClosed = _msTick900ClosedCandles != null && _msTick900ClosedCandles.Count > 0
+                        ? _msTick900ClosedCandles[_msTick900ClosedCandles.Count - 1]
+                        : null;
+                    var lastTime = lastClosed != null ? lastClosed.Time : default;
+                    var lastLastTime = lastClosed != null ? lastClosed.LastTime : default;
+                    this.LogInfo(
+                        $"[Tick900Backfill:{_msInstanceId}] Completed backfill: endTime={request?.EndTime:O} ctItems={list.Count} ctTicksPresent={_msTick900BackfillSawTicks} " +
+                        $"tickBars={_msTick900Bar} closedCandles={(_msTick900ClosedCandles != null ? _msTick900ClosedCandles.Count : 0)} " +
+                        $"lastCandleTime={lastTime:O} lastCandleLastTime={lastLastTime:O} " +
+                        $"liveBufApplied={_msTick900LiveBufAppliedLastBackfill} liveBufSkipped={_msTick900LiveBufSkippedLastBackfill} " +
+                        $"liveBufRemaining={(_msTick900LiveTradeBuffer != null ? _msTick900LiveTradeBuffer.Count : 0)} requestedEnd={_msTick900BackfillRequestedEndTime:O}");
+                }
+                catch { }
+
+                try
+                {
+                    var forming = _msTick900Aggregator.GetCurrentFormingCandle();
+                    if (forming != null)
+                    {
+                        this.LogInfo(
+                            $"[Tick900Backfill:{_msInstanceId}] Forming Tick900: tradeCount={forming.TradeCount} " +
+                            $"time={forming.Time:O} lastTime={forming.LastTime:O} " +
+                            $"OHLC=({forming.Open:F2},{forming.High:F2},{forming.Low:F2},{forming.Close:F2}) vol={forming.Volume} netD={forming.NetDelta}");
+                    }
+                    else
+                    {
+                        this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Forming Tick900: none (count={_msTick900Aggregator.CurrentCount})");
+                    }
+                }
+                catch { }
+
+                //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Completed. Trades={list.Count} tickBars={_msTick900Bar}");
+
+                // Backfill fertig: In-Flight Flag zurücksetzen, damit ein späteres "Nachziehen" möglich ist.
+                _msTick900BackfillRequested = false;
+                _msTick900BackfillCompleted = true;
+            }
+            catch (Exception ex)
+            {
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Response processing failed: {ex.GetType().Name}: {ex.Message}");
+                _msTick900BackfillRequested = false;
+            }
+        }
+
+        private DateTime GetSessionStartTimeForSwingSeed(DateTime referenceTime)
+        {
+            if (TryGetSessionTimesForSwingSeed(out var start, out _))
+            {
+                var sessionStart = referenceTime.Date.Add(start);
+                if (referenceTime.TimeOfDay < start)
+                    sessionStart = sessionStart.AddDays(-1);
+                return sessionStart;
+            }
+
+            int startBar = FindCurrentSessionStartBarForSwingSeed();
+            var candle = GetCandle(startBar);
+            return candle != null ? candle.Time : referenceTime;
+        }
+
+        private int FindCurrentSessionStartBarForSwingSeed()
+        {
+            var last = Math.Max(0, CurrentBar - 1);
+            for (int i = last; i >= 0; i--)
+            {
+                if (IsNewSession(i))
+                    return i;
+            }
+
+            return 0;
+        }
+
+        private int FindSessionStartBarByTime(int endBar, DateTime sessionStartTime)
+        {
+            int startBar = 0;
+            for (int i = Math.Max(0, endBar); i >= 0; i--)
+            {
+                var candle = GetCandle(i);
+                if (candle == null)
+                    continue;
+
+                if (candle.Time < sessionStartTime)
+                {
+                    startBar = Math.Min(endBar, i + 1);
+                    break;
+                }
+
+                startBar = 0;
+            }
+
+            return startBar;
+        }
+
+        private bool TryGetSessionTimesForSwingSeed(out TimeSpan start, out TimeSpan end)
+        {
+            start = default;
+            end = default;
+
+            if (TryGetWorkingTimeForSwingSeed(out start, out end))
+                return true;
+
+            if (TryGetTradingOptionsTimesForSwingSeed(out start, out end))
+                return true;
+
+            return false;
+        }
+
+        private void TryAcquireMarketStructureLeadership()
+        {
+            if (_msLeaderElectionAttempted)
+                return;
+            _msLeaderElectionAttempted = true;
+
+            if (_msLeaderMutex == null)
+            {
+                _msIsLeaderInstance = true;
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] LeaderMutex not initialized -> fallback leader=true.");
+                return;
+            }
+
+            try
+            {
+                _msIsLeaderInstance = _msLeaderMutex.WaitOne(0);
+                if (!_msIsLeaderInstance)
+                {
+                    // Fallback: within a single ATAS process we still want the newest instance to be able to run.
+                    // A stale instance may hold the mutex forever; in that case, prefer generation leader.
+                    var latest = _msGeneration == Volatile.Read(ref _msGlobalGeneration);
+                    if (latest)
+                    {
+                        _msIsLeaderInstance = true;
+                        //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] LeaderMutex busy -> fallback leader=true (latest generation). msGen={_msGeneration} globalGen={Volatile.Read(ref _msGlobalGeneration)}");
+                    }
+                }
+
+                if (_msIsLeaderInstance && !_msZonesSnapshotClearedByLeader)
+                {
+                    _msZonesSnapshotClearedByLeader = true;
+                    try
+                    {
+                        ClearZonesSnapshot();
+                    }
+                    catch { }
+                }
+
+                //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] LeaderMutex acquire in OnCalculate: isLeader={_msIsLeaderInstance}");
+            }
+            catch (Exception ex)
+            {
+                _msIsLeaderInstance = true;
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] LeaderMutex WaitOne failed -> fallback leader=true. {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        private static void WriteDecimal(BinaryWriter bw, decimal v)
+        {
+            var bits = decimal.GetBits(v);
+            bw.Write(bits[0]);
+            bw.Write(bits[1]);
+            bw.Write(bits[2]);
+            bw.Write(bits[3]);
+        }
+
+        private static decimal ReadDecimal(BinaryReader br)
+        {
+            int lo = br.ReadInt32();
+            int mid = br.ReadInt32();
+            int hi = br.ReadInt32();
+            int flags = br.ReadInt32();
+            return new decimal(new int[] { lo, mid, hi, flags });
+        }
+
+        private void RecordSyntheticTick900ClosedCandle(TickCandle c)
+        {
+            if (c == null)
+                return;
+            try
+            {
+                // OHLC invariants: Open/Close must be within [Low,High] and Low<=High.
+                // If violated, the aggregation logic is wrong or the input price stream is inconsistent.
+                try
+                {
+                    if (!_msTick900OhlcInvariantDiagLogged)
+                    {
+                        bool bad = false;
+                        if (c.High < c.Low) bad = true;
+                        if (c.Open < c.Low || c.Open > c.High) bad = true;
+                        if (c.Close < c.Low || c.Close > c.High) bad = true;
+
+                        if (bad)
+                        {
+                            _msTick900OhlcInvariantDiagLogged = true;
+                            //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Synthetic Tick900 OHLC invariant violation: T={c.Time:O} LT={c.LastTime:O} O={c.Open} H={c.High} L={c.Low} C={c.Close} TC={c.TradeCount}");
+                        }
+                    }
+                }
+                catch { }
+
+                _msTick900ClosedCandles.Add(c);
+            }
+            catch { }
+        }
+
+        private DateTime NormalizeToChartTime(DateTime t)
+        {
+            try
+            {
+                if (_msChartTimeKind == null)
+                {
+                    var c0 = GetCandle(0);
+                    if (c0 != null)
+                        _msChartTimeKind = c0.Time.Kind;
+                    else
+                        _msChartTimeKind = DateTimeKind.Unspecified;
+                }
+
+                var chartKind = _msChartTimeKind.Value;
+
+                if (chartKind == DateTimeKind.Local)
+                {
+                    if (t.Kind == DateTimeKind.Utc)
+                        return t.ToLocalTime();
+                    if (t.Kind == DateTimeKind.Unspecified)
+                        return DateTime.SpecifyKind(t, DateTimeKind.Local);
+                    return t;
+                }
+
+                if (chartKind == DateTimeKind.Utc)
+                {
+                    if (t.Kind == DateTimeKind.Local)
+                        return t.ToUniversalTime();
+                    if (t.Kind == DateTimeKind.Unspecified)
+                        return DateTime.SpecifyKind(t, DateTimeKind.Utc);
+                    return t;
+                }
+
+                // ChartKind == Unspecified: keep values as-is, but strip kind for consistent comparisons
+                if (t.Kind == DateTimeKind.Unspecified)
+                    return t;
+                return DateTime.SpecifyKind(t, DateTimeKind.Unspecified);
+            }
+            catch
+            {
+                return t;
+            }
+        }
+
+        private int GetXByBarSafe(int bar)
+        {
+            try
+            {
+                if (_msGetXByBar == null && _msGetXByBarMi == null)
+                {
+                    var t = ChartInfo?.GetType();
+                    if (t != null)
+                    {
+                        // Try multiple likely signatures.
+                        var mi = t.GetMethod("GetXByBar", new[] { typeof(int) })
+                                 ?? t.GetMethod("GetXByBar", new[] { typeof(int), typeof(bool) })
+                                 ?? t.GetMethod("GetXByCandle", new[] { typeof(int) })
+                                 ?? t.GetMethod("GetXByCandle", new[] { typeof(int), typeof(bool) })
+                                 ?? t.GetMethod("GetX", new[] { typeof(int) });
+
+                        if (mi != null)
+                        {
+                            _msGetXByBarMi = mi;
+                            _msGetXByBarMiParamCount = mi.GetParameters()?.Length ?? 0;
+
+                            if (_msGetXByBarMiParamCount == 1)
+                            {
+                                try { _msGetXByBar = (Func<int, int>)Delegate.CreateDelegate(typeof(Func<int, int>), ChartInfo, mi); }
+                                catch { _msGetXByBar = null; }
+                            }
+                        }
+                    }
+                }
+
+                if (_msGetXByBar != null)
+                    return _msGetXByBar(bar);
+
+                if (_msGetXByBarMi != null)
+                {
+                    object? res = null;
+                    if (_msGetXByBarMiParamCount == 1)
+                        res = _msGetXByBarMi.Invoke(ChartInfo, new object[] { bar });
+                    else if (_msGetXByBarMiParamCount == 2)
+                        res = _msGetXByBarMi.Invoke(ChartInfo, new object[] { bar, false });
+
+                    if (res is int xi)
+                        return xi;
+                    if (res != null)
+                    {
+                        try { return Convert.ToInt32(res); } catch { }
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback: approximate using bar distance to the right edge and an estimated bar width.
+            try
+            {
+                int w = ChartInfo?.PriceChartContainer?.Region.Width ?? 0;
+                int last = CurrentBar;
+                int barsFromRight = Math.Max(0, last - bar);
+
+                int step = 6;
+                try
+                {
+                    var pc = ChartInfo?.PriceChartContainer;
+                    var pt = pc?.GetType();
+                    if (pt != null)
+                    {
+                        var pBarWidth = pt.GetProperty("BarWidth") ?? pt.GetProperty("CandleWidth") ?? pt.GetProperty("Step");
+                        var v = pBarWidth?.GetValue(pc);
+                        if (v != null)
+                            step = Math.Max(2, Convert.ToInt32(v));
+                    }
+                }
+                catch { }
+
+                if (!_msXMapDiagLogged)
+                {
+                    _msXMapDiagLogged = true;
+                    try { this.LogWarn($"[Tick900Backfill:{_msInstanceId}] GetXByBar not available -> using fallback X mapping (step={step})."); } catch { }
+                }
+
+                int xRight = Math.Max(0, w - 10);
+                return Math.Max(0, xRight - (barsFromRight * step));
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private void ClearSyntheticTick900Debug()
+        {
+            try { _msTick900ClosedCandles.Clear(); } catch { }
+        }
+
+        private bool IsNearRealTime(DateTime chartEndTime)
+        {
+            try
+            {
+                if (chartEndTime == default)
+                    return false;
+
+                var endUtc = chartEndTime.Kind == DateTimeKind.Utc
+                    ? chartEndTime
+                    : DateTime.SpecifyKind(chartEndTime, DateTimeKind.Local).ToUniversalTime();
+
+                var nowUtc = DateTime.UtcNow;
+                var diff = nowUtc - endUtc;
+                if (diff < TimeSpan.Zero)
+                    diff = -diff;
+                return diff < TimeSpan.FromMinutes(2);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private int FindChartBarByTime(DateTime time)
+        {
+            try
+            {
+                time = NormalizeToChartTime(time);
+                int last = CurrentBar;
+                if (last < 0)
+                    return -1;
+
+                // 1) Binary search by candle start time to get close to the right area.
+                int lo = 0;
+                int hi = last;
+                while (lo <= hi)
+                {
+                    int mid = lo + ((hi - lo) / 2);
+                    var c = GetCandle(mid);
+                    if (c == null)
+                    {
+                        hi = mid - 1;
+                        continue;
+                    }
+
+                    var t0 = NormalizeToChartTime(c.Time);
+                    var t1 = NormalizeToChartTime(c.LastTime != default ? c.LastTime : c.Time);
+                    var start = t0 <= t1 ? t0 : t1;
+                    if (start < time)
+                        lo = mid + 1;
+                    else if (start > time)
+                        hi = mid - 1;
+                    else
+                    {
+                        // exact start match
+                        return mid;
+                    }
+                }
+
+                // Candidate is hi (last candle with start <= time)
+                int idx = Math.Max(0, Math.Min(last, hi));
+
+                // 2) Try to find a candle whose interval contains 'time'.
+                // We scan a small neighborhood because LastTime can overlap slightly depending on feed/build.
+                int from = Math.Max(0, idx - 20);
+                int to = Math.Min(last, idx + 20);
+
+                // 2a) Prefer an interval match if available.
+                for (int i = from; i <= to; i++)
+                {
+                    var c = GetCandle(i);
+                    if (c == null)
+                        continue;
+                    var t0 = NormalizeToChartTime(c.Time);
+                    var t1 = NormalizeToChartTime(c.LastTime != default ? c.LastTime : c.Time);
+                    var start = t0 <= t1 ? t0 : t1;
+                    var end = t0 <= t1 ? t1 : t0;
+                    if (start <= time && time <= end)
+                        return i;
+                }
+
+                // 2b) If no interval match, choose the nearest candle by start time.
+                int best = idx;
+                long bestDist = long.MaxValue;
+                for (int i = from; i <= to; i++)
+                {
+                    var c = GetCandle(i);
+                    if (c == null)
+                        continue;
+                    var start = NormalizeToChartTime(c.Time);
+                    long d = Math.Abs((start - time).Ticks);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        best = i;
+                        if (bestDist == 0)
+                            break;
+                    }
+                }
+
+                return best;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        private int FindBestChartBarMatchForSyntheticTickCandle(int initialBar, TickCandle syn)
+        {
+            try
+            {
+                if (syn == null)
+                    return initialBar;
+                int last = CurrentBar;
+                if (initialBar < 0 || last < 0)
+                    return initialBar;
+
+                int from = Math.Max(0, initialBar - 10);
+                int to = Math.Min(last, initialBar + 10);
+
+                int bestBar = initialBar;
+                decimal bestScore = decimal.MaxValue;
+                decimal ts = _tickSize > 0m ? _tickSize : 0.25m;
+
+                for (int i = from; i <= to; i++)
+                {
+                    var c = GetCandle(i);
+                    if (c == null)
+                        continue;
+
+                    decimal score = ScoreChartCandleVsSyntheticOHLC(c, syn, ts);
+
+                    if (score < bestScore)
+                    {
+                        bestScore = score;
+                        bestBar = i;
+                    }
+                }
+
+                return bestBar;
+            }
+            catch
+            {
+                return initialBar;
+            }
+        }
+
+        private decimal ScoreChartCandleVsSyntheticOHLC(IndicatorCandle c, TickCandle syn, decimal ts)
+        {
+            try
+            {
+                if (c == null || syn == null)
+                    return decimal.MaxValue;
+
+                decimal score = 0m;
+                try { score += Math.Abs((c.Open - syn.Open) / ts); } catch { }
+                try { score += Math.Abs((c.Close - syn.Close) / ts); } catch { }
+                try { score += Math.Abs((c.High - syn.High) / ts); } catch { }
+                try { score += Math.Abs((c.Low - syn.Low) / ts); } catch { }
+                return score;
+            }
+            catch
+            {
+                return decimal.MaxValue;
+            }
+        }
+
+        private int FindBestChartBarMatchForSyntheticTickCandleWide(int initialBar, TickCandle syn, int window)
+        {
+            try
+            {
+                if (syn == null)
+                    return initialBar;
+
+                int last = CurrentBar;
+                if (last < 0)
+                    return initialBar;
+
+                int baseBar = initialBar;
+                if (baseBar < 0)
+                    baseBar = last;
+
+                int w = window > 0 ? window : 50;
+                int from = Math.Max(0, baseBar - w);
+                int to = Math.Min(last, baseBar + w);
+
+                int bestBar = baseBar;
+                decimal bestScore = decimal.MaxValue;
+                decimal ts = _tickSize > 0m ? _tickSize : 0.25m;
+
+                for (int i = from; i <= to; i++)
+                {
+                    var c = GetCandle(i);
+                    if (c == null)
+                        continue;
+                    var score = ScoreChartCandleVsSyntheticOHLC(c, syn, ts);
+                    if (score < bestScore)
+                    {
+                        bestScore = score;
+                        bestBar = i;
+                        if (bestScore == 0m)
+                            break;
+                    }
+                }
+
+                return bestBar;
+            }
+            catch
+            {
+                return initialBar;
+            }
+        }
+
+        private void WriteZonesSnapshot()
+        {
+            try
+            {
+                if (_msZonesMmf == null || _marketStructureContext == null)
+                    return;
+
+                var zones = _marketStructureContext.ActiveZones;
+                using var stream = _msZonesMmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Write);
+                using var bw = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
+                bw.Write(DateTime.UtcNow.Ticks);
+                int count = zones?.Count ?? 0;
+                bw.Write(count);
+                if (count <= 0)
+                    return;
+
+                for (int i = 0; i < zones.Count; i++)
+                {
+                    var z = zones[i];
+                    if (z == null)
+                    {
+                        bw.Write(0);
+                        bw.Write((byte)0);
+                        bw.Write((byte)0);
+                        WriteDecimal(bw, 0m);
+                        WriteDecimal(bw, 0m);
+                        bw.Write((byte)0);
+                        bw.Write(0);
+                        continue;
+                    }
+
+                    bw.Write(z.Id);
+                    bw.Write((byte)z.Type);
+                    bw.Write((byte)z.Status);
+                    WriteDecimal(bw, z.Low);
+                    WriteDecimal(bw, z.High);
+                    bw.Write((byte)(z.IsMultiTouch ? 1 : 0));
+                    bw.Write(z.MultiTouchScore);
+                    bw.Write((byte)(z.IsConfirmed ? 1 : 0));
+                }
+            }
+            catch { }
+        }
+
+        private void NormalizeZonesAfterBackfill()
+        {
+            try
+            {
+                var ctx = _marketStructureContext;
+                if (ctx == null)
+                    return;
+
+                var zones = ctx.ActiveZones;
+                if (zones == null || zones.Count == 0)
+                    return;
+
+                // Backfill soll Marktstruktur aufbauen, aber keine Zonen "verbrauchen".
+                // Wenn während des historischen Builds Trigger-Bedingungen erfüllt werden, würden Zonen sonst
+                // als Triggered/Used enden und wegen Render-Filter nicht sichtbar sein.
+                foreach (var z in zones)
+                {
+                    if (z == null)
+                        continue;
+                    if (z.Status == MarketStructureContext.ZoneStatus.Triggered || z.Status == MarketStructureContext.ZoneStatus.Used)
+                    {
+                        z.Status = MarketStructureContext.ZoneStatus.Ready;
+                        z.TouchCount = 0;
+                        z.LastTouchedBar = 0;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void ClearZonesSnapshot()
+        {
+            try
+            {
+                if (_msZonesMmf == null)
+                    return;
+
+                using var stream = _msZonesMmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Write);
+                using var bw = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
+                bw.Write(DateTime.UtcNow.Ticks);
+                bw.Write(0);
+            }
+            catch { }
+        }
+
+        private List<(int Id, MarketStructureContext.ZoneType Type, MarketStructureContext.ZoneStatus Status, decimal Low, decimal High, bool IsMultiTouch, int MultiTouchScore, bool IsConfirmed)> ReadZonesSnapshot()
+        {
+            var res = new List<(int, MarketStructureContext.ZoneType, MarketStructureContext.ZoneStatus, decimal, decimal, bool, int, bool)>(16);
+            try
+            {
+                if (_msZonesMmf == null)
+                    return res;
+
+                using var stream = _msZonesMmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Read);
+                using var br = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
+                _ = br.ReadInt64();
+                int count = br.ReadInt32();
+                if (count <= 0)
+                    return res;
+
+                for (int i = 0; i < count; i++)
+                {
+                    int id = br.ReadInt32();
+                    var type = (MarketStructureContext.ZoneType)br.ReadByte();
+                    var status = (MarketStructureContext.ZoneStatus)br.ReadByte();
+                    var low = ReadDecimal(br);
+                    var high = ReadDecimal(br);
+                    bool isMultiTouch = false;
+                    int multiTouchScore = 0;
+                    bool isConfirmed = true;
+                    try
+                    {
+                        isMultiTouch = br.ReadByte() != 0;
+                        multiTouchScore = br.ReadInt32();
+                        isConfirmed = br.ReadByte() != 0;
+                    }
+                    catch
+                    {
+                        isMultiTouch = false;
+                        multiTouchScore = 0;
+                        isConfirmed = true;
+                    }
+                    if (id <= 0)
+                        continue;
+                    res.Add((id, type, status, low, high, isMultiTouch, multiTouchScore, isConfirmed));
+                }
+            }
+            catch { }
+            return res;
+        }
+
+        private bool TryGetWorkingTimeForSwingSeed(out TimeSpan start, out TimeSpan end)
+        {
+            start = default;
+            end = default;
+
+            var security = GetPropertyValueForSwingSeed(this, "Security");
+            if (security is null)
+                return false;
+
+            var workingTime = GetPropertyValueForSwingSeed(security, "WorkingTime");
+            if (workingTime is null)
+                return false;
+
+            if (!TryReadTimeSpanForSwingSeed(workingTime, "StartTime", out start))
+                return false;
+            if (!TryReadTimeSpanForSwingSeed(workingTime, "EndTime", out end))
+                end = default;
+
+            return true;
+        }
+
+        private bool TryGetTradingOptionsTimesForSwingSeed(out TimeSpan start, out TimeSpan end)
+        {
+            start = default;
+            end = default;
+
+            var tradingOptions = GetPropertyValueForSwingSeed(this, "TradingOptions")
+                ?? GetPropertyValueForSwingSeed(GetPropertyValueForSwingSeed(this, "ChartInfo"), "TradingOptions");
+
+            if (tradingOptions is null)
+                return false;
+
+            if (!TryReadTimeSpanForSwingSeed(tradingOptions, "SessionBeginTime", out start))
+                return false;
+            if (!TryReadTimeSpanForSwingSeed(tradingOptions, "SessionEndTime", out end))
+                end = default;
+
+            return true;
+        }
+
+        private static object? GetPropertyValueForSwingSeed(object? obj, string propertyName)
+        {
+            if (obj is null)
+                return null;
+
+            var t = obj.GetType();
+            var pi = t.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            return pi?.GetValue(obj);
+        }
+
+        private static bool TryReadTimeSpanForSwingSeed(object obj, string propertyName, out TimeSpan value)
+        {
+            value = default;
+            if (obj is null)
+                return false;
+
+            var raw = GetPropertyValueForSwingSeed(obj, propertyName);
+            if (raw is null)
+                return false;
+
+            if (raw is TimeSpan ts)
+            {
+                value = ts;
+                return true;
+            }
+
+            if (raw is DateTime dt)
+            {
+                value = dt.TimeOfDay;
+                return true;
+            }
+
+            return false;
+        }
+
+        private void SeedDailyProfileFromDayStart(int currentBar)
+        {
+            _dailyProfileClosedHist.Clear();
+            _dailyProfileDevHist.Clear();
+            _dailyProfileCombinedHist.Clear();
+
+            if (currentBar <= 0)
+            {
+                _dailyProfileDevBar = currentBar;
+                RebuildDailyProfileBarHist(currentBar, _dailyProfileDevHist);
+                CombineDailyProfileHists();
+                return;
+            }
+
+            // Session-Start (nicht nur Date), damit es zum MarketProfile-Sessiontemplate passt
+            int startBar = 0;
+            for (int i = currentBar; i >= 0; i--)
+            {
+                if (IsNewSession(i))
+                {
+                    startBar = i;
+                    break;
+                }
+            }
+
+            for (int i = startBar; i < currentBar; i++)
+            {
+                foreach (var lvl in EnumerateClusterLevels(i))
+                {
+                    if (lvl.TotalVol <= 0m) continue;
+                    if (_dailyProfileClosedHist.TryGetValue(lvl.Price, out var v)) _dailyProfileClosedHist[lvl.Price] = v + lvl.TotalVol;
+                    else _dailyProfileClosedHist[lvl.Price] = lvl.TotalVol;
+                }
+            }
+
+            _dailyProfileDevBar = currentBar;
+            RebuildDailyProfileBarHist(currentBar, _dailyProfileDevHist);
+            CombineDailyProfileHists();
+        }
+
 
         private readonly List<TrackedLevel> _untouchedLevels = new List<TrackedLevel>();
 
         // NEU: Ein Dictionary zum Verwalten der gezeichneten Linien f?r signifikante Levels
         private readonly Dictionary<string, HorizontalLine> _significantLines = new Dictionary<string, HorizontalLine>();
 
-        
+
         private DateTime _lastProcessedDay = DateTime.MinValue;
 
-       
+
 
 
         // Diese Instanz liefert uns die statischen Werte des Vortages.
         private readonly DynamicLevels _dailyLevels = new DynamicLevels();
         private readonly DailyLines _dailyLines = new DailyLines();
+        private readonly MarketAnalysis.PublicActiveVolume _publicActiveVolume = new MarketAnalysis.PublicActiveVolume();
 
 
         private readonly Pivots _pivots = new Pivots();
@@ -180,7 +1792,7 @@ namespace MyNamespace.Strategies
         private Dictionary<int, decimal> _maxCounterShareBear = new Dictionary<int, decimal>();
 
         // ITT Z
-        
+
         private Dictionary<int, decimal> _ittZ_raw = new();   // ms/Trade Z-Score
         private Dictionary<int, decimal> _ittZ_bull = new();  // Vorzeichen gedreht (Tempo-bull)
         private Dictionary<int, decimal> _ittZ_bear = new();  // Tempo-bear (optional)
@@ -226,10 +1838,10 @@ namespace MyNamespace.Strategies
 
         private int _lastSessionStartBar = -1;
 
-        
 
 
-        
+
+
 
         private const int TradeRateZ_Lookback = 20;
         private readonly Dictionary<(SetupKind setup, MarketRegime regime), OrderflowThresholds> _adaptiveCache = new();
@@ -237,12 +1849,12 @@ namespace MyNamespace.Strategies
 
 
 
-        
+
 
         private OvSnapshot ovSnapshot;
         private bool _hasOvLastClosed;
 
-        
+
 
         public enum SweepSide { Up, Down }
 
@@ -321,8 +1933,8 @@ namespace MyNamespace.Strategies
             public Dictionary<string, string> Meta { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             // Konfigurationsobjekt f?r das Scoring je Setup
-            
-            
+
+
 
             public bool TryGetExtra(string key, out decimal value)
             {
@@ -337,7 +1949,7 @@ namespace MyNamespace.Strategies
             public string GetMetaOrDefault(string key, string defaultValue = "")
                 => TryGetMeta(key, out var v) && !string.IsNullOrEmpty(v) ? v : defaultValue;
             public string GetExtraAsString(string key, string defaultValue = "")
-                => TryGetExtra(key, out var val) ? val.ToString(System.Globalization.CultureInfo.InvariantCulture) : defaultValue; 
+                => TryGetExtra(key, out var val) ? val.ToString(System.Globalization.CultureInfo.InvariantCulture) : defaultValue;
 
             public bool HasAnyPOC => CurrentPOC > 0m || PreviousDayPOC > 0m;
             public SessionLevel? LatestSessionHigh => SessionHighs.Count > 0 ? SessionHighs[0] : null;
@@ -345,8 +1957,8 @@ namespace MyNamespace.Strategies
         }
 
         // Oben in der Klasse: Private Felder (ersetzen deinen _vwap)
-       
-        
+
+
         private VwapSnapshot _prevSessionSnapshot;  // F?r PreviousDay (letzter Session-Wert)
 
         // Defaults (wie ATAS)
@@ -516,7 +2128,17 @@ namespace MyNamespace.Strategies
             public decimal HVNStrengthVsPOC { get; set; } = 0.50m;    // HVN gilt als stark, wenn Vol >= 50% von POCVol
             public decimal HVNStrengthVsMedian { get; set; } = 1.20m; // HVN stark, wenn Vol >= 1.2 * MedianVol (falls vorhanden)
             public decimal MinProminenceVsMedian { get; set; } = 0.15m; // Prominenz >= 0.15 * MedianVol (falls vorhanden)
+            public decimal HVNStrengthVsPOCInside { get; set; } = 0.50m;
+            public decimal HVNStrengthVsPOCOutside { get; set; } = 0.50m;
+            public decimal HVNStrengthVsMedianInside { get; set; } = 1.20m;
+            public decimal HVNStrengthVsMedianOutside { get; set; } = 1.20m;
+            public decimal MinProminenceVsMedianInside { get; set; } = 0.15m;
+            public decimal MinProminenceVsMedianOutside { get; set; } = 0.15m;
+            public bool ForceAllHVNsStrong { get; set; } = false;
+            public bool ForceAllHVNsWeak { get; set; } = false;
             public int MinBlockerDistanceTicksVsRisk { get; set; } = 1; // Blocker muss weiter entfernt sein als RiskTicks * Faktor (1 = gleich Risk)
+            public bool UseHvnZonesForBlocking { get; set; } = true;
+            public bool UseLvnPathForBlocking { get; set; } = true;
         }
         public class MicroComposite
         {
@@ -537,8 +2159,19 @@ namespace MyNamespace.Strategies
             public SortedDictionary<decimal, decimal> LevelVols { get; set; } = new();
         }
 
+        private sealed class TrackedZone
+        {
+            public int Id;
+            public decimal Start;
+            public decimal End;
+            public decimal Score;
+            public int Missing;
+            public int HitCount;
+            public bool Active;
+        }
+
         private bool _mcDirty = true;
-        
+
         const bool PreferRightOnTie = true;    // Gleichstand in der VA-Expansion: rechts bevorzugen
         const bool POCPreferHigherPrice = true;// Bei POC-Tie: h?heren Preis bevorzugen?
         const bool UseDenseLadder = false;     // true: l?ckenloses Tick-Raster mit 0-Volumen
@@ -551,25 +2184,1540 @@ namespace MyNamespace.Strategies
 
         SortedDictionary<decimal, decimal> _mcHist = new();
         Queue<int> _mcBars = new();
-        
+
+        private int[] _smoothWeights;
+        private int _lastSmoothSpan = -1;
+        private int _smoothRadius = 0;
+
         int SmoothingTicks = 1;     // Gl?ttung
         int TopNPeaks = 4;          // Anzahl HVNs/LVNs
 
         private MicroComposite _currentMC;
         private MicroComposite _prevMC;
+
+        // =====================
+        // Daily Profile (nur WegFrei, unabhängig vom MicroComposite)
+        // =====================
+        private DateTime _dailyProfileDate = DateTime.MinValue;
+        private readonly SortedDictionary<decimal, decimal> _dailyProfileClosedHist = new();
+        private readonly SortedDictionary<decimal, decimal> _dailyProfileDevHist = new();
+        private readonly SortedDictionary<decimal, decimal> _dailyProfileCombinedHist = new();
+        private int _dailyProfileDevBar = -1;
+        private int _lastDailyProfileRecalcBar = -1;
+        private decimal _lastDailyProfileRecalcPOC = 0m;
+        private decimal _lastDailyProfileRecalcVAH = 0m;
+        private decimal _lastDailyProfileRecalcVAL = 0m;
+        private long _lastDailyProfileActiveVolSignature = 0;
+        private DateTime _lastDailyProfileActiveVolRecalcTime = DateTime.MinValue;
+        private int _lastDailyProfileDebugBar = -1;
+        private bool _dailyProfileSeededForDate = false;
+        private bool _prevDailyProfileEnabledFlag = false;
+
+        private int _dailyHvnNextId = 1;
+        private readonly List<TrackedZone> _dailyHvnTracked = new();
+        private List<int> _dailyHvnLastOutputIds = new();
+
+        private decimal _dailyGridMinPrice = 0m;
+        private decimal _dailyGridMaxPrice = 0m;
+        private decimal[]? _dailySmoothEma;
+        private bool[]? _dailyHvnLevelState;
+
+        private DateTime _dailyHvnLastStatLogUtc = DateTime.MinValue;
+
+        private MicroComposite? _dailyProfileForPath;
+        private MicroComposite? _prevDailyProfileForPath;
+        private MicroComposite? _dailyProfileForVisual;
+
+        private void EnsureSmoothWeights(int span)
+        {
+            if (span <= 1)
+            {
+                _lastSmoothSpan = span;
+                _smoothWeights = null;
+                _smoothRadius = 0;
+                return;
+            }
+
+            if (span == _lastSmoothSpan && _smoothWeights != null)
+                return;
+
+            _lastSmoothSpan = span;
+            var w = new List<int>();
+            for (int i = 1; i <= span; i++) w.Add(i);
+            for (int i = span - 1; i >= 1; i--) w.Add(i);
+            _smoothWeights = w.ToArray();
+            _smoothRadius = _smoothWeights.Length / 2;
+        }
+
+        private decimal[] SmoothTriangularCached(decimal[] y, int span)
+        {
+            if (span <= 1 || y == null || y.Length == 0)
+                return (decimal[])y.Clone();
+
+            EnsureSmoothWeights(span);
+            var weights = _smoothWeights;
+            int radius = _smoothRadius;
+            if (weights == null || weights.Length == 0 || radius <= 0)
+                return (decimal[])y.Clone();
+
+            var ys = new decimal[y.Length];
+            for (int i = 0; i < y.Length; i++)
+            {
+                decimal s = 0m;
+                int wsum = 0;
+                for (int k = -radius; k <= radius; k++)
+                {
+                    int wi = Math.Abs(k);
+                    int wv = weights[wi];
+                    int j = i + k;
+                    if (j < 0 || j >= y.Length) continue;
+                    s += y[j] * wv;
+                    wsum += wv;
+                }
+                ys[i] = (wsum > 0) ? (s / wsum) : y[i];
+            }
+            return ys;
+        }
+
+        private List<decimal> BuildPriceAxis(decimal minP, decimal maxP, decimal tick)
+        {
+            var result = new List<decimal>();
+            for (decimal p = minP; p <= maxP; p += tick) result.Add(p);
+            return result;
+        }
+
+        private void RebuildDailyProfileBarHist(int barIndex, SortedDictionary<decimal, decimal> target)
+        {
+            target.Clear();
+            foreach (var lvl in EnumerateClusterLevels(barIndex))
+            {
+                if (lvl.TotalVol <= 0m) continue;
+                if (target.TryGetValue(lvl.Price, out var v)) target[lvl.Price] = v + lvl.TotalVol;
+                else target[lvl.Price] = lvl.TotalVol;
+            }
+        }
+
+        private void CombineDailyProfileHists()
+        {
+            _dailyProfileCombinedHist.Clear();
+            foreach (var kv in _dailyProfileClosedHist) _dailyProfileCombinedHist[kv.Key] = kv.Value;
+            foreach (var kv in _dailyProfileDevHist)
+            {
+                if (_dailyProfileCombinedHist.TryGetValue(kv.Key, out var v)) _dailyProfileCombinedHist[kv.Key] = v + kv.Value;
+                else _dailyProfileCombinedHist[kv.Key] = kv.Value;
+            }
+        }
+
+        private static List<(int L, int R)> BuildSegments(decimal[] smooth, int lo, int hi, Func<decimal, bool> predicate)
+        {
+            var segs = new List<(int L, int R)>();
+            int i = Math.Max(0, lo);
+            int end = Math.Min(smooth.Length - 1, hi);
+            while (i <= end)
+            {
+                while (i <= end && !predicate(smooth[i])) i++;
+                if (i > end) break;
+                int L = i;
+                while (i <= end && predicate(smooth[i])) i++;
+                int R = i - 1;
+                segs.Add((L, R));
+            }
+            return segs;
+        }
+
+        private List<(decimal Start, decimal End)> MergeSegmentsToZones(List<(int L, int R)> segs, List<decimal> prices, int gapTicks)
+        {
+            if (segs == null || segs.Count == 0)
+                return new List<(decimal Start, decimal End)>();
+
+            segs.Sort((a, b) => a.L.CompareTo(b.L));
+            var merged = new List<(int L, int R)>();
+            var cur = segs[0];
+            for (int i = 1; i < segs.Count; i++)
+            {
+                var nxt = segs[i];
+                if (nxt.L <= cur.R + Math.Max(0, gapTicks) + 1)
+                    cur = (cur.L, Math.Max(cur.R, nxt.R));
+                else
+                {
+                    merged.Add(cur);
+                    cur = nxt;
+                }
+            }
+            merged.Add(cur);
+
+            var zones = new List<(decimal Start, decimal End)>(merged.Count);
+            foreach (var m in merged)
+            {
+                if (m.L < 0 || m.R >= prices.Count || m.L > m.R)
+                    continue;
+                zones.Add((prices[m.L], prices[m.R]));
+            }
+            return zones;
+        }
+
+        private static List<(int L, int R)> MergeSegments(List<(int L, int R)> segs, int gapTicks)
+        {
+            if (segs == null || segs.Count == 0)
+                return new List<(int L, int R)>();
+
+            segs.Sort((a, b) => a.L.CompareTo(b.L));
+            var merged = new List<(int L, int R)>();
+            var cur = segs[0];
+            for (int i = 1; i < segs.Count; i++)
+            {
+                var nxt = segs[i];
+                if (nxt.L <= cur.R + Math.Max(0, gapTicks) + 1)
+                    cur = (cur.L, Math.Max(cur.R, nxt.R));
+                else
+                {
+                    merged.Add(cur);
+                    cur = nxt;
+                }
+            }
+            merged.Add(cur);
+            return merged;
+        }
+
+        private static List<(int L, int R)> CapSegmentsAroundExtremum(List<(int L, int R)> segs, decimal[] smooth, int capTicks, bool useMax)
+        {
+            if (segs == null || segs.Count == 0)
+                return segs ?? new List<(int L, int R)>();
+            if (smooth == null || smooth.Length == 0)
+                return segs;
+            if (capTicks <= 0)
+                return segs;
+
+            var res = new List<(int L, int R)>(segs.Count);
+            foreach (var s in segs)
+            {
+                int L = Math.Max(0, s.L);
+                int R = Math.Min(smooth.Length - 1, s.R);
+                if (L > R) continue;
+
+                int w = R - L + 1;
+                if (w <= capTicks)
+                {
+                    res.Add((L, R));
+                    continue;
+                }
+
+                int extIdx = L;
+                decimal extVal = smooth[L];
+                for (int i = L + 1; i <= R; i++)
+                {
+                    var v = smooth[i];
+                    if (useMax)
+                    {
+                        if (v > extVal) { extVal = v; extIdx = i; }
+                    }
+                    else
+                    {
+                        if (v < extVal) { extVal = v; extIdx = i; }
+                    }
+                }
+
+                int left = extIdx - (capTicks - 1) / 2;
+                int right = left + capTicks - 1;
+                if (left < L) { left = L; right = left + capTicks - 1; }
+                if (right > R) { right = R; left = right - capTicks + 1; }
+                if (left < L) left = L;
+                if (right > R) right = R;
+
+                res.Add((left, right));
+            }
+            return res;
+        }
+
+        private static List<(decimal Start, decimal End)> ClampZonesToRange(List<(decimal Start, decimal End)> zones, decimal lo, decimal hi)
+        {
+            if (zones == null || zones.Count == 0)
+                return zones ?? new List<(decimal Start, decimal End)>();
+            if (lo <= 0m || hi <= 0m)
+                return zones;
+            if (hi < lo) { var t = lo; lo = hi; hi = t; }
+
+            var res = new List<(decimal Start, decimal End)>(zones.Count);
+            foreach (var z in zones)
+            {
+                var a = z.Start;
+                var b = z.End;
+                if (a > b) { var tmp = a; a = b; b = tmp; }
+                var s = Math.Max(a, lo);
+                var e = Math.Min(b, hi);
+                if (e >= s)
+                    res.Add((s, e));
+            }
+            return res;
+        }
+
+        private static List<(decimal Start, decimal End)> CapZoneWidths(List<(decimal Start, decimal End)> zones, decimal maxWidth)
+        {
+            if (zones == null || zones.Count == 0)
+                return zones ?? new List<(decimal Start, decimal End)>();
+            if (maxWidth <= 0m)
+                return zones;
+
+            var res = new List<(decimal Start, decimal End)>(zones.Count);
+            foreach (var z in zones)
+            {
+                var a = z.Start;
+                var b = z.End;
+                if (a > b) { var t = a; a = b; b = t; }
+                var w = b - a;
+                if (w <= maxWidth)
+                {
+                    res.Add((a, b));
+                    continue;
+                }
+                var mid = (a + b) / 2m;
+                res.Add((mid - maxWidth / 2m, mid + maxWidth / 2m));
+            }
+            return res;
+        }
+
+        private void RecalcDailyProfileForPath(decimal currentPOC, decimal currentVAH, decimal currentVAL)
+        {
+            if (_tickSize <= 0m || _dailyProfileCombinedHist.Count == 0)
+            {
+                // Histogramm kann kurzfristig leer sein (z.B. Snapshot-Latenz). Letztes gültiges Profil behalten.
+                return;
+            }
+
+            _prevDailyProfileForPath = _dailyProfileForPath;
+
+            // Daily Profile (Plateau/Histogramm-basiert): Zonen sind kontinuierliche dicke Bereiche
+            // und werden sowohl für WegFrei/Entry/TP als auch für die Visualisierung genutzt.
+            var minP = _dailyProfileCombinedHist.Keys.First();
+            var maxP = _dailyProfileCombinedHist.Keys.Last();
+            var prices = BuildPriceAxis(minP, maxP, _tickSize);
+            if (prices.Count < 3)
+            {
+                _dailyProfileForPath = null;
+                return;
+            }
+
+            var vols = new decimal[prices.Count];
+            decimal totalVol = 0m;
+            for (int i = 0; i < prices.Count; i++)
+            {
+                vols[i] = _dailyProfileCombinedHist.TryGetValue(prices[i], out var v) ? v : 0m;
+                totalVol += vols[i];
+            }
+
+            var smooth = SmoothTriangularCached(vols, Math.Max(1, DailySmoothTicks));
+            decimal maxS = 0m;
+            for (int i = 0; i < smooth.Length; i++)
+                if (smooth[i] > maxS) maxS = smooth[i];
+
+            // -------- HVN Engine (stabiler Tick-Grid + EMA + Hysterese + Persistenz) --------
+            // Tick-Grid stabilisieren: EMA/State-Arrays müssen bei Range-Erweiterung verschoben werden.
+            void EnsureDailyGrid(decimal newMin, decimal newMax)
+            {
+                newMin = RoundToTick(newMin);
+                newMax = RoundToTick(newMax);
+                if (_dailyGridMinPrice == 0m && _dailyGridMaxPrice == 0m)
+                {
+                    _dailyGridMinPrice = newMin;
+                    _dailyGridMaxPrice = newMax;
+                    return;
+                }
+
+                if (newMin > _dailyGridMinPrice) newMin = _dailyGridMinPrice;
+                if (newMax < _dailyGridMaxPrice) newMax = _dailyGridMaxPrice;
+
+                if (newMin == _dailyGridMinPrice && newMax == _dailyGridMaxPrice)
+                    return;
+
+                int oldLen = (int)Math.Round((_dailyGridMaxPrice - _dailyGridMinPrice) / _tickSize) + 1;
+                int newLen = (int)Math.Round((newMax - newMin) / _tickSize) + 1;
+                int offsetTicks = (int)Math.Round((_dailyGridMinPrice - newMin) / _tickSize);
+
+                var newEma = new decimal[newLen];
+                var newState = new bool[newLen];
+
+                if (_dailySmoothEma != null && _dailySmoothEma.Length == oldLen)
+                {
+                    for (int i = 0; i < oldLen; i++)
+                    {
+                        int ni = i + offsetTicks;
+                        if (ni < 0 || ni >= newLen) continue;
+                        newEma[ni] = _dailySmoothEma[i];
+                    }
+                }
+
+                if (_dailyHvnLevelState != null && _dailyHvnLevelState.Length == oldLen)
+                {
+                    for (int i = 0; i < oldLen; i++)
+                    {
+                        int ni = i + offsetTicks;
+                        if (ni < 0 || ni >= newLen) continue;
+                        newState[ni] = _dailyHvnLevelState[i];
+                    }
+                }
+
+                _dailySmoothEma = newEma;
+                _dailyHvnLevelState = newState;
+                _dailyGridMinPrice = newMin;
+                _dailyGridMaxPrice = newMax;
+            }
+
+            EnsureDailyGrid(prices.First(), prices.Last());
+            int gridLen = prices.Count;
+            if (_dailySmoothEma == null || _dailySmoothEma.Length != gridLen)
+                _dailySmoothEma = new decimal[gridLen];
+            if (_dailyHvnLevelState == null || _dailyHvnLevelState.Length != gridLen)
+                _dailyHvnLevelState = new bool[gridLen];
+
+            // EMA Update (recalc-basiert)
+            decimal emaAlpha = 0.35m;
+            for (int i = 0; i < gridLen; i++)
+            {
+                var prev = _dailySmoothEma[i];
+                var cur = smooth[i];
+                _dailySmoothEma[i] = (emaAlpha * cur) + ((1m - emaAlpha) * prev);
+            }
+
+            var mc = new MicroComposite
+            {
+                POC = currentPOC,
+                VAH = currentVAH,
+                VAL = currentVAL,
+                TotalVol = totalVol,
+                LevelVols = new SortedDictionary<decimal, decimal>(_dailyProfileCombinedHist)
+            };
+
+            // POCVol aus Histogramm ableiten (für HVN-Stärke-Filter)
+            if (mc.LevelVols != null)
+            {
+                if (mc.LevelVols.TryGetValue(currentPOC, out var pv))
+                    mc.POCVol = pv;
+                else
+                {
+                    // Fallback: auf Tick-Grid runden
+                    var pocRounded = RoundToTick(currentPOC);
+                    if (mc.LevelVols.TryGetValue(pocRounded, out var pv2))
+                        mc.POCVol = pv2;
+                }
+            }
+
+            if (maxS <= 0m)
+            {
+                _dailyProfileForPath = mc;
+                return;
+            }
+
+            List<(decimal Start, decimal End)> hvScored = new();
+
+            int scanLo = 0;
+            int scanHi = prices.Count - 1;
+            int idxVALGlobal = -1;
+            int idxVAHGlobal = -1;
+            if (currentVAL > 0m && currentVAH > 0m)
+            {
+                idxVALGlobal = prices.FindIndex(p => p == currentVAL);
+                idxVAHGlobal = prices.FindIndex(p => p == currentVAH);
+                if (idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+                {
+                    if (!DailyAllowZonesOutsideVA)
+                    {
+                        scanLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                        scanHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+                    }
+                }
+            }
+
+            // Kontextfenster (nur für Output/Ranking, NICHT für die Detektion):
+            // Entry/TP soll HVNs in der Nähe des aktuellen Preises priorisieren,
+            // aber die Plateau-Erkennung soll weiterhin global laufen (wie vorher).
+            int hvScanLo = scanLo;
+            int hvScanHi = scanHi;
+            int hvLocalWindowTicks = 30;
+            decimal hvCurrP = 0m;
+            if (_tickSize > 0m && prices.Count > 0 && CurrentBar >= 0)
+            {
+                hvCurrP = RoundToTick(GetLastPrice());
+                int idxCur = prices.FindIndex(p => p == hvCurrP);
+                if (idxCur < 0)
+                {
+                    // Fallback: nächster Tick
+                    decimal bestDist = decimal.MaxValue;
+                    int best = -1;
+                    for (int i = 0; i < prices.Count; i++)
+                    {
+                        var d = Math.Abs(prices[i] - hvCurrP);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            best = i;
+                        }
+                    }
+                    idxCur = best;
+                }
+
+                if (idxCur >= 0)
+                {
+                    hvScanLo = Math.Max(scanLo, idxCur - hvLocalWindowTicks);
+                    hvScanHi = Math.Min(scanHi, idxCur + hvLocalWindowTicks);
+                }
+            }
+
+            int minTicks = Math.Max(1, DailyMinZoneTicks);
+            int gap = Math.Max(0, DailyGapTicks);
+
+            // Schwellen (Anteil vom Max): erzeugt dicke Plateaus
+            decimal lvThr = Math.Max(0.01m, Math.Min(0.95m, DailyLVNPlateauFrac)) * maxS;
+
+            // HVN: adaptiv senken, wenn zu wenige Segmente gefunden werden.
+            // WICHTIG: Wenn Zonen außerhalb VA erlaubt sind, darf die HVN-Schwelle nicht am globalen Max hängen,
+            // sonst werden Tails fast nie als HVN erkannt. Daher: regionales Max pro Range.
+            decimal hvFracStart = Math.Max(0.10m, Math.Min(0.99m, DailyHVNPlateauFrac));
+            decimal hvFracMin = DailyAllowZonesOutsideVA ? 0.30m : hvFracStart;
+
+            int hvLocalWindowHalf = 2;
+            decimal hvSetFactorOutVA = 1.55m;
+            decimal hvSetFactorInVA = 1.25m;
+            decimal hvClearFactorOutVA = 1.25m;
+            decimal hvClearFactorInVA = 1.10m;
+            decimal minLevelSharePrev = 0.00015m;
+            decimal minLevelShareOff = 0.00008m;
+            decimal minZoneShareSet = 0.0020m;
+            decimal minZoneShareOff = 0.0010m;
+            decimal minZoneShareSetOutVA = minZoneShareSet * 0.70m;
+            decimal minZoneShareOffOutVA = minZoneShareOff * 0.60m;
+            int minPlateauWidthTicks = Math.Max(1, DailyMinZoneTicks);
+            int persistSetRecalcs = 2;
+            int persistClearRecalcs = 4;
+            int maxTrackedZones = 20;
+
+            int lvLocalWindowHalf = 2;
+            decimal lvLocalFactor = 2.0m;
+
+            decimal MaxInRange(int lo, int hi)
+            {
+                lo = Math.Max(0, lo);
+                hi = Math.Min(prices.Count - 1, hi);
+                if (lo > hi) return 0m;
+                decimal m = 0m;
+                for (int i = lo; i <= hi; i++) if (_dailySmoothEma![i] > m) m = _dailySmoothEma[i];
+                return m;
+            }
+
+            decimal LocalMedian(decimal[] arr, int i, int halfWindow)
+            {
+                int n = arr.Length;
+                int lo = Math.Max(0, i - Math.Max(0, halfWindow));
+                int hi = Math.Min(n - 1, i + Math.Max(0, halfWindow));
+                int cnt = hi - lo + 1;
+                if (cnt <= 0) return 0m;
+
+                var tmp = new List<decimal>(cnt);
+                for (int k = lo; k <= hi; k++) tmp.Add(arr[k]);
+                tmp.Sort();
+                int m = tmp.Count / 2;
+                if (tmp.Count % 2 == 1) return tmp[m];
+                return (tmp[m - 1] + tmp[m]) / 2m;
+            }
+
+            List<(int L, int R)> BuildSegmentsFromMask(bool[] mask, int lo, int hi)
+            {
+                var segs = new List<(int L, int R)>();
+                int i = Math.Max(0, lo);
+                int end = Math.Min(mask.Length - 1, hi);
+                while (i <= end)
+                {
+                    while (i <= end && !mask[i]) i++;
+                    if (i > end) break;
+                    int L = i;
+                    while (i <= end && mask[i]) i++;
+                    int R = i - 1;
+                    segs.Add((L, R));
+                }
+                return segs;
+            }
+
+            decimal ZoneCenter((decimal Start, decimal End) z) => (z.Start + z.End) / 2m;
+            decimal ZS((decimal Start, decimal End) z) => Math.Min(z.Start, z.End);
+            decimal ZE((decimal Start, decimal End) z) => Math.Max(z.Start, z.End);
+            decimal OverlapLen((decimal Start, decimal End) a, (decimal Start, decimal End) b)
+            {
+                var s = Math.Max(ZS(a), ZS(b));
+                var e = Math.Min(ZE(a), ZE(b));
+                return Math.Max(0m, e - s);
+            }
+            decimal Len((decimal Start, decimal End) z) => Math.Max(_tickSize, ZE(z) - ZS(z) + _tickSize);
+            decimal OverlapRatio((decimal Start, decimal End) a, (decimal Start, decimal End) b)
+            {
+                var o = OverlapLen(a, b);
+                var denom = Math.Max(_tickSize, Math.Min(Len(a), Len(b)));
+                return denom > 0m ? (o / denom) : 0m;
+            }
+            int TicksDist(decimal a, decimal b)
+            {
+                if (_tickSize <= 0m) return int.MaxValue;
+                return (int)Math.Round(Math.Abs(a - b) / _tickSize);
+            }
+
+            decimal LocalMedianEma(int i, int halfWindow) => LocalMedian(_dailySmoothEma!, i, halfWindow);
+
+            // ---------- HVN Engine: Level-State (Set/Clear) ----------
+            for (int i = 0; i < prices.Count; i++)
+            {
+                var med = LocalMedianEma(i, hvLocalWindowHalf);
+                bool inVA = false;
+                if (idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+                {
+                    int vaLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                    int vaHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+                    inVA = (i >= vaLo && i <= vaHi);
+                }
+
+                decimal setFactor = inVA ? hvSetFactorInVA : hvSetFactorOutVA;
+                decimal clearFactor = inVA ? hvClearFactorInVA : hvClearFactorOutVA;
+                decimal levelShare = (totalVol > 0m) ? (vols[i] / totalVol) : 0m;
+
+                // Set: EMA deutlich über lokalem Median + kleiner Share-Vorfilter
+                bool shouldSet = (med > 0m && _dailySmoothEma![i] >= med * setFactor) && (levelShare >= minLevelSharePrev);
+
+                // Clear: EMA fällt unter Clear-Faktor oder Share fällt ab
+                bool shouldClear = (med > 0m && _dailySmoothEma![i] < med * clearFactor) || (levelShare < minLevelShareOff);
+
+                if (!_dailyHvnLevelState![i])
+                {
+                    if (shouldSet) _dailyHvnLevelState[i] = true;
+                }
+                else
+                {
+                    if (shouldClear) _dailyHvnLevelState[i] = false;
+                }
+            }
+
+            // ---------- HVN Engine: Segmente + Segment-VolShare ----------
+            var hvSegs = BuildSegmentsFromMask(_dailyHvnLevelState!, scanLo, scanHi);
+            hvSegs = MergeSegments(hvSegs, gap);
+            hvSegs = hvSegs.Where(s => (s.R - s.L + 1) >= minPlateauWidthTicks).ToList();
+
+            // EMA-Threshold-Plateau-Detektion (robust), pro Subrange (bottom tail / VA / top tail),
+            // damit VA-Maxima die Tails nicht „überstimmen“.
+            List<(int L, int R)> BuildThrSegsForRange(int rLo, int rHi)
+            {
+                rLo = Math.Max(0, rLo);
+                rHi = Math.Min(prices.Count - 1, rHi);
+                if (rLo > rHi) return new List<(int L, int R)>();
+
+                decimal maxE = 0m;
+                for (int i = rLo; i <= rHi; i++)
+                    if (_dailySmoothEma![i] > maxE) maxE = _dailySmoothEma[i];
+                if (maxE <= 0m) return new List<(int L, int R)>();
+
+                int want = Math.Max(1, DailyTopNHVNs);
+                var best = new List<(int L, int R)>();
+                decimal thrFrac = 0.55m;
+                while (thrFrac >= 0.35m)
+                {
+                    decimal thr = maxE * thrFrac;
+                    var fb = BuildSegments(_dailySmoothEma!, rLo, rHi, v => v >= thr);
+                    fb = MergeSegments(fb, gap);
+                    fb = fb.Where(s => (s.R - s.L + 1) >= minPlateauWidthTicks).ToList();
+                    if (fb.Count > best.Count) best = fb;
+                    if (fb.Count >= want || (fb.Count > 0 && thrFrac <= 0.40m)) break;
+                    thrFrac -= 0.05m;
+                }
+                return best;
+            }
+
+            var hvSegsFromThr = new List<(int L, int R)>();
+            if (DailyAllowZonesOutsideVA && idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+            {
+                int vaLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                int vaHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+                if (vaLo > scanLo)
+                    hvSegsFromThr.AddRange(BuildThrSegsForRange(scanLo, vaLo - 1));
+                hvSegsFromThr.AddRange(BuildThrSegsForRange(Math.Max(scanLo, vaLo), Math.Min(scanHi, vaHi)));
+                if (vaHi < scanHi)
+                    hvSegsFromThr.AddRange(BuildThrSegsForRange(vaHi + 1, scanHi));
+            }
+            else
+            {
+                hvSegsFromThr = BuildThrSegsForRange(scanLo, scanHi);
+            }
+
+            hvSegsFromThr = MergeSegments(hvSegsFromThr, gap);
+            hvSegsFromThr = hvSegsFromThr.Where(s => (s.R - s.L + 1) >= minPlateauWidthTicks).ToList();
+
+            // Auswahl: wenn Threshold-Segmente mehr Struktur liefern als die Masken-Segmente, bevorzuge sie.
+            if (hvSegsFromThr.Count > hvSegs.Count)
+                hvSegs = hvSegsFromThr;
+
+            // Dip/Saddle-Splitting: wenn mehrere Plateaus durch flache Brücken zu einem Segment verschmelzen,
+            // splitten wir an deutlichen Dips in der EMA-Kurve.
+            decimal dipFrac = 0.85m;
+            int dipRunMin = 1;
+            if (hvSegs.Count > 0)
+            {
+                var splitSegs = new List<(int L, int R)>();
+                foreach (var s in hvSegs)
+                {
+                    int L0 = Math.Max(0, s.L);
+                    int R0 = Math.Min(prices.Count - 1, s.R);
+                    if (L0 > R0) continue;
+
+                    int width = (R0 - L0 + 1);
+                    if (width < (minPlateauWidthTicks * 2 + dipRunMin))
+                    {
+                        splitSegs.Add((L0, R0));
+                        continue;
+                    }
+
+                    decimal peak = 0m;
+                    for (int i = L0; i <= R0; i++)
+                        if (_dailySmoothEma![i] > peak) peak = _dailySmoothEma[i];
+
+                    if (peak <= 0m)
+                    {
+                        splitSegs.Add((L0, R0));
+                        continue;
+                    }
+
+                    decimal dipThr = peak * dipFrac;
+                    int curL = L0;
+                    int run = 0;
+                    int dipStart = -1;
+                    for (int i = L0; i <= R0; i++)
+                    {
+                        if (_dailySmoothEma![i] < dipThr)
+                        {
+                            if (run == 0) dipStart = i;
+                            run++;
+                            if (run >= dipRunMin)
+                            {
+                                int leftR = dipStart - 1;
+                                if (leftR - curL + 1 >= minPlateauWidthTicks)
+                                    splitSegs.Add((curL, leftR));
+
+                                // überspringe Dip-Run komplett, beginne danach neu
+                                curL = i + 1;
+                                run = 0;
+                                dipStart = -1;
+                            }
+                        }
+                        else
+                        {
+                            run = 0;
+                            dipStart = -1;
+                        }
+                    }
+
+                    if (curL <= R0 && (R0 - curL + 1) >= minPlateauWidthTicks)
+                        splitSegs.Add((curL, R0));
+                }
+
+                hvSegs = splitSegs;
+            }
+
+            if (DailyEnableCapZoneWidth)
+            {
+                int capTicks = Math.Max(1, DailyCapZoneWidthTicks);
+                hvSegs = CapSegmentsAroundExtremum(hvSegs, _dailySmoothEma!, capTicks, useMax: true);
+            }
+
+            decimal SegVol(int L, int R)
+            {
+                L = Math.Max(0, L);
+                R = Math.Min(prices.Count - 1, R);
+                decimal zVol = 0m;
+                for (int k = L; k <= R; k++) zVol += vols[k];
+                return zVol;
+            }
+
+            var hvCandidates = new List<(decimal Start, decimal End, decimal Score, decimal Share, bool InVA)>();
+            foreach (var s in hvSegs)
+            {
+                decimal zVol = SegVol(s.L, s.R);
+                decimal share = (totalVol > 0m ? (zVol / totalVol) : 0m);
+
+                bool segInVA = false;
+                if (idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+                {
+                    int vaLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                    int vaHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+                    int c = (s.L + s.R) / 2;
+                    segInVA = (c >= vaLo && c <= vaHi);
+                }
+
+                decimal offThr = segInVA ? minZoneShareOff : minZoneShareOffOutVA;
+                if (share < offThr) continue;
+
+                if (!segInVA && mc.POCVol > 0m)
+                {
+                    int cIdx = (s.L + s.R) / 2;
+                    bool inWin = (cIdx >= hvScanLo && cIdx <= hvScanHi);
+                    decimal pocFactor = GetDailyPathConfig().HVNStrengthVsPOCOutside;
+                    if (inWin) pocFactor = Math.Max(0.10m, pocFactor * 0.75m);
+
+                    decimal peak = 0m;
+                    for (int k = Math.Max(0, s.L); k <= Math.Min(prices.Count - 1, s.R); k++)
+                        if (vols[k] > peak) peak = vols[k];
+                    if (peak < (mc.POCVol * pocFactor))
+                        continue;
+                }
+
+                decimal sum = 0m; int n = 0;
+                for (int k = s.L; k <= s.R; k++) { sum += _dailySmoothEma![k]; n++; }
+                decimal mean = (n > 0 ? sum / n : 0m);
+                decimal score = mean * (1m + (share * 2m));
+                hvCandidates.Add((prices[s.L], prices[s.R], score, share, segInVA));
+            }
+
+            // Spike-Rescue: schmale lokale Peaks als HVN-Kandidaten ergänzen (z.B. 6791),
+            // auch wenn sie durch Segmentierung/MinZoneTicks nicht als Plateau-Segment auftauchen.
+            bool CandidateOverlaps(decimal aS, decimal aE, decimal bS, decimal bE)
+            {
+                decimal a0 = Math.Min(aS, aE);
+                decimal a1 = Math.Max(aS, aE);
+                decimal b0 = Math.Min(bS, bE);
+                decimal b1 = Math.Max(bS, bE);
+                return !(a1 < b0 || b1 < a0);
+            }
+
+            if (prices.Count > 2 && totalVol > 0m)
+            {
+                int spikeHalf = 1;          // => 1..3 Ticks breit
+                int regHalf = 6;            // regionale Max-Referenz
+                int winHalf = hvLocalWindowHalf;
+                decimal spikeMedianFactor = 1.30m;
+                decimal spikeRegFactor = 0.70m;
+
+                decimal LocalMedianEmaAt(int idx)
+                {
+                    int lo = Math.Max(0, idx - winHalf);
+                    int hi = Math.Min(prices.Count - 1, idx + winHalf);
+                    int len = hi - lo + 1;
+                    if (len <= 0) return 0m;
+                    var tmp = new decimal[len];
+                    int t = 0;
+                    for (int k = lo; k <= hi; k++) tmp[t++] = _dailySmoothEma![k];
+                    Array.Sort(tmp);
+                    return tmp[len / 2];
+                }
+
+                decimal RegionalMaxEmaAt(int idx)
+                {
+                    int lo = Math.Max(0, idx - regHalf);
+                    int hi = Math.Min(prices.Count - 1, idx + regHalf);
+                    decimal m = 0m;
+                    for (int k = lo; k <= hi; k++)
+                        if (_dailySmoothEma![k] > m) m = _dailySmoothEma[k];
+                    return m;
+                }
+
+                for (int i = Math.Max(1, scanLo + 1); i <= Math.Min(prices.Count - 2, scanHi - 1); i++)
+                {
+                    decimal e = _dailySmoothEma![i];
+                    if (e <= 0m) continue;
+
+                    // lokales Maximum
+                    if (!(e >= _dailySmoothEma[i - 1] && e >= _dailySmoothEma[i + 1]))
+                        continue;
+
+                    decimal med = LocalMedianEmaAt(i);
+                    decimal reg = RegionalMaxEmaAt(i);
+                    bool strongVsMedian = (med > 0m && e >= med * spikeMedianFactor);
+                    bool strongVsReg = (reg > 0m && e >= reg * spikeRegFactor);
+                    if (!strongVsMedian && !strongVsReg) continue;
+
+                    int L = Math.Max(scanLo, i - spikeHalf);
+                    int R = Math.Min(scanHi, i + spikeHalf);
+                    if (L > R) continue;
+
+                    decimal zVol = SegVol(L, R);
+                    decimal share = zVol / totalVol;
+                    if (share < minLevelShareOff) continue;
+
+                    bool segInVA = false;
+                    if (idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+                    {
+                        int vaLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                        int vaHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+                        segInVA = (i >= vaLo && i <= vaHi);
+                    }
+
+                    if (!segInVA && mc.POCVol > 0m)
+                    {
+                        bool inWin = (i >= hvScanLo && i <= hvScanHi);
+                        decimal pocFactor = GetDailyPathConfig().HVNStrengthVsPOCOutside;
+                        if (inWin) pocFactor = Math.Max(0.10m, pocFactor * 0.75m);
+
+                        decimal peak = vols[i];
+                        if (peak < (mc.POCVol * pocFactor))
+                            continue;
+                    }
+
+                    decimal startP = prices[L];
+                    decimal endP = prices[R];
+
+                    bool overlapsExisting = hvCandidates.Any(c => CandidateOverlaps(startP, endP, c.Start, c.End));
+                    if (overlapsExisting) continue;
+
+                    // Score so, dass echte Spikes nicht von breiten aber flachen Segmenten verdrängt werden.
+                    decimal score = e * (1m + (share * 4m));
+                    hvCandidates.Add((startP, endP, score, share, segInVA));
+                }
+            }
+
+            // Set-Share bevorzugen, aber nicht destruktiv (sonst würden HVNs nie auftauchen)
+            var hvCandStrong = hvCandidates
+                .Where(x => x.Share >= (x.InVA ? minZoneShareSet : minZoneShareSetOutVA))
+                .OrderByDescending(x => x.Score)
+                .ToList();
+
+            if (hvCandStrong.Count == 0)
+            {
+                hvCandStrong = hvCandidates
+                    .OrderByDescending(x => x.Score)
+                    .Take(Math.Max(3, DailyTopNHVNs))
+                    .ToList();
+            }
+
+            // Wenn weiterhin keine Kandidaten existieren, können keine HVNs ausgegeben werden.
+            // Das darf praktisch nicht passieren, aber zur Sicherheit früh raus.
+            int hvCandidateCount = hvCandStrong.Count;
+
+            // ---------- HVN Engine: Tracking + Persistenz ----------
+            foreach (var tz in _dailyHvnTracked)
+                tz.Missing++;
+
+            var used = new HashSet<int>();
+            foreach (var cand in hvCandStrong)
+            {
+                var candZone = (Start: cand.Start, End: cand.End);
+                TrackedZone? best = null;
+                decimal bestOvr = 0m;
+                int bestDist = int.MaxValue;
+
+                foreach (var tz in _dailyHvnTracked)
+                {
+                    if (used.Contains(tz.Id)) continue;
+                    if (tz.Missing >= persistClearRecalcs) continue;
+
+                    var tzZone = (Start: tz.Start, End: tz.End);
+                    var ovr = OverlapRatio(tzZone, candZone);
+                    var dist = TicksDist(ZoneCenter(tzZone), ZoneCenter(candZone));
+                    bool ok = (ovr >= 0.25m) || (dist <= 4);
+                    if (!ok) continue;
+
+                    if (ovr > bestOvr || (ovr == bestOvr && dist < bestDist))
+                    {
+                        best = tz;
+                        bestOvr = ovr;
+                        bestDist = dist;
+                    }
+                }
+
+                if (best == null)
+                {
+                    if (_dailyHvnTracked.Count < maxTrackedZones)
+                    {
+                        _dailyHvnTracked.Add(new TrackedZone
+                        {
+                            Id = _dailyHvnNextId++,
+                            Start = cand.Start,
+                            End = cand.End,
+                            Score = cand.Score,
+                            Missing = 0,
+                            HitCount = 1,
+                            Active = (persistSetRecalcs <= 1)
+                        });
+                    }
+                    continue;
+                }
+
+                used.Add(best.Id);
+                best.Missing = 0;
+                best.Score = cand.Score;
+                best.HitCount++;
+                if (!best.Active && best.HitCount >= persistSetRecalcs)
+                    best.Active = true;
+
+                // Kanten langsam bewegen (LERP + MaxShift)
+                decimal curS = Math.Min(best.Start, best.End);
+                decimal curE = Math.Max(best.Start, best.End);
+                decimal tarS = Math.Min(cand.Start, cand.End);
+                decimal tarE = Math.Max(cand.Start, cand.End);
+
+                int widthTicks = Math.Max(1, (int)Math.Round((curE - curS) / _tickSize) + 1);
+                int maxShiftTicks = Math.Max(1, (int)Math.Round(widthTicks * 0.2m));
+                decimal maxShift = maxShiftTicks * _tickSize;
+                decimal lerpAlpha = 0.30m;
+
+                decimal newS = (curS + (tarS - curS) * lerpAlpha);
+                decimal newE = (curE + (tarE - curE) * lerpAlpha);
+                newS = Math.Max(curS - maxShift, Math.Min(curS + maxShift, newS));
+                newE = Math.Max(curE - maxShift, Math.Min(curE + maxShift, newE));
+
+                best.Start = newS;
+                best.End = newE;
+            }
+
+            foreach (var tz in _dailyHvnTracked)
+            {
+                if (tz.Missing >= persistClearRecalcs)
+                    tz.Active = false;
+                if (tz.Missing > 0)
+                    tz.HitCount = Math.Max(0, tz.HitCount - 1);
+            }
+
+            _dailyHvnTracked.RemoveAll(z => z.Missing >= persistClearRecalcs);
+
+            // ---------- HVN Output ----------
+            int hvTopN = Math.Max(0, DailyTopNHVNs);
+            var rankedTracked = _dailyHvnTracked
+                .OrderByDescending(z => z.Score)
+                .ToList();
+
+            bool InLocalWindow(decimal start, decimal end)
+            {
+                if (hvCurrP <= 0m || _tickSize <= 0m) return true;
+                decimal c = (start + end) / 2m;
+                int d = (int)Math.Round(Math.Abs(c - hvCurrP) / _tickSize);
+                return d <= hvLocalWindowTicks;
+            }
+
+            // Output priorisieren: erst aktive Zonen im lokalen Preisfenster, dann Rest nach Score auffüllen.
+            hvScored = rankedTracked
+                .Where(z => z.Active && InLocalWindow(z.Start, z.End))
+                .Take(hvTopN)
+                .Select(z => (z.Start, z.End))
+                .ToList();
+
+            if (hvScored.Count < hvTopN)
+            {
+                foreach (var z in rankedTracked)
+                {
+                    if (hvScored.Count >= hvTopN) break;
+                    if (!z.Active) continue;
+                    if (hvScored.Any(h => h.Start == z.Start && h.End == z.End)) continue;
+                    hvScored.Add((z.Start, z.End));
+                }
+            }
+
+            if (hvScored.Count < hvTopN)
+            {
+                foreach (var z in rankedTracked)
+                {
+                    if (hvScored.Count >= hvTopN) break;
+                    if (z.Active) continue;
+                    if (z.Missing >= persistClearRecalcs) continue;
+                    hvScored.Add((z.Start, z.End));
+                }
+            }
+
+            List<(int L, int R)> FilterSegmentsByZoneVolShare(List<(int L, int R)> segs, decimal minShare)
+            {
+                if (segs == null || segs.Count == 0) return segs ?? new List<(int L, int R)>();
+                if (totalVol <= 0m || minShare <= 0m) return segs;
+
+                var res = new List<(int L, int R)>(segs.Count);
+                foreach (var s in segs)
+                {
+                    int L = Math.Max(0, s.L);
+                    int R = Math.Min(prices.Count - 1, s.R);
+                    if (L > R) continue;
+                    decimal zVol = 0m;
+                    for (int i = L; i <= R; i++) zVol += vols[i];
+                    if (zVol / totalVol >= minShare)
+                        res.Add((L, R));
+                }
+                return res;
+            }
+
+            var lvSegs = new List<(int L, int R)>();
+
+            // Ranges definieren
+            var ranges = new List<(int Lo, int Hi)>();
+            if (DailyAllowZonesOutsideVA && idxVALGlobal >= 0 && idxVAHGlobal >= 0)
+            {
+                int vaLo = Math.Min(idxVALGlobal, idxVAHGlobal);
+                int vaHi = Math.Max(idxVALGlobal, idxVAHGlobal);
+
+                // bottom tail, VA, top tail
+                if (vaLo > 0) ranges.Add((0, vaLo - 1));
+                ranges.Add((vaLo, vaHi));
+                if (vaHi < prices.Count - 1) ranges.Add((vaHi + 1, prices.Count - 1));
+            }
+            else
+            {
+                ranges.Add((scanLo, scanHi));
+            }
+
+            foreach (var rg in ranges)
+            {
+                // LVN detection disabled for Daily profile (not used for entry or dynamic TP)
+                // LVN Segmente would be processed here if needed
+            }
+            lvSegs = MergeSegments(lvSegs, gap);
+
+            if (DailyEnableCapZoneWidth)
+            {
+                int capTicks = Math.Max(1, DailyCapZoneWidthTicks);
+                lvSegs = CapSegmentsAroundExtremum(lvSegs, smooth, capTicks, useMax: false);
+            }
+            var lvZones = MergeSegmentsToZones(lvSegs, prices, 0);
+
+            decimal minWidth = minTicks * _tickSize;
+            lvZones = lvZones.Where(z => Math.Abs(z.End - z.Start) + _tickSize >= minWidth).ToList();
+
+            if (DailyClampZonesToVA && !DailyAllowZonesOutsideVA)
+            {
+                hvScored = ClampZonesToRange(hvScored, currentVAL, currentVAH);
+                lvZones = ClampZonesToRange(lvZones, currentVAL, currentVAH);
+            }
+
+            // LVNs disjunkt zu HVNs halten (LVN ist sekundär, aber soll nicht in HVN-Flächen liegen)
+            if (hvScored.Count > 0 && lvZones.Count > 0)
+            {
+                var filtered = new List<(decimal Start, decimal End)>();
+                foreach (var z in lvZones)
+                {
+                    decimal curS = Math.Min(z.Start, z.End);
+                    decimal curE = Math.Max(z.Start, z.End);
+                    foreach (var h in hvScored)
+                    {
+                        decimal hs = Math.Min(h.Start, h.End);
+                        decimal he = Math.Max(h.Start, h.End);
+                        if (curE < hs || curS > he) continue;
+                        if (hs <= curS && he >= curE) { curS = curE + _tickSize; break; }
+                        if (hs > curS && he < curE)
+                        {
+                            filtered.Add((curS, hs - _tickSize));
+                            curS = he + _tickSize;
+                        }
+                        else if (hs <= curS) curS = he + _tickSize;
+                        else if (he >= curE) curE = hs - _tickSize;
+                        if (curS > curE) break;
+                    }
+                    if (curS <= curE) filtered.Add((curS, curE));
+                }
+                lvZones = filtered.Where(z => Math.Abs(z.End - z.Start) + _tickSize >= minWidth).ToList();
+            }
+
+            // Debug: LVN detection pipeline
+            //this.LogInfo($"[DailyLVN-DBG] lvSegs={lvSegs?.Count ?? 0} lvZonesRaw={lvZones?.Count ?? 0} minWidth={minWidth:F2} hvScored={hvScored?.Count ?? 0} afterHVNCut={lvZones?.Count ?? 0}");
+
+            // HVN zones already computed via EMA/Hysterese engine above
+
+            // HVNs nahe VAH/VAL/POC vermeiden (Doppel-Blocker), aber NICHT destruktiv:
+            // Wenn sich VAH/VAL/POC im Lauf der Session verschieben, darf dadurch nicht alles verschwinden.
+            int keyLevelPadTicks = 2;
+            if (keyLevelPadTicks > 0 && _tickSize > 0m && hvScored.Count > 1)
+            {
+                decimal pad = keyLevelPadTicks * _tickSize;
+                decimal vah = currentVAH;
+                decimal val = currentVAL;
+                decimal poc = currentPOC;
+
+                bool OverlapsLevel((decimal Start, decimal End) z, decimal level)
+                {
+                    if (level <= 0m) return false;
+                    decimal s = Math.Min(z.Start, z.End);
+                    decimal e = Math.Max(z.Start, z.End);
+                    return level >= (s - pad) && level <= (e + pad);
+                }
+
+                var filtered = hvScored
+                    .Where(z => !OverlapsLevel(z, vah) && !OverlapsLevel(z, val) && !OverlapsLevel(z, poc))
+                    .ToList();
+
+                // NICHT destruktiv: Filter nur anwenden, wenn ausreichend HVNs übrig bleiben.
+                // Ziel: Key-Level-Duplikate reduzieren ohne die HVN-Liste zusammenbrechen zu lassen.
+                int topN = Math.Max(0, DailyTopNHVNs);
+                int minAfterFilter = Math.Min(hvScored.Count, Math.Max(2, topN - 1));
+                if (filtered.Count >= minAfterFilter)
+                    hvScored = filtered;
+            }
+
+            if (ShowDailyProfileLevels)
+            {
+                var now = DateTime.UtcNow;
+                // Zeitbasiert, da Range-Bars -> Barzählung taugt nicht als Kadenz.
+                if ((now - _dailyHvnLastStatLogUtc).TotalSeconds >= 5)
+                {
+                    _dailyHvnLastStatLogUtc = now;
+                    int hvTopNForStat = Math.Max(0, DailyTopNHVNs);
+                    decimal gLoP = (prices.Count > 0 ? prices[Math.Max(0, Math.Min(prices.Count - 1, scanLo))] : 0m);
+                    decimal gHiP = (prices.Count > 0 ? prices[Math.Max(0, Math.Min(prices.Count - 1, scanHi))] : 0m);
+                    decimal wLoP = (prices.Count > 0 ? prices[Math.Max(0, Math.Min(prices.Count - 1, hvScanLo))] : 0m);
+                    decimal wHiP = (prices.Count > 0 ? prices[Math.Max(0, Math.Min(prices.Count - 1, hvScanHi))] : 0m);
+                    decimal currP = (_tickSize > 0m && CurrentBar >= 0 ? RoundToTick(GetLastPrice()) : 0m);
+                    this.LogInfo($"[DailyHVN-STAT] hvTopN={hvTopNForStat} hvOutNow={hvScored.Count} hvSegs={hvSegs.Count} hvCand={hvCandidateCount} tracked={_dailyHvnTracked.Count} allowOutVA={DailyAllowZonesOutsideVA} global=[{gLoP:F2},{gHiP:F2}] win=[{wLoP:F2},{wHiP:F2}] curr={currP:F2} winTicks={hvLocalWindowTicks} totalVol={totalVol:F0} POC={currentPOC:F2} VAH={currentVAH:F2} VAL={currentVAL:F2}");
+                }
+            }
+
+            _dailyHvnLastOutputIds = _dailyHvnTracked
+                .Where(z => hvScored.Any(h => (h.Start == z.Start && h.End == z.End)))
+                .Select(z => z.Id)
+                .ToList();
+
+            List<(decimal Start, decimal End)> lvScored = lvZones
+                .Select(z =>
+                {
+                    int l = prices.FindIndex(p => p == z.Start);
+                    int r = prices.FindIndex(p => p == z.End);
+                    if (l < 0 || r < 0) return (z, score: 0m);
+                    if (l > r) { var t = l; l = r; r = t; }
+                    decimal s = 0m; int n = 0;
+                    for (int i = l; i <= r; i++) { s += smooth[i]; n++; }
+                    decimal mean = (n > 0 ? s / n : 0m);
+                    return (z, score: (mean > 0m ? (1m / (1m + mean)) : 1m));
+                })
+                .OrderByDescending(x => x.score)
+                .Take(Math.Max(0, DailyTopNLVNs))
+                .Select(x => x.z)
+                .ToList();
+
+            mc.HVNZones = hvScored;
+            mc.LVNZones = lvScored;
+            mc.HVNs = mc.HVNZones.Select(z => RoundToTick((z.Start + z.End) / 2m)).ToList();
+            mc.LVNs = mc.LVNZones.Select(z => RoundToTick((z.Start + z.End) / 2m)).ToList();
+
+            //this.LogInfo($"[DailyLVN-DBG] final LVNZones={lvScored?.Count ?? 0} topN={DailyTopNLVNs} ShowZoneRects={ShowZoneRects}");
+
+            if (ShowDailyProfileLevels && mc.HVNZones.Count == 0)
+            {
+                this.LogInfo($"[DailyHVN-DBG] HVNs=0 levels={prices.Count} totalVol={totalVol:F0} POC={currentPOC:F2} VAH={currentVAH:F2} VAL={currentVAL:F2} hvSegs={hvSegs.Count} hvCand={hvCandidateCount} minTicks={minTicks} cap={DailyEnableCapZoneWidth}/{DailyCapZoneWidthTicks} topN={DailyTopNHVNs}");
+            }
+
+            _dailyProfileForPath = mc;
+        }
+
+        private void RecalcDailyProfileForVisual(decimal currentPOC, decimal currentVAH, decimal currentVAL)
+        {
+            _dailyProfileForVisual = _dailyProfileForPath;
+        }
+
+        private void RecalcDailyProfileForPath_Legacy(decimal currentPOC, decimal currentVAH, decimal currentVAL)
+        {
+            if (_tickSize <= 0m || _dailyProfileCombinedHist.Count == 0)
+            {
+                _prevDailyProfileForPath = _dailyProfileForPath;
+                _dailyProfileForPath = null;
+                return;
+            }
+
+            _prevDailyProfileForPath = _dailyProfileForPath;
+
+            var mc = BuildMicroCompositeFromHist(
+                _dailyProfileCombinedHist,
+                DailySmoothTicks,
+                DailyTopNPeaks,
+                developingHist: null,
+                valueAreaFraction: 0.70m,
+                minZoneTicksOverride: DailyMinZoneTicks,
+                minProminenceOverride: DailyMinProminence,
+                minVolShareOverride: DailyMinVolShare,
+                minWidthPctVAOverride: DailyMinWidthPctVA,
+                gapTicksOverride: DailyGapTicks,
+                topNHVNsOverride: DailyTopNHVNs,
+                topNLVNsOverride: DailyTopNLVNs,
+                maxDistTicksOverride: DailyMaxDistTicks,
+                clampToVAOverride: DailyClampZonesToVA,
+                enableCapOverride: DailyEnableCapZoneWidth,
+                capTicksOverride: DailyCapZoneWidthTicks);
+
+            // Aktuelle VA/POC aus _dailyLevels übernehmen (ATAS), nicht aus der Histogramm-VA.
+            mc.POC = currentPOC;
+            mc.VAH = currentVAH;
+            mc.VAL = currentVAL;
+
+            if (DailyClampZonesToVA && !DailyAllowZonesOutsideVA)
+            {
+                static List<(decimal Start, decimal End)> ClampZones(List<(decimal Start, decimal End)> zones, decimal lo, decimal hi)
+                {
+                    if (zones == null || zones.Count == 0) return zones ?? new List<(decimal Start, decimal End)>();
+                    if (hi <= 0m || lo <= 0m) return zones;
+                    if (hi < lo) { var t = lo; lo = hi; hi = t; }
+                    var res = new List<(decimal Start, decimal End)>(zones.Count);
+                    foreach (var z in zones)
+                    {
+                        var a = z.Start;
+                        var b = z.End;
+                        if (a > b) { var tmp = a; a = b; b = tmp; }
+                        var s = Math.Max(a, lo);
+                        var e = Math.Min(b, hi);
+                        if (e >= s && s > 0m && e > 0m)
+                            res.Add((s, e));
+                    }
+                    return res;
+                }
+
+                mc.HVNZones = ClampZones(mc.HVNZones, mc.VAL, mc.VAH);
+                mc.LVNZones = ClampZones(mc.LVNZones, mc.VAL, mc.VAH);
+            }
+
+            if (DailyUsePlateauDetector && mc.LevelVols != null && mc.LevelVols.Count > 0)
+            {
+                var tick = _tickSize;
+                var prices = mc.LevelVols.Keys.ToList();
+                if (prices.Count > 2)
+                {
+                    var vols = prices.Select(p => mc.LevelVols.TryGetValue(p, out var v) ? v : 0m).ToArray();
+                    var smooth = SmoothTriangularCached(vols, Math.Max(1, DailySmoothTicks));
+                    decimal maxS = 0m;
+                    for (int i = 0; i < smooth.Length; i++) if (smooth[i] > maxS) maxS = smooth[i];
+
+                    if (maxS > 0m)
+                    {
+                        int scanLo = 0;
+                        int scanHi = prices.Count - 1;
+                        if (!DailyAllowZonesOutsideVA && mc.VAL > 0m && mc.VAH > 0m)
+                        {
+                            int idxVAL = prices.FindIndex(p => p == mc.VAL);
+                            int idxVAH = prices.FindIndex(p => p == mc.VAH);
+                            if (idxVAL >= 0 && idxVAH >= 0)
+                            {
+                                scanLo = Math.Min(idxVAL, idxVAH);
+                                scanHi = Math.Max(idxVAL, idxVAH);
+                            }
+                        }
+
+                        {
+                            int vaLo = scanLo;
+                            int vaHi = scanHi;
+
+                            int minTicks = Math.Max(1, DailyMinZoneTicks);
+                            int gap = Math.Max(0, DailyGapTicks);
+                            int capTicks = Math.Max(1, DailyCapZoneWidthTicks);
+                            bool capOn = DailyEnableCapZoneWidth;
+
+                            int MaxW = capTicks;
+                            (int L, int R) Cap((int L, int R) z)
+                            {
+                                if (!capOn) return z;
+                                int w = z.R - z.L + 1;
+                                if (w <= MaxW) return z;
+                                int c = (z.L + z.R) / 2;
+                                int half = (MaxW - 1) / 2;
+                                int Lx = Math.Max(vaLo, c - half);
+                                int Rx = Lx + MaxW - 1;
+                                if (Rx > vaHi) { Rx = vaHi; Lx = Math.Max(vaLo, Rx - MaxW + 1); }
+                                return (Lx, Rx);
+                            }
+
+                            List<(int L, int R)> MergeWithGap(List<(int L, int R)> zs)
+                            {
+                                if (zs == null || zs.Count == 0) return new();
+                                zs = zs.OrderBy(z => z.L).ToList();
+                                var outL = new List<(int L, int R)>();
+                                var cur = zs[0];
+                                for (int i = 1; i < zs.Count; i++)
+                                {
+                                    var z = zs[i];
+                                    if (z.L <= cur.R + gap) cur = (Math.Min(cur.L, z.L), Math.Max(cur.R, z.R));
+                                    else { outL.Add(cur); cur = z; }
+                                }
+                                outL.Add(cur);
+                                return outL;
+                            }
+
+                            decimal totalVol = mc.TotalVol > 0m ? mc.TotalVol : vols.Sum();
+                            decimal ZoneVol(int L, int R)
+                            {
+                                decimal s = 0m;
+                                for (int i = L; i <= R; i++) s += vols[i];
+                                return s;
+                            }
+
+                            List<(int L, int R)> ExtractSegments(Func<decimal, bool> predicate)
+                            {
+                                var segs = new List<(int L, int R)>();
+                                int i = vaLo;
+                                while (i <= vaHi)
+                                {
+                                    while (i <= vaHi && !predicate(smooth[i])) i++;
+                                    if (i > vaHi) break;
+                                    int L = i;
+                                    while (i <= vaHi && predicate(smooth[i])) i++;
+                                    int R = i - 1;
+                                    if (R - L + 1 < minTicks) continue;
+                                    segs.Add(Cap((L, R)));
+                                }
+                                return MergeWithGap(segs);
+                            }
+
+                            decimal lvThr = Math.Max(0.01m, Math.Min(0.80m, DailyLVNPlateauFrac)) * maxS;
+
+                            // HVN: adaptiv senken, wenn zu wenige Segmente gefunden werden (v.a. au?erhalb VA)
+                            decimal hvFracStart = Math.Max(0.10m, Math.Min(0.95m, DailyHVNPlateauFrac));
+                            decimal hvFracMin = DailyAllowZonesOutsideVA ? 0.35m : hvFracStart;
+                            decimal hvFrac = hvFracStart;
+                            List<(int L, int R)> hvSegs = new();
+                            while (true)
+                            {
+                                decimal hvThr = hvFrac * maxS;
+                                hvSegs = ExtractSegments(v => v >= hvThr);
+                                if (hvSegs.Count >= Math.Max(1, DailyTopNHVNs) || hvFrac <= hvFracMin)
+                                    break;
+                                hvFrac = Math.Max(hvFracMin, hvFrac - 0.05m);
+                            }
+
+                            var lvSegs = ExtractSegments(v => v <= lvThr);
+
+                            // LVNs disjunkt zu HVNs halten
+                            if (hvSegs.Count > 0 && lvSegs.Count > 0)
+                            {
+                                var cut = hvSegs;
+                                var kept = new List<(int L, int R)>();
+                                foreach (var s in lvSegs)
+                                {
+                                    int curL = s.L, curR = s.R;
+                                    foreach (var c in cut)
+                                    {
+                                        if (curR < c.L || curL > c.R) continue;
+                                        if (c.L <= curL && c.R >= curR) { curL = curR + 1; break; }
+                                        if (c.L > curL && c.R < curR)
+                                        {
+                                            kept.Add((curL, c.L - 1));
+                                            curL = c.R + 1;
+                                        }
+                                        else if (c.L <= curL) curL = c.R + 1;
+                                        else if (c.R >= curR) curR = c.L - 1;
+                                        if (curL > curR) break;
+                                    }
+                                    if (curL <= curR) kept.Add((curL, curR));
+                                }
+                                lvSegs = MergeWithGap(kept.Where(z => z.R - z.L + 1 >= minTicks).ToList());
+                            }
+
+                            // Scoring: HVN nach VolShare/Breite; LVN nach (1-VolShare) und Tiefe
+                            var hvScored = hvSegs
+                                .Select(z => new
+                                {
+                                    z.L,
+                                    z.R,
+                                    score = (totalVol > 0m ? (ZoneVol(z.L, z.R) / totalVol) : 0m) + 0.25m * ((decimal)(z.R - z.L + 1) / Math.Max(1, (vaHi - vaLo + 1)))
+                                })
+                                .OrderByDescending(x => x.score)
+                                .Take(Math.Max(1, DailyTopNHVNs))
+                                .OrderBy(x => x.L)
+                                .ToList();
+
+                            var lvScored = lvSegs
+                                .Select(z => new
+                                {
+                                    z.L,
+                                    z.R,
+                                    score = 1m - (totalVol > 0m ? (ZoneVol(z.L, z.R) / totalVol) : 0m)
+                                })
+                                .OrderByDescending(x => x.score)
+                                .Take(Math.Max(1, DailyTopNLVNs))
+                                .OrderBy(x => x.L)
+                                .ToList();
+
+                            mc.HVNZones = hvScored.Select(x => (prices[x.L], prices[x.R])).ToList();
+                            mc.LVNZones = lvScored.Select(x => (prices[x.L], prices[x.R])).ToList();
+                        }
+                    }
+                }
+            }
+
+            // POCVol aus Histogramm ableiten (für HVN-Stärke-Filter)
+            if (mc.LevelVols != null && mc.LevelVols.TryGetValue(currentPOC, out var pv))
+                mc.POCVol = pv;
+
+            _dailyProfileForPath = mc;
+        }
         private PathConfig GetPathConfig()
         {
+            bool forceAllStrong = (MicroCompositeHVNStrength <= 0);
+            bool forceAllWeak = (MicroCompositeHVNStrength >= 100);
+            decimal factor = ComputeStrengthFactorFromSlider(MicroCompositeHVNStrength);
+
+            decimal basePocInside = HVNStrengthVsPOC;
+            decimal baseMedInside = HVNStrengthVsMedian;
+            decimal basePromInside = MinProminenceVsMedian;
+            decimal basePocOutside = HVNStrengthVsPOC;
+            decimal baseMedOutside = HVNStrengthVsMedian;
+            decimal basePromOutside = MinProminenceVsMedian;
+
+            decimal pocInside = Math.Max(0.10m, Math.Min(0.90m, basePocInside * factor));
+            decimal pocOutside = Math.Max(0.10m, Math.Min(0.90m, basePocOutside * factor));
+            decimal medInside = Math.Max(0.50m, Math.Min(3.00m, 1.0m + ((baseMedInside - 1.0m) * factor)));
+            decimal medOutside = Math.Max(0.50m, Math.Min(3.00m, 1.0m + ((baseMedOutside - 1.0m) * factor)));
+            decimal promInside = Math.Max(0.05m, Math.Min(0.50m, basePromInside * factor));
+            decimal promOutside = Math.Max(0.05m, Math.Min(0.50m, basePromOutside * factor));
+
             return new PathConfig
             {
-                RequiredLVNsInPath = RequiredLVNsInPath,
+                RequiredLVNsInPath = (UseMicroCompositeLVNsForWegFreiAndDynamicTP ? RequiredLVNsInPath : 0),
                 RelaxVAEdgesWhenOutsideValue = RelaxVAEdgesWhenOutsideValue,
-                HVNStrengthVsPOC = HVNStrengthVsPOC,
-                HVNStrengthVsMedian = HVNStrengthVsMedian,
-                MinProminenceVsMedian = MinProminenceVsMedian,
-                MinBlockerDistanceTicksVsRisk = MinBlockerDistanceTicksVsRisk
+                HVNStrengthVsPOC = pocInside,
+                HVNStrengthVsMedian = medInside,
+                MinProminenceVsMedian = promInside,
+                HVNStrengthVsPOCInside = pocInside,
+                HVNStrengthVsPOCOutside = pocOutside,
+                HVNStrengthVsMedianInside = medInside,
+                HVNStrengthVsMedianOutside = medOutside,
+                MinProminenceVsMedianInside = promInside,
+                MinProminenceVsMedianOutside = promOutside,
+                ForceAllHVNsStrong = forceAllStrong,
+                ForceAllHVNsWeak = forceAllWeak,
+                MinBlockerDistanceTicksVsRisk = MinBlockerDistanceTicksVsRisk,
+                UseHvnZonesForBlocking = UseMicroCompositeHVNsForWegFreiAndDynamicTP,
+                UseLvnPathForBlocking = UseMicroCompositeLVNsForWegFreiAndDynamicTP
             };
         }
-        
+
+        private static decimal ComputeStrengthFactorFromSlider(int strength0to100)
+        {
+            int s = Math.Max(0, Math.Min(100, strength0to100));
+            decimal delta = (s - 50) / 50m;
+            decimal factor = 1m + (delta * 0.25m);
+            if (factor < 0.70m) factor = 0.70m;
+            if (factor > 1.30m) factor = 1.30m;
+            return factor;
+        }
+
+        private PathConfig GetDailyPathConfig()
+        {
+            bool forceAllStrong = (DailyHVNStrength <= 0);
+            bool forceAllWeak = (DailyHVNStrength >= 100);
+
+            decimal factor = ComputeStrengthFactorFromSlider(DailyHVNStrength);
+
+            decimal basePocInside = 0.45m;
+            decimal baseMedInside = 1.30m;
+            decimal basePromInside = 0.15m;
+            decimal basePocOutside = 0.35m;
+            decimal baseMedOutside = 1.10m;
+            decimal basePromOutside = 0.10m;
+
+            decimal pocInside = Math.Max(0.10m, Math.Min(0.90m, basePocInside * factor));
+            decimal pocOutside = Math.Max(0.10m, Math.Min(0.90m, basePocOutside * factor));
+            decimal medInside = Math.Max(0.50m, Math.Min(3.00m, 1.0m + ((baseMedInside - 1.0m) * factor)));
+            decimal medOutside = Math.Max(0.50m, Math.Min(3.00m, 1.0m + ((baseMedOutside - 1.0m) * factor)));
+            decimal promInside = Math.Max(0.05m, Math.Min(0.50m, basePromInside * factor));
+            decimal promOutside = Math.Max(0.05m, Math.Min(0.50m, basePromOutside * factor));
+
+            return new PathConfig
+            {
+                RequiredLVNsInPath = 0,
+                RelaxVAEdgesWhenOutsideValue = DailyRelaxVAEdgesWhenOutsideValue,
+                HVNStrengthVsPOC = pocInside,
+                HVNStrengthVsMedian = medInside,
+                MinProminenceVsMedian = promInside,
+                HVNStrengthVsPOCInside = pocInside,
+                HVNStrengthVsPOCOutside = pocOutside,
+                HVNStrengthVsMedianInside = medInside,
+                HVNStrengthVsMedianOutside = medOutside,
+                MinProminenceVsMedianInside = promInside,
+                MinProminenceVsMedianOutside = promOutside,
+                ForceAllHVNsStrong = forceAllStrong,
+                ForceAllHVNsWeak = forceAllWeak,
+                MinBlockerDistanceTicksVsRisk = DailyMinBlockerDistanceTicksVsRisk,
+                UseLvnPathForBlocking = false
+            };
+        }
+
         private bool _deferManagerInit = false;
 
         // Trading hours control
@@ -594,7 +3742,7 @@ namespace MyNamespace.Strategies
         private Order? _marketOrder;
         private Order? _tpOrder;
         private Order? _slOrder;
-        
+
 
         private bool HasActiveEntryOrder => _entryOrder != null;
         private bool _positionOpen = false;
@@ -632,12 +3780,12 @@ namespace MyNamespace.Strategies
         // Pro Setup: Basis-Thresholds (aus OnInitialize)
         private readonly Dictionary<SetupKind, OrderflowThresholds?> _baseThBySetup = new();
 
-       
+
 
         // Optional: pro Setup Policy-Flag (z. B. VolBurst zwingend)
         private readonly Dictionary<SetupKind, bool> _requireVolBurstBySetup = new();
 
-        
+
         private class SetupRuntime
         {
             public int BestScore;
@@ -687,8 +3835,9 @@ namespace MyNamespace.Strategies
         private int _lastEvalBar = -1;    // Entprellen: nur 1x pro Bar
         private int _lastSeenBar = -1;    // h?chster bisher gesehener Bar-Index
         private int _lastProcessedBar = -1;
-        
-        
+        private DateTime _lastDailyWegFreiDebugHeartbeatTime = DateTime.MinValue;
+
+
         private int Coherence_Lookback = 50;   // Fenster f?r Korrelation
         private int ER_Lookback = 20;          // Fenster f?r Efficiency Ratio
         private int _counterDeltaShareLookback = 5;
@@ -702,8 +3851,14 @@ namespace MyNamespace.Strategies
 
         private decimal _currentBarVolPerSecond;
         private decimal _currentBarAvgVolPerSecond;
-        
+
+        private readonly VolatilityRegimeCalculator _volatilityRegimeCalculator = new VolatilityRegimeCalculator();
+
+        private readonly MyNamespace.Strategies.MarketAnalysis.MarketRegimeEvaluator _marketRegimeEvaluator = new MyNamespace.Strategies.MarketAnalysis.MarketRegimeEvaluator();
+
         private bool _historicalAnalysisPerformed = false; // Stellt sicher, dass die Analyse nur einmal l?uft
+
+        private bool _swingCandleSeedPerformed = false;
 
 
         private bool _isPullbackMode = false; // Flag, ob wir in Pullback-Trailing sind
@@ -736,7 +3891,7 @@ namespace MyNamespace.Strategies
 
         private MarketRegime _currentRegime = MarketRegime.Normal;
 
-        
+
         // =========================================================================
         // Stacked-Imbalance 
         // =========================================================================
@@ -761,9 +3916,9 @@ namespace MyNamespace.Strategies
         private readonly Dictionary<int, string> _imbalanceScoreLabelSeries = new();
 
         // --- Stacked-Imbalance Parameter (Defaults analog ATAS) ---
-        private decimal _imbalanceRatioPct = 300; // 300% => Faktor 3.0
+        private decimal _imbalanceRatioPct = 150; // 150% => Faktor 1.5 (realistischer als 300%)
         private int _imbalanceRangeMin = 2;   // Mindestl?nge eines zusammenh?ngenden Stacks
-        private int _imbalanceVolumeMin = 30;  // Mindestvolumen pro Level
+        private int _imbalanceVolumeMin = 10;  // Mindestvolumen pro Level (angepasst an reale Daten)
         private bool _imbIgnoreZeroValues = false;
         private int _imbMaxDepthTicksAnchored = 3;   // f?r Range-Bars (5?8 Ticks) typ. 5?6
 
@@ -803,7 +3958,7 @@ namespace MyNamespace.Strategies
         private const decimal CAPS_EMA_ALPHA = 0.20m;
         private const decimal EMA_LONG_ALPHA = 0.02m;
 
-       
+
 
         private CandleSnap ToSnap(IndicatorCandle ic)
         {
@@ -835,7 +3990,7 @@ namespace MyNamespace.Strategies
         // ATAS BENUTZERKONFIGURIERBARE PARAMETER F?R "COMMON ENTRY CONDITIONS"
         // Diese werden im ATAS Properties Fenster unter "Common Conditions - AggPressure" angezeigt
         // =========================================================================
-        
+
 
         [Category("Konfiguration")]
         [DisplayName("Setup Configuration")]
@@ -848,6 +4003,13 @@ namespace MyNamespace.Strategies
         [Description("Reversal-spezifische Orderflow-Schwellenwerte f?r ReversalBounce Pattern")]
         [TypeConverter(typeof(ExpandableObjectConverter))]
         public OrderflowThresholds ReversalThresholds { get; set; } = new OrderflowThresholds();
+
+
+        [Display(Name = "Noisy Orderflow-Logs unterdrücken",
+                 GroupName = "Orderflow - Logging",
+                 Description = "Unterdrückt sehr ausführliche Debug/Info-Logs aus Orderflow-Modulen (z.B. FeatureCalculator/Thresholds/AddBar/ImbalanceScore), damit Backtests übersichtlicher werden.",
+                 Order = 1)]
+        public bool SuppressNoisyOrderflowLogs { get; set; } = true;
 
 
         [Display(Name = "Enable Order Timeout", GroupName = "Order Timeout", Order = 100)]
@@ -864,17 +4026,17 @@ namespace MyNamespace.Strategies
         [Category("Orderflow - MarketStateEngine")]
         [DisplayName("Trend Body (Ticks)")]
         [Description("Body-Gr??e (in Ticks), die als Trend-Bar gewertet wird (z.B. 6).")]
-        [DefaultValue(6)]
+        [DefaultValue(5)]
         [Range(1, 100)]
-        public int Parameter_TrendBodyTicks { get; set; } = 6;
+        public int Parameter_TrendBodyTicks { get; set; } = 5;
 
         [OFTParameter]
         [Category("Orderflow - MarketStateEngine")]
         [DisplayName("Reversal Body (Ticks)")]
         [Description("Body-Gr??e (in Ticks), die als Reversal-Bar gewertet wird (z.B. 9).")]
-        [DefaultValue(9)]
+        [DefaultValue(8)]
         [Range(1, 200)]
-        public int Parameter_ReversalBodyTicks { get; set; } = 9;
+        public int Parameter_ReversalBodyTicks { get; set; } = 8;
 
         [OFTParameter]
         [Category("Orderflow - MarketStateEngine")]
@@ -886,13 +4048,13 @@ namespace MyNamespace.Strategies
         [Category("CSV Export")]
         [DisplayName("CSV Export aktivieren")]
         [Description("Aktiviert/deaktiviert den CSV-Export der OvSnapshots")]
-        public bool EnableCsvExport { get; set; } = true;
+        public bool EnableCsvExport { get; set; } = false;
 
         [OFTParameter]
         [Category("CSV Export")]
         [DisplayName("T?gliche CSV-Dateien")]
         [Description("Erstellt f?r jeden Handelstag eine separate CSV-Datei")]
-        public bool UseDailyCsvFiles { get; set; } = true;
+        public bool UseDailyCsvFiles { get; set; } = false;
 
         [OFTParameter]
         [Category("CSV Export")]
@@ -904,7 +4066,7 @@ namespace MyNamespace.Strategies
         [Category("CSV Export")]
         [DisplayName("ImbalanceScore CSV Export")]
         [Description("Schreibt eine separate CSV nur mit Imbalance-Score Werten")]
-        public bool EnableImbalanceScoreCsvExport { get; set; } = true;
+        public bool EnableImbalanceScoreCsvExport { get; set; } = false;
 
         // ... F?GE HIER WEITERE GLOBALE [OFTParameter]-PROPERTIES F?R ALLE COMMON CONDITIONS HINZU,
         // DIE DU ?BER DAS ATAS-UI STEUERN M?CHTEST (z.B. VolBurst, CvdImpulseRisingSequence etc.)
@@ -916,18 +4078,16 @@ namespace MyNamespace.Strategies
         // =========================================================================
         // ALLES, WAS BLEIBT | Anfang
         // =========================================================================
-        private ModeSpec _currentModeSpec; // Beispiel: muss in Ihrer Strategie gesetzt werden               
         private Dictionary<OrderflowPatternType, OrderflowThresholds> _patternDefaultThresholds;
 
         private SqueezeMomentumCalculator _squeezeCalc;
 
         private decimal _pdPOC, _pdVAH, _pdVAL;
-        private ResearchCollector _research;
 
         private BackgroundCsvWriter _csvWriter;
         private string _csvPath;
         private string _currentCsvDate;
-        private string _storedBacktestDate; // Gespeichertes Backtest-Datum wie im ResearchCollector
+        private string _storedBacktestDate;
 
         private BackgroundCsvWriter _imbScoreCsvWriter;
         private string _imbScoreCsvPath;
@@ -963,15 +4123,87 @@ namespace MyNamespace.Strategies
         // ========================================================
         // PRIVATE MEMBER-VARIABLEN (Zustand der Strategie)
         // ========================================================    
-        private readonly ILoggerSource _loggerSource;        
-        private SetupConditionConfig _commonConditionsSpecificConfig;
+        private readonly ILoggerSource _loggerSource;
         private SetupConfiguration _strategySetup;
 
-        private MarketDirectionalBias _currentDirectionalBias;
-        private MarketState _currentMarketState;
-        private MarketStructureContext _marketStructureContext;
-        private PatternSignaturer _patternSignaturer;
-        private ReversalBouncePatternEvaluator _reversalEvaluator;
+        internal static volatile bool SuppressNoisyOrderflowLogsGlobal;
+
+        private static readonly string[] _noisyLogPrefixes =
+        {
+            "[OrderflowFeatureCalculator]",
+            "[AddFeatureAndSync]",
+            "[ImbalanceScore]",
+            "[RangeStructureDetector]",
+            "[AddBar]",
+        };
+
+        internal static bool ShouldSuppressNoisyLogStatic(string message)
+        {
+            if (!SuppressNoisyOrderflowLogsGlobal)
+                return false;
+            if (string.IsNullOrEmpty(message))
+                return false;
+
+            for (int i = 0; i < _noisyLogPrefixes.Length; i++)
+            {
+                var p = _noisyLogPrefixes[i];
+                if (message.StartsWith(p, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        private bool ShouldSuppressNoisyLog(string message) => ShouldSuppressNoisyLogStatic(message);
+
+        private MarketAnalysis.MarketStructureContext _marketStructureContext;
+        private const bool UseTick900ForMarketStructure = true;
+        private static int _msGlobalGeneration;
+        private static long _msGlobalBackfillRequestedEndTimeTicks;
+        private readonly int _msGeneration;
+        private readonly string _msInstanceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        private Mutex? _msLeaderMutex;
+        private bool _msIsLeaderInstance;
+        private bool _msLeaderElectionAttempted;
+        private bool _msLeaderLogOnce;
+        private bool _msZonesDiagLogged;
+        private bool _msZonesSnapshotDiagLogged;
+        private bool _msBackfillGateDiagLogged;
+        private bool _msZonesSnapshotClearedByLeader;
+        private bool _msZone11RenderDiagLogged;
+
+        private bool _msZone12RenderDiagLogged;
+        private bool _msZone13RenderDiagLogged;
+        private bool _msTick900BackfillRequestDiagLogged;
+        private MemoryMappedFile? _msZonesMmf;
+        private string? _msZonesMmfName;
+        private Tick900Aggregator _msTick900Aggregator;
+        private int _msTick900Bar;
+        private DateTime _msTick900BucketSessionStart;
+        private bool _msTick900BackfillRequested;
+        private bool _msTick900BackfillCompleted;
+        private DateTime _msTick900BackfillRequestedEndTime;
+        private DateTime _msTick900BackfillCandidateFirstTime;
+        private DateTime _msTick900BackfillCandidateEndTime;
+        private int _msTick900BackfillCandidateStableCount;
+        private bool _msTick900ResetOnNextBackfillResponse;
+        private bool _msTick900RebuildAfterResumeNeeded;
+        private int _msTick900LiveBufAppliedLastBackfill;
+        private int _msTick900LiveBufSkippedLastBackfill;
+        private const int MsTick900MaxLiveBuffer = 200000;
+        private readonly List<MarketDataArg> _msTick900LiveTradeBuffer = new List<MarketDataArg>(4096);
+        private readonly List<TickCandle> _msTick900ClosedCandles = new List<TickCandle>(4096);
+        
+        private DateTimeKind? _msChartTimeKind;
+        private DateTime _msLastLiveTradeWallClockUtc;
+        private DateTime _msLastBackfillRequestWallClockUtc;
+        private Func<int, int>? _msGetXByBar;
+        private System.Reflection.MethodInfo? _msGetXByBarMi;
+        private int _msGetXByBarMiParamCount;
+        private bool _msXMapDiagLogged;
+        private bool _msTick900BackfillSawTicks;
+        private bool _msTick900BackfillTicksDiagLogged;
+        private bool _msTick900OhlcInvariantDiagLogged;
+        private PatternRunner _patternRunner;
         private OvSnapshotHistory _ovSnapshotHistory;
         private OfFeaturesHistory _ofFeaturesHistory;
         private Dictionary<int, OfFeatures> _ofFeaturesByBar;
@@ -981,40 +4213,44 @@ namespace MyNamespace.Strategies
         private readonly Dictionary<int, int> _ofFeaturesBarMap = new Dictionary<int, int>(); // fungiert als Set (Wert wird nicht verwendet)
 
         private OrderflowFeatureCalculator _featureCalculator;
-        private MarketStateEngine _marketStateEngine;
+ 
+        private MyNamespace.Strategies.MarketAnalysis.MarketStateEngineV2 _marketStateEngineV2;
+        private MyNamespace.Strategies.Models.MarketStateV2 _currentMarketStateV2;
+        private string _marketStateV2OverlayText;
         private MarketRegimeDetails _marketRegimeDetails;
-        private Action<MarketState>? _marketStateUpdatedHandler;
-        // Wichtig: kein Lazy mehr (weil wir Initialize direkt aufrufen).
-        private OrderflowThresholdManager? _thresholdManager;
-        private IThresholdsResolver _thresholdsResolver;
-
-
+ 
         private int _featuresHistoryCapacity;
 
         //Volumenprofil Vortag
         private VolumeProfileGenerator _volumeProfileGenerator;
         private SessionBarRangeFinder _sessionBarRangeFinder;
         // Volumenprofil
-       
+
         private void AddFeatureAndSync(OfFeatures feature)
         {
             if (feature == null)
             {
-                this.LogWarn("[AddFeatureAndSync] feature ist null -> Abbruch.");
+                var m = "[AddFeatureAndSync] feature ist null -> Abbruch.";
+                if (!ShouldSuppressNoisyLog(m))
+                    this.LogWarn(m);
                 return;
             }
 
             // History wird ben?tigt; kann nicht hier neu zugewiesen werden wenn readonly.
             if (_ofFeaturesHistory == null)
             {
-                this.LogWarn("[AddFeatureAndSync] _ofFeaturesHistory ist null -> Abbruch (initialisiere im Konstruktor).");
+                var m = "[AddFeatureAndSync] _ofFeaturesHistory ist null -> Abbruch (initialisiere im Konstruktor).";
+                if (!ShouldSuppressNoisyLog(m))
+                    this.LogWarn(m);
                 return;
             }
 
             // Pr?fe die readonly-Collections; falls null -> Abbruch (sollte durch Konstruktor initialisiert sein)
             if (_ofFeaturesByBar == null || _ofFeaturesBarList == null || _ofFeaturesBarMap == null)
             {
-                this.LogWarn("[AddFeatureAndSync] One of required collections is null (_ofFeaturesByBar/_ofFeaturesBarList/_ofFeaturesBarMap). Abbruch (initialisieren im Konstruktor).");
+                var m = "[AddFeatureAndSync] One of required collections is null (_ofFeaturesByBar/_ofFeaturesBarList/_ofFeaturesBarMap). Abbruch (initialisieren im Konstruktor).";
+                if (!ShouldSuppressNoisyLog(m))
+                    this.LogWarn(m);
                 return;
             }
 
@@ -1022,7 +4258,9 @@ namespace MyNamespace.Strategies
             if (_ofFeaturesSync == null)
             {
                 // Falls das Lock-Objekt doch null ist, kann man nicht weitermachen (readonly sollte verhindern)
-                this.LogWarn("[AddFeatureAndSync] _ofFeaturesSync ist null -> Abbruch (sollte readonly im Deklarator oder Konstruktor gesetzt werden).");
+                var m = "[AddFeatureAndSync] _ofFeaturesSync ist null -> Abbruch (sollte readonly im Deklarator oder Konstruktor gesetzt werden).";
+                if (!ShouldSuppressNoisyLog(m))
+                    this.LogWarn(m);
                 return;
             }
 
@@ -1038,12 +4276,14 @@ namespace MyNamespace.Strategies
                     }
                     catch (Exception exAdd)
                     {
-                        this.LogWarn($"[AddFeatureAndSync] Fehler beim Hinzuf?gen zu _ofFeaturesHistory: {exAdd.GetType().Name}: {exAdd.Message}");
+                        var m = $"[AddFeatureAndSync] Fehler beim Hinzuf?gen zu _ofFeaturesHistory: {exAdd.GetType().Name}: {exAdd.Message}";
+                        if (!ShouldSuppressNoisyLog(m))
+                            this.LogWarn(m);
                         return;
                     }
-                    
-                     // 2) Dictionary updaten (letzter ?berschreibt)
-                     _ofFeaturesByBar[feature.Bar] = feature;
+
+                    // 2) Dictionary updaten (letzter ?berschreibt)
+                    _ofFeaturesByBar[feature.Bar] = feature;
 
                     // 3) List/Map: Falls Bar noch nicht bekannt, am Ende anh?ngen
                     if (!_ofFeaturesBarMap.ContainsKey(feature.Bar))
@@ -1097,31 +4337,6 @@ namespace MyNamespace.Strategies
                 }
             }
         }
-        private static string GetEvaluatorLabel(object o)
-        {
-            if (o == null) return "null";
-            // falls es IPatternEvaluator ist, nimm die Direction direkt
-            if (o is IPatternEvaluator pe)
-            {
-                return $"{pe.GetType().Name}[{pe.Direction}]";
-            }
-
-            // Fallback: versuche eine Direction-Property per Reflection
-            var type = o.GetType();
-            var dirProp = type.GetProperty("Direction") ?? type.GetProperty("Side");
-            var dir = "n/a";
-            try
-            {
-                dir = dirProp != null ? dirProp.GetValue(o)?.ToString() ?? "n/a" : "n/a";
-            }
-            catch
-            {
-                dir = "n/a";
-            }
-            return $"{type.Name}[{dir}]";
-        }
-
-
         private void RebuildOfFeaturesByBarFromHistory()
         {
             // _ofFeaturesSync readonly muss initialisiert sein
@@ -1144,7 +4359,7 @@ namespace MyNamespace.Strategies
                     this.LogWarn("[RebuildOfFeaturesByBarFromHistory] _ofFeaturesHistory ist null -> keine Rekonstruktion m?glich.");
                     return;
                 }
-               
+
                 _ofFeaturesByBar.Clear();
                 _ofFeaturesBarList.Clear();
                 _ofFeaturesBarMap.Clear();
@@ -1205,7 +4420,7 @@ namespace MyNamespace.Strategies
             {
                 bool severe = false;
 
-                
+
                 int historyCount = _ofFeaturesHistory?.Count ?? 0;
                 int dictCount = _ofFeaturesByBar?.Count ?? 0;
                 int listCount = _ofFeaturesBarList?.Count ?? 0;
@@ -1290,6 +4505,7 @@ namespace MyNamespace.Strategies
                     }
                 }
             }
+
         }
 
         private static object ConvertToTargetType(decimal src, Type targetType)
@@ -1303,35 +4519,11 @@ namespace MyNamespace.Strategies
             return Convert.ChangeType(src, underlying, CultureInfo.InvariantCulture);
         }
 
-        private void OnMarketStateUpdated(MyNamespace.Strategies.Models.MarketState state)
-        {
-            try
-            {
-                _currentMarketState = state;
-                this.LogInfo($"[MarketStateUpdated] New state: Bias={state.DirectionalBias}, Confidence={state.Confidence:F2}, Regime={state.Regime}");
-                // weitere Reaktionen...
-            }
-            catch (Exception ex)
-            {
-                this.LogWarn($"[MarketStateUpdated] Fehler im Handler: {ex.Message}");
-            }
-        }
-
-        //Datensammler
-
-        // Research-Settings
-        private bool _researchEnabled = true;            // zum Test aktiv
-        private int _researchHorizonBars = 10;
-        private int _researchOutcomeTicks = 10;
-        private int _researchProximityTicks = 8;         // f?r Level-N?he-Filter bei Kandidatenerzeugung
-        private int _researchPathCheckTicks = 12; // Pfad-/Hindernis-Check (kannst du ?berschreiben)
-        private string _researchTimeframeLabel = "1m";
-
         public int OutcomeTicks { get; set; } = 12;
         public int StopTicks { get; set; } = 10;
         public string ResearchBaseDir { get; set; } = @"C:\Users\User\Documents\Strategieauswertung";
 
-        
+
         private decimal _lastFinalScore = 0;
         private bool _lastApproved = false;
         // Laufzeit
@@ -1523,33 +4715,10 @@ namespace MyNamespace.Strategies
 
 
 
-        public class MarketRegimeDetails
-        {
-            public MarketRegime Regime { get; set; } // Das finale Regime (Fast, Slow, Normal)
-            public int FastVotes { get; set; }
-            public int SlowVotes { get; set; }
-            public bool IsHighVol { get; set; }
-            public decimal Vps { get; set; } // Volatility per Second
-            public decimal VpsEma { get; set; } // EMA of Volatility per Second
-            public decimal VpsStd { get; set; } // Standardabweichung der Volatility per Second
-            public decimal ZScore { get; set; } // Z-Score der VPS
-            public decimal TradesPerSecZ { get; set; } // Trade Rate Z-Score
-            public decimal SecondsPerBar { get; set; } // Dauer der Bar in Sekunden
-
-            // Optional: Wenn Sie die Schwellenwerte auch loggen m?chten
-            // public decimal VolLowMult { get; set; }
-            // public decimal VolHighMult { get; set; }
-            // public decimal VolFastZ { get; set; }
-            // ...
-        }
-
-        
-        
-
-            // =========================================================================
-            // Bounce-Erkennung - Anfang
-            // =========================================================================
-            public enum BouncePhase
+        // =========================================================================
+        // Bounce-Erkennung - Anfang
+        // =========================================================================
+        public enum BouncePhase
         {
             Idle,
             RejectionEval,      // innerhalb des Rejection-Fensters
@@ -1618,10 +4787,10 @@ namespace MyNamespace.Strategies
 
         private readonly SetupRegistry _setups = new();
         // Pro Setup ein Detector-Container (Key kann SetupName oder SetupName+BandId sein)
-       
-              
 
-       
+
+
+
 
 
         // Richtung-Enum
@@ -1725,12 +4894,12 @@ namespace MyNamespace.Strategies
         private bool _ofContBullOKLastClosed;
         private bool _ofContBearOKLastClosed;
 
-        
+
         private enum SetupPhase { Idle, RejectionEval, EntryConfirmation }
         private SetupPhase _phase = SetupPhase.Idle;
         private bool _isInRejectionWindow = false;
 
-        
+
 
         private SortedDictionary<decimal, decimal> _vwHist = new();
         private bool _vwActive = false;
@@ -1800,49 +4969,6 @@ namespace MyNamespace.Strategies
             return bestTicks == int.MaxValue ? ("", 0m, -1) : (bestKey, bestPrice, bestTicks);
         }
 
-        private int DistIfSet(decimal entry, decimal level)
-            => level > 0m ? Math.Abs(TicksBetween(entry, level)) : 0;
-
-       
-        private void SetResearchEnabled(bool enabled)
-        {
-            if (enabled == _researchEnabled) return;
-            _researchEnabled = enabled;
-
-            if (_researchEnabled)
-            {
-                            
-                
-                var path = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                    "Research",
-                    $"{(InstrumentInfo?.Instrument ?? "Unknown")}_{DateTime.UtcNow:yyyyMMdd}.csv"
-                );
-
-                decimal tickSize = 0.25m; // z. B. Instrument.MasterInstrument.TickSize;
-                int outcomeTicks = 12;
-                int stopTicks = 10;
-
-                _research = new ResearchCollector(
-                    tickSize,
-                    outcomeTicks,
-                    stopTicks,
-                    @"C:\Users\User\Documents\Strategieauswertung"
-                );
-
-                this.LogInfo("[Research] Collector enabled");
-            }
-            else
-            {
-                try { _research?.Flush(); } catch { }
-                _research = null;
-                this.LogInfo("[Research] Collector disabled");
-            }
-        }
-
-
-        
-
         [Display(Name = "Entry Timeout (Bars)", GroupName = "Entry Settings", Order = 1)]
         [Range(1, 200)]
         public int EntryTimeoutBars { get; set; } = 30;
@@ -1851,7 +4977,7 @@ namespace MyNamespace.Strategies
         [Range(1, 200)]
         public int PullbackTimeoutBars { get; set; } = 20;
 
-                
+
         [Display(Name = "VolZ Lookback (VolZ_Lookback)", GroupName = "Entry Settings", Order = 4)]
         [Description("Lookback-Perioden f?r den Volumen-Z-Score-Berechnung. Definiert die maximale Window-Gr??e f?r die Queue. Z.B. 30 f?r 1-Min-Charts in Scalping-Strategien.")]
         [Range(10, 100)]  // Optional: Min/Max f?r die UI (entferne, wenn ATAS das nicht unterst?tzt)
@@ -1863,10 +4989,10 @@ namespace MyNamespace.Strategies
         [Range(0.01, 0.5)]  // Optional: Min/Max f?r die UI (entferne, wenn ATAS das nicht unterst?tzt)
         public double EwmaAlpha { get; set; } = 0.2;  // Default auf 0.2, wie in deiner Vorlage
 
-        
 
 
-        
+
+
 
 
         [Display(Name = "Aktiviere Pullback Order",
@@ -1898,8 +5024,8 @@ namespace MyNamespace.Strategies
                 Description = "Aktiviert den Break Even Stop")]
         public bool EnableBreakEven { get; set; } = true;
 
-       
-               
+
+
 
         // Parameter f?r die Handelsmenge (Optional, n?tzlich)
         [Display(Name = "Handelsmenge (Lots)",
@@ -1909,7 +5035,7 @@ namespace MyNamespace.Strategies
         [Description("Die Menge (in Lots oder Einheiten) pro Trade.")]
         public decimal HandelsMenge { get; set; } = 1.0m; // Standard 1.0 Kontrakt
 
-       
+
 
         [Display(Name = "SMA Periode",
          GroupName = "SMA Settings",
@@ -1930,6 +5056,19 @@ namespace MyNamespace.Strategies
             Order = 1)]
         public bool ShowVWAPBands { get; set; } = false; // Standardm??ig auf true setzen, um B?nder anzuzeigen
 
+        [Display(Name = "VWAP-Nähe Blocker aktivieren",
+                 GroupName = "VWAP Einstellungen",
+                 Description = "Blockiert Einstiege bei Annäherung an VWAP aus Richtung",
+                 Order = 2)]
+        public bool EnableVwapProximityBlocker { get; set; } = true;
+
+        [Display(Name = "VWAP Abstand (Ticks)",
+                 GroupName = "VWAP Einstellungen",
+                 Description = "Abstand in Ticks vom VWAP für Blockade (empfohlen: 6 für ES)",
+                 Order = 3)]
+        [Range(1, 50, ErrorMessage = "Wert zwischen 1 und 50")]
+        public int VwapProximityTicks { get; set; } = 6;
+
         [Display(Name = "Round Numbers Stufen",
          GroupName = "Strategie-Parameter",
          Order = 1000)]
@@ -1939,15 +5078,15 @@ namespace MyNamespace.Strategies
         // =========================================================================
         // Level-Parameter Einstellungen
         // =========================================================================
-        
+
         // Entry-Blocker Parameter
-        [Display(Name = "Level-System aktivieren", 
+        [Display(Name = "Level-System aktivieren",
                  GroupName = "Level-Parameter ? Entry-Blocker",
                  Description = "Aktiviert das komplette Level-System: Berechnet signifikante Preislevel, ?berwacht Ber?hrungen und blockiert Einstiege bei Level-N?he. Dies ist der Master-Schalter f?r alle Level-bezogenen Funktionen.",
                  Order = 1)]
-        public bool EnableIsBlocked { get; set; } = true;
+        public bool EnableIsBlocked { get; set; } = false;
 
-        [Display(Name = "Mindestabstand f?r Entry (Ticks)", 
+        [Display(Name = "Mindestabstand f?r Entry (Ticks)",
                  GroupName = "Level-Parameter ? Entry-Blocker",
                  Description = "Verhindert den Einstieg, wenn der Preis zu nah an signifikanten Zonen ist. Dies betrifft die 'IsTooCloseForEntry' Logik. H?here Werte machen die Strategie selektiver.",
                  Order = 2)]
@@ -1955,20 +5094,20 @@ namespace MyNamespace.Strategies
         public decimal ProximityTicksForEntry { get; set; } = 8;
 
         // Signifikante Level Parameter
-        [Display(Name = "Level visualisieren", 
+        [Display(Name = "Level visualisieren",
                  GroupName = "Level-Parameter ? Signifikante Level",
                  Description = "Zeigt signifikante Preislevel im Chart an. Ben?tigt 'Level-System aktivieren'. Wenn Visualisierung ohne Berechnung gew?nscht, wird die Level-Berechnung automatisch aktiviert.",
                  Order = 1)]
         public bool EnableSignificantPreviousLevels { get; set; } = true;
 
-        [Display(Name = "Anzahl Tage f?r signifikante Levels", 
+        [Display(Name = "Anzahl Tage f?r signifikante Levels",
                  GroupName = "Level-Parameter ? Signifikante Level",
                  Description = "Definiert ?ber wie viele Tage zur?ck signifikante Preislevel (Tageshoch/-tief, Vortages-POC) f?r die Handelsentscheidung ber?cksichtigt werden. Mehr Tage geben mehr Referenzpunkte.",
                  Order = 2)]
         [Range(1, 100)]
         public int MaxDaysForSignificantLevels { get; set; } = 5;
 
-        [Display(Name = "Mindestabstand Kerzen-Ber?hrungen", 
+        [Display(Name = "Mindestabstand Kerzen-Ber?hrungen",
                  GroupName = "Level-Parameter ? Signifikante Level",
                  Description = "Definiert den Mindestabstand in Kerzen, bevor eine neue Ber?hrung desselben Levels gez?hlt wird. Verhindert, dass schnelle Preisfluktuationen um ein Level als multiple Ber?hrungen gewertet werden.",
                  Order = 3)]
@@ -1981,86 +5120,118 @@ namespace MyNamespace.Strategies
         Description = "Definiert die Gr??e des rollierenden Volumenprofils in Kerzen",
         Order = 7)]
         public int M { get; set; } = 100; // Standardwert anpassen
-                                         
+
         [Display(Name = "Value Area %", GroupName = "Visualisation", Order = 7)]
         public decimal ValueAreaPct { get; set; } = 0.70m; // auf 0.682m setzen, wenn ATAS-so
 
-        
+
         // =========================================================================
         // MicroComposite Einstellungen
         // =========================================================================
-        
+
         // MicroComposite ? System Einstellungen
-        [Display(Name = "MicroComposite-System aktivieren", 
+        [Display(Name = "MicroComposite-System aktivieren",
                  GroupName = "MicroComposite ? System",
                  Description = "Aktiviert das komplette MicroComposite-System: Berechnet Volumenprofile, pr?ft Weg-Frei-Blocker und zeigt HVN/LVN-Zonen an. Dies ist der Master-Schalter f?r alle MicroComposite-bezogenen Funktionen.",
                  Order = 1)]
-        public bool EnableMicroCompositeSystem { get; set; } = true;
+        public bool EnableMicroCompositeSystem { get; set; } = false;
 
-        [Display(Name = "MicroComposite visualisieren", 
+        [Display(Name = "MicroComposite visualisieren",
                  GroupName = "MicroComposite ? System",
                  Description = "Zeigt MicroComposite-Levels (HVN/LVN-Zonen, POC, VAH/VAL) im Chart an. Ben?tigt 'MicroComposite-System aktivieren'. Wenn Visualisierung ohne Berechnung gew?nscht, wird das MicroComposite-System automatisch aktiviert.",
                  Order = 2)]
-        public bool ShowMicroCompositeLevels { get; set; } = true;
-        
+        public bool ShowMicroCompositeLevels { get; set; } = false;
+
+        [Display(Name = "Daily Profile anzeigen",
+                 GroupName = "Daily Profile ? Visualisierung",
+                 Description = "Zeigt Daily-HVN/LVN-Zonen (aus dem Daily-Volumenprofil) im Chart an. Unabhängig vom MicroComposite.",
+                 Order = 1)]
+        public bool ShowDailyProfileLevels { get; set; } = false;
+
+        [Display(Name = "Daily Histogramm anzeigen",
+                 GroupName = "Daily Profile ? Visualisierung",
+                 Description = "Zeigt das interne Daily-Volumenhistogramm (PublicActiveVolume) als Market-Profile-Balken pro Preislevel.",
+                 Order = 2)]
+        public bool ShowDailyHistogram { get; set; } = false;
+
+        [Display(Name = "Daily Histogramm Breite (px)",
+                 GroupName = "Daily Profile ? Visualisierung",
+                 Description = "Breite der Histogramm-Balken (maximale Ausdehnung) in Pixel.",
+                 Order = 3)]
+        [Range(40, 1000)]
+        public int DailyHistogramWidthPx { get; set; } = 600;
+
+        [Display(Name = "Daily Histogramm Opacity (0..255)",
+                 GroupName = "Daily Profile ? Visualisierung",
+                 Description = "Transparenz f?r die Histogramm-F?llung.",
+                 Order = 4)]
+        [Range(5, 255)]
+        public int DailyHistogramOpacity { get; set; } = 60;
+
+        [Display(Name = "Daily Profile: Volumenquelle",
+                 GroupName = "Daily Profile ? Visualisierung",
+                 Description = "Wenn aktiv, nutzt das Daily-Profil pvi.Volume (wie ATAS Market Profile bei Einstellung 'Volumen'). Wenn aus, nutzt Ask+Bid (Lots).",
+                 Order = 10)]
+        public bool DailyProfileUseAtasVolume { get; set; } = true;
+
         // MicroComposite ? Einstellungen (Datenqualit?t)
-        [Display(Name = "Top HVN Zonen", 
+        [Display(Name = "Top HVN Zonen",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Maximale Anzahl an HVN-Zonen, die nach Scoring behalten werden. Weniger HVNs ausw?hlen; verringert ?berlagerungen und h?lt die wichtigsten, kompakten Zonen im Fokus.",
                  Order = 10)]
         [Range(1, 50)]
         public int TopNHVNs { get; set; } = 4;
 
-        [Display(Name = "Top LVN Zonen", 
+        [Display(Name = "Top LVN Zonen",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Maximale Anzahl an LVN-Zonen, die nach Scoring behalten werden",
                  Order = 11)]
         [Range(1, 50)]
         public int TopNLVNs { get; set; } = 4;
 
-        [Display(Name = "Mindestbreite Zone (Ticks)", 
+        [Display(Name = "Mindestbreite Zone (Ticks)",
                  GroupName = "MicroComposite ? Einstellungen",
-                 Description = "L?sst schmale, klare HVNs zu (nicht zu niedrig setzen, sonst Rauschen).",
+                 Description = "Lässt schmale, klare HVNs zu (nicht zu niedrig setzen, sonst Rauschen).",
                  Order = 12)]
         [Range(1, 100)]
         public int MinZoneTicks { get; set; } = 3;
 
-        [Display(Name = "Minimale Prominenz", 
+        [Display(Name = "Minimale Prominenz",
                  GroupName = "MicroComposite ? Einstellungen",
-                 Description = "Hebt die Qualit?t; indirekt oft schmalere Zonen, weil flache, breitgezogene 'H?gel' rausfallen. (0..1)",
+                 Description = "Hebt die Qualität; indirekt oft schmalere Zonen, weil flache, breitgezogene 'Hügel' rausfallen. (0..1)",
                  Order = 13)]
         [Range(0.0, 1.0)]
         public decimal MinProminence { get; set; } = 0.14m;
 
-        [Display(Name = "Min. Volumenanteil", 
+        [Display(Name = "Min. Volumenanteil",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Filtert Zonen mit sehr wenig Volumenanteil. (0..1)",
                  Order = 14)]
         [Range(0.0, 1.0)]
         public decimal MinVolShare { get; set; } = 0.005m;
 
-        [Display(Name = "Min. Breite relativ VA", 
+        [Display(Name = "Min. Breite relativ VA",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Mindestbreite einer Zone relativ zur Value-Area-Breite (0..1)",
                  Order = 15)]
         [Range(0.0, 1.0)]
         public decimal MinWidthPctVA { get; set; } = 0.02m;
 
-        [Display(Name = "Merge-Gap (Ticks)", 
+        [Display(Name = "Merge-Gap (Ticks)",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Zonen in diesem Tick-Abstand werden zusammengef?hrt. Klein halten, damit benachbarte Kandidaten/Zonen nicht zu einer sehr breiten Zone zusammengef?hrt werden.",
                  Order = 16)]
         [Range(0, 20)]
         public int GapTicks { get; set; } = 3;
 
-        [Display(Name = "Max. Distanzgewicht (Ticks)", 
+        [Display(Name = "Max. Distanzgewicht (Ticks)",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Skalierung der Entfernung zum aktuellen Preis im Score",
                  Order = 20)]
         [Range(1, 100)]
         public int MaxDistTicks { get; set; } = 20;
 
-        [Display(Name = "Smoothing (Ticks)", 
+        [Display(Name = "Smoothing (Ticks)",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Triangular Smoothing-Spanne f?r die Volumenreihe. Weniger Gl?ttung macht Peaks schmaler und Zonen k?rzer.",
                  Order = 21)]
@@ -2068,19 +5239,19 @@ namespace MyNamespace.Strategies
         public int SmoothTicks { get; set; } = 3;
 
         // Zonen-Begrenzungs-Parameter
-        [Display(Name = "Zonen an Value Area klemmen", 
+        [Display(Name = "Zonen an Value Area klemmen",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Schneidet alle HVN/LVN-Zonen an den Value-Area-Grenzen (VAL/VAH) zu. Dies verhindert, dass Zonen ?ber die wichtigsten Handelsbereiche hinausragen und sorgt f?r saubere, definierte Zonengrenzen.",
                  Order = 22)]
         public bool ClampZonesToVA { get; set; } = false;
 
-        [Display(Name = "Zonenbreite begrenzen aktiv", 
+        [Display(Name = "Zonenbreite begrenzen aktiv",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Aktiviert eine harte Obergrenze f?r die maximale Breite von HVN/LVN-Zonen. N?tzlich um ?berbreite Zonen zu vermeiden, die durch Volumen-Schwankungen entstehen k?nnen.",
                  Order = 23)]
         public bool EnableCapZoneWidth { get; set; } = false;
 
-        [Display(Name = "Maximale Zonenbreite (Ticks)", 
+        [Display(Name = "Maximale Zonenbreite (Ticks)",
                  GroupName = "MicroComposite ? Einstellungen",
                  Description = "Die maximale Breite einer HVN/LVN-Zone in Ticks, symmetrisch um die Zonenmitte. Kleinere Werte erzeugen engere, pr?zisere Zonen; gr??ere Werte erlauben breitere Handelsbereiche.",
                  Order = 24)]
@@ -2088,53 +5259,262 @@ namespace MyNamespace.Strategies
         public int CapZoneWidthTicks { get; set; } = 6;
 
         // MicroComposite ? Weg-Frei-Einstellungen (Handelslogik)
-        [Display(Name = "Mindest-LVNs im Pfad", 
+        [Display(Name = "Mindest-LVNs im Pfad",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wie viele LVN-Korridore (Low Volume Nodes) m?ssen im Preispfad vorhanden sein, damit ein Handel als g?ltig gilt. LVNs sind 'd?nne' Stellen im Volumenprofil, die der Preis leicht durchqueren kann. H?here Werte machen die Strategie selektiver.",
                  Order = 1)]
         [Range(0, 10)]
         public int RequiredLVNsInPath { get; set; } = 1;
 
-        [Display(Name = "VA-Kanten au?erhalb Value lockern", 
+        [Display(Name = "MC HVN Zonen f?r WegFrei/TP nutzen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
+                 Description = "Wenn deaktiviert, werden MicroComposite HVN-Zonen/Punkte NICHT für WegFrei-Blocking und Dynamic TP verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
+                 Order = 2)]
+        public bool UseMicroCompositeHVNsForWegFreiAndDynamicTP { get; set; } = true;
+
+        [Display(Name = "MC LVN Zonen f?r WegFrei/TP nutzen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
+                 Description = "Wenn deaktiviert, wird die LVN-Pfad-Anforderung aus dem MicroComposite für WegFrei-Blocking nicht verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
+                 Order = 3)]
+        public bool UseMicroCompositeLVNsForWegFreiAndDynamicTP { get; set; } = false;
+
+        [Display(Name = "Daily WegFrei aktiv",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Aktiviert ein separates Daily-Volumenprofil (nur für WegFrei) und berücksichtigt Daily HVN/LVN zusätzlich zum MicroComposite (UND-Logik, sofern beide aktiv sind).",
+                 Order = 1)]
+        public bool EnableDailyProfilePathSystem { get; set; } = false;
+
+        [Display(Name = "Daily DMinTicks (Mindestabstand Blocker)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Mindestabstand in Ticks: Blockt Entry, wenn ein Daily Blocker (POC/VA-Kante/HVN-Zonen-Kante) innerhalb dieser Distanz im Pfad liegt. Analog zu DMinTicks im MicroComposite.",
+                 Order = 1)]
+        [Range(1, 200)]
+        public int DailyDMinTicks { get; set; } = 8;
+
+        [Display(Name = "Daily Recalc alle N Bars",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Rechenintervall in Bars (Range-Bar kompatibel). 1 = jedes Bar neu berechnen.",
+                 Order = 2)]
+        [Range(1, 500)]
+        public int DailyProfileRecalcEveryNBars { get; set; } = 1;
+
+        [Display(Name = "Daily Top HVN Zonen",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Maximale Anzahl an HVN-Zonen (Daily Profil).",
+                 Order = 2)]
+        [Range(1, 50)]
+        public int DailyTopNHVNs { get; set; } = 8;
+
+        [Display(Name = "Daily Top LVN Zonen",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Maximale Anzahl an LVN-Zonen (Daily Profil).",
+                 Order = 2)]
+        [Range(1, 50)]
+        public int DailyTopNLVNs { get; set; } = 4;
+
+        [Display(Name = "Daily Mindestbreite Zone (Ticks)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Mindestbreite einer Daily HVN/LVN-Zone in Ticks.",
+                 Order = 2)]
+        [Range(1, 100)]
+        public int DailyMinZoneTicks { get; set; } = 2;
+
+        [Display(Name = "Daily Min Prominenz",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Filtert flache Peaks (Daily Profil).",
+                 Order = 2)]
+        [Range(0.0, 1.0)]
+        public decimal DailyMinProminence { get; set; } = 0.12m;
+
+        [Display(Name = "Daily Min Volumenanteil",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Filtert Zonen mit sehr kleinem Volumenanteil (Daily Profil).",
+                 Order = 2)]
+        [Range(0.0, 1.0)]
+        public decimal DailyMinVolShare { get; set; } = 0.004m;
+
+        [Display(Name = "Daily Min Breite relativ VA",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Mindestbreite einer Zone relativ zur Value-Area-Breite (Daily Profil).",
+                 Order = 2)]
+        [Range(0.0, 1.0)]
+        public decimal DailyMinWidthPctVA { get; set; } = 0.02m;
+
+        [Display(Name = "Daily Merge-Gap (Ticks)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Zonen in diesem Tick-Abstand werden zusammengef?hrt (Daily Profil).",
+                 Order = 2)]
+        [Range(0, 20)]
+        public int DailyGapTicks { get; set; } = 1;
+
+        [Display(Name = "Daily Max. Distanzgewicht (Ticks)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Skalierung der Entfernung zum aktuellen Preis im Score (Daily Profil).",
+                 Order = 2)]
+        [Range(1, 200)]
+        public int DailyMaxDistTicks { get; set; } = 40;
+
+        [Display(Name = "Daily Zonen an Value Area klemmen",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Schneidet alle Daily-HVN/LVN-Zonen an den Value-Area-Grenzen (VAL/VAH) zu.",
+                 Order = 2)]
+        public bool DailyClampZonesToVA { get; set; } = true;
+
+        [Display(Name = "Daily Zonen au?erhalb VA zulassen",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Wenn aktiv, d?rfen Daily HVN/LVN-Zonen auch au?erhalb der Value Area liegen (keine VA-Klemmung; Plateau-Scan ?ber komplette Profil-Achse).",
+                 Order = 2)]
+        public bool DailyAllowZonesOutsideVA { get; set; } = true;
+
+        [Display(Name = "Daily Zonenbreite begrenzen aktiv",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Aktiviert eine harte Obergrenze f?r die maximale Breite von Daily-HVN/LVN-Zonen.",
+                 Order = 2)]
+        public bool DailyEnableCapZoneWidth { get; set; } = true;
+
+        [Display(Name = "Daily Maximale Zonenbreite (Ticks)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Maximale Breite einer Daily-HVN/LVN-Zone in Ticks.",
+                 Order = 2)]
+        [Range(1, 100)]
+        public int DailyCapZoneWidthTicks { get; set; } = 10;
+
+        [Display(Name = "Daily Plateau-Detektor (HVN/LVN)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Erkennt HVN/LVN als zusammenh?ngende High/Low-Volume-Areas per Schwellwert (n?her an ATAS bei breiten Zonen).",
+                 Order = 2)]
+        public bool DailyUsePlateauDetector { get; set; } = true;
+
+        [Display(Name = "Daily HVN Plateau Schwelle (Anteil vom Max)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Schwellwert f?r HVN-Areas: smoothVol >= Anteil * maxSmoothVol.",
+                 Order = 2)]
+        [Range(0.1, 0.95)]
+        public decimal DailyHVNPlateauFrac { get; set; } = 0.65m;
+
+        [Display(Name = "Daily LVN Plateau Schwelle (Anteil vom Max)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Schwellwert f?r LVN-Areas: smoothVol <= Anteil * maxSmoothVol.",
+                 Order = 2)]
+        [Range(0.01, 0.8)]
+        public decimal DailyLVNPlateauFrac { get; set; } = 0.25m;
+
+        [Display(Name = "Daily Smoothing (Ticks)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Triangular Smoothing-Spanne für Daily HVN/LVN.",
+                 Order = 3)]
+        [Range(1, 50)]
+        public int DailySmoothTicks { get; set; } = 3;
+
+        [Display(Name = "Daily Top Peaks",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Maximale Anzahl HVN-/LVN-Zentren für Daily Profil.",
+                 Order = 4)]
+        [Range(1, 50)]
+        public int DailyTopNPeaks { get; set; } = 6;
+
+        [Display(Name = "Daily Mindest-LVNs im Pfad",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Wie viele LVN-Korridore m?ssen im Daily-Profil im Pfad liegen.",
+                 Order = 5)]
+        [Range(0, 10)]
+        public int DailyRequiredLVNsInPath { get; set; } = 1;
+
+        [Display(Name = "Daily VA-Kanten au?erhalb Value lockern",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Wie MicroComposite: wenn Preis au?erhalb VA, VA-Kanten weniger streng behandeln.",
+                 Order = 6)]
+        public bool DailyRelaxVAEdgesWhenOutsideValue { get; set; } = true;
+
+        [Display(Name = "Daily HVN Strength (0..100)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Ein einziger Stärkeregler für Daily-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
+                 Order = 7)]
+        [Range(0, 100)]
+        public int DailyHVNStrength { get; set; } = 50;
+
+        [Display(Name = "Daily HVN-St?rke vs. POC (%)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "HVN gilt als stark, wenn Volumen >= Anteil des POC-Volumens (Daily Profil).",
+                 Order = 8)]
+        [Range(0.1, 1.0)]
+        public decimal DailyHVNStrengthVsPOC { get; set; } = 0.40m;
+
+        [Display(Name = "Daily HVN-St?rke vs. Median (Faktor)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "HVN gilt als stark, wenn Volumen >= Faktor * MedianVol (Daily Profil).",
+                 Order = 9)]
+        [Range(0.5, 3.0)]
+        public decimal DailyHVNStrengthVsMedian { get; set; } = 1.20m;
+
+        [Display(Name = "Daily Mindest-Prominenz vs. Median (%)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Mindest-Prominenz für Peaks im Daily Profil.",
+                 Order = 10)]
+        [Range(0.05, 0.5)]
+        public decimal DailyMinProminenceVsMedian { get; set; } = 0.15m;
+
+        [Display(Name = "Daily Mindest-Abstand Blocker vs. Risk (Faktor)",
+                 GroupName = "Daily Profile ? Weg-Frei-Einstellungen",
+                 Description = "Blocker muss mind. RiskTicks * Faktor entfernt sein (Daily Profil).",
+                 Order = 11)]
+        [Range(0.5, 5.0)]
+        public int DailyMinBlockerDistanceTicksVsRisk { get; set; } = 1;
+
+        [Display(Name = "MicroComposite HVN Strength (0..100)",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
+                 Description = "Ein einziger Stärkeregler für MicroComposite-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
+                 Order = 1)]
+        [Range(0, 100)]
+        public int MicroCompositeHVNStrength { get; set; } = 50;
+
+        [Display(Name = "VA-Kanten au?erhalb Value lockern",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wenn der aktuelle Preis au?erhalb der Value Area (VA) liegt, werden die VA-Kanten (VAL/VAH) als weniger strenge Blocker behandelt. Dies erm?glicht Trades, auch wenn der Preis kurz au?erhalb der wichtigsten Handelszone ist.",
                  Order = 2)]
         public bool RelaxVAEdgesWhenOutsideValue { get; set; } = true;
 
-        [Display(Name = "HVN-St?rke vs. POC (%)", 
+        [Display(Name = "HVN-St?rke vs. POC (%)",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
-                 Description = "Ein HVN (High Volume Node) gilt als 'starker Blocker', wenn sein Volumen mindestens dieser Prozentsatz des POC-Volumens betr?gt. Der POC (Point of Control) ist das Preislevel mit dem h?chsten Volumen. H?here Werte machen die Blocker-Bewertung strenger.",
+                 Description = "Ein HVN (High Volume Node) gilt als 'starker Blocker', wenn sein Volumen mindestens dieser Prozentsatz des POC-Volumens betr?gt. Der POC (Point of Control) ist das Preislevel mit dem h?chsten Volumen. Höhere Werte machen die Blocker-Bewertung strenger.",
                  Order = 3)]
         [Range(0.1, 1.0)]
-        public decimal HVNStrengthVsPOC { get; set; } = 0.50m;
+        public decimal HVNStrengthVsPOC { get; set; } = 0.40m;
 
-        [Display(Name = "HVN-St?rke vs. Median (Faktor)", 
+        [Display(Name = "HVN-St?rke vs. Median (Faktor)",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Ein HVN gilt als 'stark', wenn sein Volumen mindestens dieser Faktor mal dem Durchschnittsvolumen aller Preislevel entspricht. Beispiel: 1.2 bedeutet, das HVN muss 20% mehr Volumen als der Durchschnitt haben. Dies hilft, wirklich signifikante Volumenpunkte zu identifizieren.",
                  Order = 4)]
         [Range(0.5, 3.0)]
         public decimal HVNStrengthVsMedian { get; set; } = 1.20m;
 
-        [Display(Name = "Mindest-Prominenz vs. Median (%)", 
+        [Display(Name = "Mindest-Prominenz vs. Median (%)",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
-                 Description = "Die 'Prominenz' misst, wie deutlich sich ein Volumenpeak von seiner Umgebung abhebt. Dieser Wert bestimmt die minimale Prominenz im Verh?ltnis zum Medianvolumen. H?here Werte filtern nur die deutlichsten Peaks heraus und ignorieren kleine Volumenvariationen.",
+                 Description = "Die 'Prominenz' misst, wie deutlich sich ein Volumenpeak von seiner Umgebung abhebt. Dieser Wert bestimmt die minimale Prominenz im Verhältnis zum Medianvolumen. Höhere Werte filtern nur die deutlichsten Peaks heraus und ignorieren kleine Volumenvariationen.",
                  Order = 5)]
         [Range(0.05, 0.5)]
         public decimal MinProminenceVsMedian { get; set; } = 0.15m;
 
-        [Display(Name = "Mindest-Abstand Blocker vs. Risk (Faktor)", 
+        [Display(Name = "Mindest-Abstand Blocker vs. Risk (Faktor)",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
-                 Description = "Ein Blocker (HVN, POC, VA-Kante) muss mindestens diesen Faktor mal dem Risk-Ticks Abstand vom aktuellen Preis entfernt sein. Beispiel: 1 bedeutet der Blocker muss weiter entfernt sein als die Risk-Distanz. H?here Werte erlauben Trades n?her an Blockern.",
+                 Description = "Ein Blocker (HVN, POC, VA-Kante) muss mindestens diesen Faktor mal dem Risk-Ticks Abstand vom aktuellen Preis entfernt sein. Beispiel: 1 bedeutet der Blocker muss weiter entfernt sein als die Risk-Distanz. Höhere Werte erlauben Trades näher an Blockern.",
                  Order = 6)]
         [Range(0.5, 5.0)]
         public int MinBlockerDistanceTicksVsRisk { get; set; } = 1;
 
-        [Display(Name = "D_min (Ticks bis HVN/POC)", 
+        [Display(Name = "D_min (Ticks bis HVN/POC)",
                  GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Die fundamentale Risikodistanz in Ticks. Dies ist die Basis f?r alle Weg-Frei-Berechnungen und definiert den Mindestabstand zu wichtigen Volumenleveln. H?here Werte machen die Strategie konservativer und verhindern Trades in volatilen Bereichen.",
                  Order = 7)]
         [Range(1, 100)]
         public int DMinTicks { get; set; } = 8;
+
+        [Display(Name = "Min Dynamic TP Distance (Ticks)",
+                 GroupName = "TP/SL ? Dynamic TP",
+                 Description = "Wenn TpType='Vorgeschlagen' aktiv ist und das vorgeschlagene Ziel n?her als diese Tick-Distanz am Entry liegt, wird auf einen Tick-basierten TP zur?ckgefallen.",
+                 Order = 1)]
+        [Range(0, 100)]
+        public int MinDynamicTpDistanceTicks { get; set; } = 6;
 
         [Display(Name = "Range Lookback (Bars)", GroupName = "Entry Settings",
         Description = "f?r Setup1 Range-Definition")]
@@ -2172,13 +5552,6 @@ namespace MyNamespace.Strategies
         }
         private decimal TickUp(decimal price) => RoundToTick(price + _tickSize);
         private decimal TickDn(decimal price) => RoundToTick(price - _tickSize);
-        // 0 => null (deaktiviert) beibehalten f?r interne decimal?-Schwellen
-        // UI double -> interne decimal?; 0 bedeutet "deaktiviert" => null
-        private static decimal? AsNullableThreshold(double v)
-            => v == 0.0 ? (decimal?)null : (decimal)v;
-
-        // F?r Anteile, die nie "deaktiviert" sein sollen, ggf. direkt decimal
-        private static decimal AsDecimal(double v) => (decimal)v;
 
         private void DrawLabelOnPriceAxis(RenderContext context, string text, int y, RenderFont font, System.Drawing.Color backColor, System.Drawing.Color foreColor)
         {
@@ -2289,7 +5662,7 @@ namespace MyNamespace.Strategies
                     _untouchedLevels.Add(new TrackedLevel(sessionLow, sessionDate, label, TrackedLevel.LevelRemovalCondition.AfterMaxDays));
                     this.LogInfo($"[Historische Analyse] Unber?hrtes Tief {label} ({sessionLow}) hinzugef?gt.");
                 }
-                
+
             }
 
             // Abschluss-Log & Flag erst nach vollst?ndiger Verarbeitung
@@ -2325,7 +5698,7 @@ namespace MyNamespace.Strategies
             }
 
 
-            
+
             decimal totalVol = totalAskVol + totalBidVol;
             if (totalVol == 0m) return 0m;
 
@@ -2351,19 +5724,39 @@ namespace MyNamespace.Strategies
             };
         }
 
-        
+
         public Goldfluss3_3()
         {
+            _msGeneration = Interlocked.Increment(ref _msGlobalGeneration);
             _loggerSource = this as ILoggerSource ?? throw new InvalidOperationException("Strategy must implement ILoggerSource or provide a logger source.");
             // Lock - Objekt: kann inline beim Feld deklariert werden; hier optional nochmal setzen
             // _ofFeaturesSync = new object(); // nur erlaubt, wenn nicht inline initialisiert
-            _ofFeaturesBarList = new List<int>();
-            // Falls _ofFeaturesBarMap inline schon initialisiert ist, entferne diese Zeile.
-            // _ofFeaturesBarMap = new Dictionary<int, int>(); // falls nicht inline
             _ofFeaturesByBar = new Dictionary<int, OfFeatures>();
             // _ofFeaturesHistory: falls readonly und sinnvoll, initialisieren; ansonsten lass es null und handle im Code
             _ofFeaturesHistory = new OfFeaturesHistory();
-            
+
+        }
+
+        private bool IsMarketStructureLeader()
+        {
+            if (!UseTick900ForMarketStructure)
+                return false;
+
+            // Lazy leader election: only attempt to acquire the mutex when we actually run calculation.
+            // This avoids render-only strategy instances becoming the leader and blocking backfill.
+            if (!_msLeaderElectionAttempted)
+                TryAcquireMarketStructureLeadership();
+
+            if (_msIsLeaderInstance)
+                return true;
+
+            if (!_msLeaderLogOnce)
+            {
+                _msLeaderLogOnce = true;
+                //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Non-leader instance: MarketStructure Tick900 pipeline disabled for this instance.");
+            }
+
+            return false;
         }
 
 
@@ -2372,7 +5765,60 @@ namespace MyNamespace.Strategies
         {
             base.OnInitialize();
 
+            SuppressNoisyOrderflowLogsGlobal = SuppressNoisyOrderflowLogs;
+
             this.LogInfo("[OnInitialize] Goldfluss 3.3 initialisiert.");
+
+            // OS-weiter Leader-Mutex: ATAS kann mehrere Instanzen/AppDomains parallel laden.
+            // Statische Felder sind dann nicht ausreichend. Wir erlauben Tick900/MS nur der Leader-Instanz.
+            string instrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
+            foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
+                instrumentName = instrumentName.Replace(ch, '_');
+
+            try
+            {
+                var pid = 0;
+                try { pid = Process.GetCurrentProcess().Id; } catch { pid = 0; }
+                var mutexName = $"Local\\Goldfluss3_3_Tick900MS_{instrumentName}_P{pid}";
+                _msLeaderMutex = new Mutex(false, mutexName);
+                _msIsLeaderInstance = false;
+                _msLeaderElectionAttempted = false;
+                //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] LeaderMutex created='{mutexName}' (acquire deferred to OnCalculate)");
+            }
+            catch (Exception ex)
+            {
+                // Wenn Mutex nicht geht, fallen wir auf die bisherige Generation-Guard Logik zurück.
+                _msIsLeaderInstance = true;
+                _msLeaderElectionAttempted = true;
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] LeaderMutex acquire failed -> fallback leader=true. {ex.GetType().Name}: {ex.Message}");
+            }
+
+            // Zonen-Snapshot-Sharing ist optional. Falls MMF nicht möglich ist, dürfen wir NICHT die Strategie destabilisieren.
+            try
+            {
+                _msZonesMmfName = $"Local\\Goldfluss3_3_Tick900Zones_{instrumentName}";
+                _msZonesMmf = MemoryMappedFile.CreateOrOpen(_msZonesMmfName, 64 * 1024, MemoryMappedFileAccess.ReadWrite);
+            }
+            catch (Exception ex)
+            {
+                _msZonesMmf = null;
+                //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Zones MMF disabled: {ex.GetType().Name}: {ex.Message}");
+            }
+
+            _marketStructureContext = new MarketStructureContext();
+            try
+            {
+                _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
+                var r = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.Normal;
+                _marketStructureContext.WickZoneMinTicks = GetEffectiveMarketStructureWickMinTicks(r);
+            }
+            catch { }
+            _msTick900Aggregator = new Tick900Aggregator(900);
+            _msTick900Bar = 0;
+            _msTick900BucketSessionStart = DateTime.MinValue;
+            _msTick900BackfillRequested = false;
+            _msTick900BackfillCompleted = false;
+            _msTick900BackfillRequestedEndTime = default;
 
 
 
@@ -2391,7 +5837,7 @@ namespace MyNamespace.Strategies
             // =========================================================================
             _tickSize = InstrumentInfo?.TickSize ?? 0.25m;
             object loggerSource = this;
-            
+
 
             // Initialisiere den SessionBarRangeFinder
             Action<string> infoStr = msg => System.Diagnostics.Trace.WriteLine(msg);
@@ -2400,21 +5846,11 @@ namespace MyNamespace.Strategies
 
 
             _strategySetup = SetupConfig ?? new SetupConfiguration();
-
-
-
-
-
-
-            // 1) Resolver erstellen und Feld setzen
-            _thresholdsResolver = new ThresholdsResolver(_loggerSource);
-
-            // 2) Manager mit den drei Parametern erstellen
-            _thresholdManager = new OrderflowThresholdManager(_thresholdsResolver, _loggerSource, _strategySetup);
+            _strategySetup.UiThresholds = ReversalThresholds;
 
             // Erst die histories/collections anlegen, die andere Komponenten ben?tigen:
             _ovSnapshotHistory = new OvSnapshotHistory(256, _loggerSource);
-            _ofFeaturesHistory = new OfFeaturesHistory(capacity: 500, this);  
+            _ofFeaturesHistory = new OfFeaturesHistory(capacity: 500, _loggerSource);
 
             // Jetzt den Feature-Calculator anlegen, weil er die OvSnapshot-Historie und StrategyConfig braucht
             _featureCalculator = new OrderflowFeatureCalculator(_ovSnapshotHistory, _strategySetup, ofFeaturesHistory: _ofFeaturesHistory, loggerSource: _loggerSource);
@@ -2422,43 +5858,44 @@ namespace MyNamespace.Strategies
             // Cluster-Statistik kann unabh?ngig sein
             _myClusterStatistic = new MyClusterStatistic();
 
-            // Jetzt explizit initialisieren ? ?bergibt abh?ngige Ressourcen an den Manager
-            _thresholdManager.Initialize(_ofFeaturesHistory, _featureCalculator, _commonConditionsSpecificConfig);
-
-            _patternSignaturer = new PatternSignaturer(_thresholdsResolver, _thresholdManager, _loggerSource, _strategySetup, new[] { _reversalEvaluator });
-            // MarketStateEngine braucht history und thresholdManager -> danach anlegen
-            var mseSettings = new MarketStateEngineSettings
+            if (_strategySetup?.PatternDefaultThresholds != null && _strategySetup.PatternDefaultThresholds.Count == 0)
             {
-                TickSize = _tickSize,
+                _strategySetup.PatternDefaultThresholds[OrderflowPatternType.PotentialLongReversalBounce] = new OrderflowThresholds();
+                _strategySetup.PatternDefaultThresholds[OrderflowPatternType.PotentialShortReversalBounce] = new OrderflowThresholds();
+            }
 
-                TrendBodyTicks = Parameter_TrendBodyTicks,
-                ReversalBodyTicks = Parameter_ReversalBodyTicks,
-                BodyTickTolerance = Parameter_BodyTickTolerance,
+            try
+            {
+                _strategySetup?.PatternDefaultThresholds?.Remove(OrderflowPatternType.PotentialLongTrendContinuation);
+                _strategySetup?.PatternDefaultThresholds?.Remove(OrderflowPatternType.PotentialShortTrendContinuation);
+            }
+            catch { }
 
-                // optional: falls du diese ebenfalls als ATAS-Parameter anlegen willst
-                // RangeWindowN = Parameter_RangeWindowN,
-                // ConfirmBars = Parameter_ConfirmBars,
-                // TrendRunThreshold = Parameter_TrendRunThreshold
-            };
-            
-            _marketStateEngine = new MarketStateEngine(_ofFeaturesHistory, _thresholdManager, this, mseSettings);           
-            _marketStateUpdatedHandler = OnMarketStateUpdated;
-            _marketStateEngine.MarketStateUpdated += _marketStateUpdatedHandler;
+            var reversalEvaluatorLong = new ReversalBouncePatternEvaluatorV2(OrderDirections.Buy, this, ReversalCompressionGapTicks);
+            var reversalEvaluatorShort = new ReversalBouncePatternEvaluatorV2(OrderDirections.Sell, this, ReversalCompressionGapTicks);
+            _patternRunner = new PatternRunner(
+                reversalEvaluatorLong,
+                reversalEvaluatorShort,
+                _loggerSource,
+                _tickSize);
 
-            // Initialisiere den ReversalBouncePatternEvaluator
-            _reversalEvaluator = new ReversalBouncePatternEvaluator(OrderDirections.Buy, this);
-            
-            // Adaptive Thresholds werden vom PatternSignaturer geliefert (keine statischen Overrides)
+            try
+            {
+                var keys = _strategySetup?.PatternDefaultThresholds?.Keys;
+                var keysJoined = keys != null && keys.Any() ? string.Join(",", keys) : "(none)";
+                this.LogInfo($"[INIT] PatternDefaultThresholds keys: {keysJoined}");
+            }
+            catch { }
+
+            _marketStateEngineV2 = new MyNamespace.Strategies.MarketAnalysis.MarketStateEngineV2(_tickSize, slopeLookbackK: 5, zWindowN: 100);
+
             this.LogInfo($"[INIT] ReversalThresholds initialisiert: CVD Impulse Long = {ReversalThresholds.ReversalThCvdImpulseLong_UI}");
-
-
-            
 
             // Now prepare per-bar containers (gr??en sinnvoll initialisieren)
             _ofFeaturesByBar = new Dictionary<int, OfFeatures>(_ofFeaturesHistory != null ? Math.Max(16, _ofFeaturesHistory.Count) : 512);
-            
 
-            
+
+
             // ... (Deine bestehenden Initialisierungen in Configure f?r _featureCalculator etc.) ...
 
             Add(_myClusterStatistic);
@@ -2478,9 +5915,12 @@ namespace MyNamespace.Strategies
             Add(_dailyLines);
             Add(_dailyLevels);
 
+            Add(_publicActiveVolume);
+            _publicActiveVolume.SetLoggerSource(_loggerSource);
+            _publicActiveVolume.Filter = 0;
+
             _dailyLevels.PeriodFrame = DynamicLevels.Period.Daily;
             _dailyLevels.Days = 1;
-            _dailyLevels.Type = DynamicLevels.MiddleClusterType.Volume;
             _dailyLevels.Filter = 0;
 
             _vwap.VWAPOnly = !ShowVWAPBands;
@@ -2512,7 +5952,7 @@ namespace MyNamespace.Strategies
                 PerformInitialHistoricalAnalysis();
             }
 
-            
+
             _sma.Period = Math.Max(1, SmaPeriod);
 
             DataSeries.Add(_entrySignalSeries);
@@ -2520,6 +5960,8 @@ namespace MyNamespace.Strategies
             DataSeries.Add(_imbalanceSeries);
 
             
+
+
 
             _pivots.PivotRange = Pivots.Period.Daily;
 
@@ -2549,49 +5991,22 @@ namespace MyNamespace.Strategies
             {
                 this.LogInfo("[OnInitialize] TickSize konnte nicht initialisiert werden ? Fallback auf 0.25 verwendet.");
             }
-                        
-
-            if (_researchEnabled)
-            {
-                string instrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
-                foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
-                    instrumentName = instrumentName.Replace(ch, '_');
-
-                string outDir = @"C:\Users\User\source\repos\Scalping-Strategie\TradeManagement";
-                System.IO.Directory.CreateDirectory(outDir); // sicherstellen, dass Ordner existiert
-
-                string csvPath = System.IO.Path.Combine(outDir, $"{instrumentName}_{_researchTimeframeLabel}_research.csv");
-                decimal tickSize = 0.25m; // z. B. Instrument.MasterInstrument.TickSize;
-                int outcomeTicks = 12;    // dein TP-Benchmark
-                int stopTicks = 10;       // dein SL-Benchmark
-
-                _research = new ResearchCollector(
-                    tickSize,
-                    outcomeTicks,
-                    stopTicks,
-                    @"C:\Users\User\Documents\Strategieauswertung"
-                );
-
-
-            }
-
-           
 
             // CSV-Export vorbereiten, aber erst im OnCalculate() wirklich initialisieren
             if (EnableCsvExport)
             {
                 // Instrumentnamen sicher für Dateiname machen
-                string instrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
+                string csvInstrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
                 foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
-                    instrumentName = instrumentName.Replace(ch, '_');
+                    csvInstrumentName = csvInstrumentName.Replace(ch, '_');
 
                 // Ausgabeordner
                 string outDir = @"C:\Users\User\Documents\Strategieauswertung";
                 System.IO.Directory.CreateDirectory(outDir);
 
                 // Dateiname generieren basierend auf Einstellungen
-                string timeframeLabel = _researchTimeframeLabel ?? "TF"; // falls du ein Label hast
-                
+                string timeframeLabel = "TF";
+
                 if (UseDailyCsvFiles)
                 {
                     // NOCH NICHTS erstellen - warten auf erste gültige Bar im OnCalculate()
@@ -2600,8 +6015,8 @@ namespace MyNamespace.Strategies
                 else
                 {
                     // Ursprüngliches Verhalten - statischer Dateiname
-                    _csvPath = System.IO.Path.Combine(outDir, $"{instrumentName}_{timeframeLabel}_ovsnapshots.csv");
-                    
+                    _csvPath = System.IO.Path.Combine(outDir, $"{csvInstrumentName}_{timeframeLabel}_ovsnapshots.csv");
+
                     // Falls Überschreiben aktiviert und Datei existiert, löschen
                     if (OverwriteExistingCsv && System.IO.File.Exists(_csvPath))
                     {
@@ -2619,7 +6034,7 @@ namespace MyNamespace.Strategies
                     // Erzeuge BackgroundCsvWriter (schreibt Header falls Datei neu)
                     _csvWriter = new BackgroundCsvWriter(_csvPath, CsvHeader);
                     this.LogInfo($"[InitializeDailyCsvWriter] CSV Writer created -> path={_csvPath}");
-                    
+
                     // Aktuelles Datum für Tageswechsel-Erkennung speichern
                     _currentCsvDate = GetCurrentBarDate();
                 }
@@ -2628,220 +6043,6 @@ namespace MyNamespace.Strategies
 
 
         }
-
-
-        // =========================================================================
-        // Volatilit?t ermitteln | Anfang
-        // =========================================================================
-        private MarketRegimeDetails GetCurrentMarketRegime(int bar, OvSnapshot currentSnapshot)
-        {
-            // Holen Sie sich die aktuellen Kerzen f?r die Bar 'bar'
-            var c = GetCandle(bar);
-            var p = GetCandle(bar - 1); // Vorherige Kerze f?r secondsPerBar
-
-            if (c == null || p == null)
-            {
-                this.LogWarn($"[MarketRegime] Regime kann nicht bestimmt werden: Kerzendaten fehlen f?r bar {bar}. Standardm??ig auf ?Normal?.");
-                return new MarketRegimeDetails { Regime = MarketRegime.Normal };
-            }
-
-            if (_myClusterStatistic == null)
-            {
-                this.LogInfo("[MarketRegime] Volatilit?t GESPERRT: _myClusterStatistic ist null. Standardm??ig auf ?Normal\" gesetzt.");
-                return new MarketRegimeDetails { Regime = MarketRegime.Normal };
-            }
-            if (_myClusterStatistic.VolPerSecond.Count <= bar || _myClusterStatistic.EmaVolPerSecond.Count <= bar)
-            {
-                this.LogInfo($"[MarketRegime] Volatilit?t GESPERRT: Indikatorreihe nicht bereit (bar={bar}). Standardm??ig auf ?Normal\".");
-                return new MarketRegimeDetails { Regime = MarketRegime.Normal };
-            }
-
-            // --- bestehende Einzelbar-Werte ---
-            decimal vps = _myClusterStatistic.VolPerSecond[bar];
-            decimal ema = _myClusterStatistic.EmaVolPerSecond[bar];
-            decimal std = (_myClusterStatistic.EmaVolPerSecondStd != null && _myClusterStatistic.EmaVolPerSecondStd.Count > bar)
-                ? _myClusterStatistic.EmaVolPerSecondStd[bar] : 0m;
-
-            decimal z = (std > 0m) ? (vps - ema) / std : 0m;
-            decimal tradesPerSec = currentSnapshot.TradeRateZ; // Annahme: TradeRateZ ist hier verf?gbar und aktuell
-
-            decimal secondsPerBar = 0m;
-            if (c.Time > p.Time)
-            {
-                secondsPerBar = (decimal)(c.Time - p.Time).TotalSeconds;
-            }
-            else
-            {
-                this.LogWarn($"[MarketRegime] Ung?ltige Zeitspanne f?r Balken {bar}. Standardwert f?r secondsPerBar auf 0.");
-                secondsPerBar = 0m;
-            }
-
-            // --- Konstanten (k?nnen Sie als Felder konfigurieren) ---
-            const decimal VOL_FAST_Z = 1.0m;
-            const decimal VOL_SLOW_Z = -1.0m;
-            const decimal TR_FAST_MIN = 1.0m;     // Beispiel
-            const decimal TR_SLOW_MAX = -1.0m;    // Beispiel
-            const decimal BARSEC_FAST_MAX = 5.0m; // Beispiel
-            const decimal BARSEC_SLOW_MIN = 45.0m;// Beispiel
-
-            // --- Phase-basierte Volatilit?tsbewertung (SMA ?ber Fenster + Hysterese/Persistenz) ---
-            // Erwartete private Felder in der Klasse (Defaults siehe Kommentar weiter unten):
-            // int _volPhaseWindow = 14;
-            // int _minConsecutiveForSwitch = 3;
-            // decimal _highEnterMult = 1.2m;
-            // decimal _highExitMult = 1.05m;
-            // decimal _lowEnterMult = 0.8m;
-            // decimal _lowExitMult = 0.95m;
-            // MarketRegime _lastRegime = MarketRegime.Normal;
-            // int _regimeConsecutiveCount = 0;
-
-            int volPhaseWindow = Math.Max(1, _volPhaseWindow); // sch?tze gegen 0
-            int startIdx = Math.Max(0, bar - volPhaseWindow + 1);
-            int count = bar - startIdx + 1;
-
-            var values = new List<decimal>(count);
-            for (int i = startIdx; i <= bar; i++)
-            {
-                if (_myClusterStatistic.VolPerSecond.Count > i)
-                    values.Add(_myClusterStatistic.VolPerSecond[i]);
-                else
-                    values.Add(0m);
-            }
-
-            decimal phaseMu = 0m;
-            decimal phaseSigma = 0m;
-            if (values.Count > 0)
-            {
-                decimal sum = 0m;
-                foreach (var vv in values) sum += vv;
-                phaseMu = sum / values.Count;
-
-                decimal varSum = 0m;
-                foreach (var vv in values) varSum += (vv - phaseMu) * (vv - phaseMu);
-                phaseSigma = (decimal)Math.Sqrt((double)(varSum / values.Count)); // population std
-            }
-
-            decimal vpsCurrent = vps;
-            decimal zPhase = (phaseSigma > 0m) ? (vpsCurrent - phaseMu) / phaseSigma : 0m;
-
-            // Hysteresis-Multiplikatoren (als Felder konfigurierbar)
-            decimal lowEnterMult = _lowEnterMult;
-            decimal lowExitMult = _lowExitMult;
-            decimal highEnterMult = _highEnterMult;
-            decimal highExitMult = _highExitMult;
-
-            decimal lowBandPhase = phaseMu * lowEnterMult;
-            decimal lowBandExit = phaseMu * lowExitMult;
-            decimal highBandPhase = phaseMu * highEnterMult;
-            decimal highBandExit = phaseMu * highExitMult;
-
-            // Unterst?tzende Stimmen (erhalten bleiben, nutzen aber Phase-B?nder)
-            int fastVotesLocal = 0, slowVotesLocal = 0;
-            if (vpsCurrent >= highBandPhase) fastVotesLocal++; else if (vpsCurrent < lowBandPhase) slowVotesLocal++;
-            if (phaseSigma > 0m && zPhase >= VOL_FAST_Z) fastVotesLocal++; else if (phaseSigma > 0m && zPhase <= VOL_SLOW_Z) slowVotesLocal++;
-            if (tradesPerSec >= TR_FAST_MIN) fastVotesLocal++; else if (tradesPerSec <= TR_SLOW_MAX) slowVotesLocal++;
-            if (secondsPerBar > 0m && secondsPerBar <= BARSEC_FAST_MAX) fastVotesLocal++; else if (secondsPerBar >= BARSEC_SLOW_MIN) slowVotesLocal++;
-
-            string candidateSpeed = (fastVotesLocal >= 2 && slowVotesLocal < 2) ? "Fast" :
-                                     (slowVotesLocal >= 2 && fastVotesLocal < 2) ? "Slow" : "Normal";
-
-            MarketRegime candidateRegime = MapMarketSpeedToEnum(candidateSpeed);
-
-            // Persistenz / Hysterese-Logik: require consecutive confirmations before switching
-            if (candidateRegime == _lastRegime)
-            {
-                _regimeConsecutiveCount++;
-            }
-            else
-            {
-                _regimeConsecutiveCount = 1;
-            }
-
-            bool acceptSwitch = false;
-            switch (candidateRegime)
-            {
-                case MarketRegime.Fast:
-                    if (_lastRegime == MarketRegime.Fast)
-                    {
-                        acceptSwitch = (vpsCurrent >= highBandExit) || (_regimeConsecutiveCount >= _minConsecutiveForSwitch);
-                    }
-                    else
-                    {
-                        acceptSwitch = (vpsCurrent >= highBandPhase && _regimeConsecutiveCount >= _minConsecutiveForSwitch)
-                                       || (vpsCurrent >= highBandPhase * 1.2m); // sehr starker Impuls
-                    }
-                    break;
-
-                case MarketRegime.Slow:
-                    if (_lastRegime == MarketRegime.Slow)
-                    {
-                        acceptSwitch = (vpsCurrent <= lowBandExit) || (_regimeConsecutiveCount >= _minConsecutiveForSwitch);
-                    }
-                    else
-                    {
-                        acceptSwitch = (vpsCurrent <= lowBandPhase && _regimeConsecutiveCount >= _minConsecutiveForSwitch)
-                                       || (vpsCurrent <= lowBandPhase * 0.8m);
-                    }
-                    break;
-
-                default: // Normal
-                         // Normal, falls weder Fast noch Slow gen?gend Best?tigung haben
-                    acceptSwitch = (_regimeConsecutiveCount >= _minConsecutiveForSwitch) || (_lastRegime == MarketRegime.Normal);
-                    break;
-            }
-
-            MarketRegime finalRegime;
-            if (acceptSwitch)
-            {
-                finalRegime = candidateRegime;
-                _lastRegime = finalRegime;
-            }
-            else
-            {
-                finalRegime = _lastRegime;
-            }
-
-            // Update aktuelle Felder (phaseMu statt kurzer EMA als Durchschnitt verwenden)
-            _currentBarVolPerSecond = vpsCurrent;
-            _currentBarAvgVolPerSecond = phaseMu;
-
-            this.LogInfo($"[MarketRegime] PhaseVol: bar={bar + 1} VPS={vpsCurrent:F2} PhaseMu={phaseMu:F2} PhaseStd={phaseSigma:F2} zPhase={zPhase:F2} Candidate={candidateSpeed} Final={finalRegime} Count={_regimeConsecutiveCount}");
-
-            var finalRegimeDetails = new MarketRegimeDetails
-            {
-                Regime = finalRegime,
-                FastVotes = fastVotesLocal,
-                SlowVotes = slowVotesLocal,
-                IsHighVol = finalRegime == MarketRegime.Fast,
-                Vps = vpsCurrent,
-                VpsEma = phaseMu,
-                VpsStd = phaseSigma,
-                ZScore = zPhase,
-                TradesPerSecZ = tradesPerSec,
-                SecondsPerBar = secondsPerBar
-            };
-
-            return finalRegimeDetails;
-
-        }
-
-        // Hilfsmethode zur Abbildung des Strings auf das Enum
-        private MarketRegime MapMarketSpeedToEnum(string marketSpeedString)
-        {
-            switch (marketSpeedString)
-            {
-                case "Fast":
-                    return MarketRegime.Fast;
-                case "Slow":
-                    return MarketRegime.Slow;
-                case "Normal":
-                default:
-                    return MarketRegime.Normal;
-            }
-        }
-        // =========================================================================
-        // Volatilit?t ermitteln | Ende
-        // =========================================================================
 
 
         // Window = VolZ_Lookback, Alpha = EwmaAlpha
@@ -2960,8 +6161,8 @@ namespace MyNamespace.Strategies
             }
             return false;
         }
-        
-        
+
+
         // Deine bestehende Methode erweitern (in deiner Strategy-Klasse)
         private decimal ReadVwapSeriesSafely(int seriesIndex, int bar)
         {
@@ -2992,8 +6193,8 @@ namespace MyNamespace.Strategies
                 if (bar % 10 == 0 || val == 0m)
                     //this.LogInfo($"[VWAP SafeRead DEBUG] Bar={bar}, Series[{seriesIndex}] raw={rawObj} ? val={val:F4} (Zero? {val == 0m})");
 
-                if (double.IsNaN((double)val) || val <= 0m)
-                    return 0m;
+                    if (double.IsNaN((double)val) || val <= 0m)
+                        return 0m;
 
                 return val;
             }
@@ -3004,7 +6205,7 @@ namespace MyNamespace.Strategies
             }
         }
 
-        
+
 
 
         //Diese Methode wird von der Handelsplattform(z.B.ATAS) automatisch f?r jeden einzelnen Trade aufgerufen, der im Markt ausgef?hrt wird.
@@ -3013,6 +6214,84 @@ namespace MyNamespace.Strategies
         protected override void OnNewTrade(MarketDataArg args)
         {
             // Kein "IsTrade"-Check n?tig, da die Methode nur f?r Trades aufgerufen wird
+            if (UseTick900ForMarketStructure && IsMarketStructureLeader() && _msTick900Aggregator != null && _marketStructureContext != null && args != null)
+            {
+                if (_msGeneration != Volatile.Read(ref _msGlobalGeneration))
+                    return;
+                try
+                {
+                    try { _msLastLiveTradeWallClockUtc = DateTime.UtcNow; } catch { }
+                    // Wenn Backfill noch nicht fertig ist, puffern wir die Live-Trades.
+                    if (!_msTick900BackfillCompleted)
+                    {
+                        if (_msTick900LiveTradeBuffer.Count < MsTick900MaxLiveBuffer)
+                        {
+                            _msTick900LiveTradeBuffer.Add(args);
+                        }
+                        else
+                        {
+                            _msTick900BackfillCompleted = true;
+                            //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Live trade buffer overflow ({MsTick900MaxLiveBuffer}). Switching to live Tick900 aggregation without backfill.");
+                        }
+                    }
+                    else
+                    {
+                        var localTime = NormalizeToChartTime(args.Time);
+                        var sessStart = GetSessionStartTimeForSwingSeed(localTime);
+                        if (_msTick900BucketSessionStart == DateTime.MinValue)
+                            _msTick900BucketSessionStart = sessStart;
+                        else if (sessStart != _msTick900BucketSessionStart)
+                        {
+                            // Sessionwechsel: nur die 900-Tick-Buckets neu starten.
+                            // MarketStructureContext bleibt bestehen, und _msTick900Bar bleibt monoton steigend.
+                            _msTick900Aggregator.Reset();
+                            _msTick900BucketSessionStart = sessStart;
+                        }
+
+                        decimal incNetDeltaTick = 0m;
+                        try
+                        {
+                            var dir = args.Direction.ToString();
+                            if (dir == "Buy")
+                                incNetDeltaTick = args.Volume;
+                            else if (dir == "Sell")
+                                incNetDeltaTick = -args.Volume;
+                        }
+                        catch { }
+
+                        if (_msTick900Aggregator.AddTrade(localTime, args.Price, args.Volume, incNetDeltaTick, out var closedTickCandle) && closedTickCandle != null)
+                        {
+                            _msTick900Bar++;
+                            RecordSyntheticTick900ClosedCandle(closedTickCandle);
+                            var vwapNow = _currentVwapSnapshot?.Current ?? 0m;
+                            try
+                            {
+                                _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
+                                var r = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.Normal;
+                                _marketStructureContext.WickZoneMinTicks = GetEffectiveMarketStructureWickMinTicks(r);
+                            }
+                            catch { }
+                            _marketStructureContext.Update(
+                                _msTick900Bar,
+                                closedTickCandle,
+                                snapshot: null,
+                                tickSize: _tickSize,
+                                vwap: vwapNow,
+                                recentOf: null,
+                                allowZoneCreation: true,
+                                allowZoneLifecycle: false);
+
+                            WriteZonesSnapshot();
+                            
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.LogWarn($"[Tick900->MarketStructure] Update failed: {ex.GetType().Name}: {ex.Message}");
+                }
+            }
+
             if (args.Direction.ToString() == "Buy")
             {
                 _currentBarBuyTrades++;
@@ -3028,7 +6307,7 @@ namespace MyNamespace.Strategies
         private static decimal GetOr0(Dictionary<int, decimal>? d, int i)
             => (d != null && d.TryGetValue(i, out var v)) ? v : 0m;
 
-       
+
         // Bool aus Dictionary, oder false
         private static bool GetOrFalse(Dictionary<int, bool>? d, int i)
             => (d != null && d.TryGetValue(i, out var v)) && v;
@@ -3086,10 +6365,20 @@ namespace MyNamespace.Strategies
                 decimal price = RoundToTick(pvi.Price);
                 decimal vol = 0m;
 
-                if (pvi.Volume > 0)
-                    vol = pvi.Volume;
-                else if (pvi.Ask > 0 || pvi.Bid > 0)
-                    vol = pvi.Ask + pvi.Bid;
+                if (DailyProfileUseAtasVolume)
+                {
+                    if (pvi.Volume > 0)
+                        vol = pvi.Volume;
+                    else if (pvi.Ask > 0 || pvi.Bid > 0)
+                        vol = pvi.Ask + pvi.Bid;
+                }
+                else
+                {
+                    if (pvi.Ask > 0 || pvi.Bid > 0)
+                        vol = pvi.Ask + pvi.Bid;
+                    else if (pvi.Volume > 0)
+                        vol = pvi.Volume;
+                }
 
                 if (vol > 0)
                     yield return new ClusterLevel
@@ -3135,7 +6424,18 @@ namespace MyNamespace.Strategies
             int smoothTicks,                 // wird intern von this.SmoothTicks ersetzt
             int topNPeaks,                   // nicht ben?tigt; Scoring nutzt TopNHVNs/TopNLVNs
             SortedDictionary<decimal, decimal> developingHist = null,
-            decimal valueAreaFraction = 0.70m)
+            decimal valueAreaFraction = 0.70m,
+            int minZoneTicksOverride = -1,
+            decimal minProminenceOverride = -1m,
+            decimal minVolShareOverride = -1m,
+            decimal minWidthPctVAOverride = -1m,
+            int gapTicksOverride = -1,
+            int topNHVNsOverride = -1,
+            int topNLVNsOverride = -1,
+            int maxDistTicksOverride = -1,
+            bool? clampToVAOverride = null,
+            bool? enableCapOverride = null,
+            int capTicksOverride = -1)
         {
             var mc = new MicroComposite();
 
@@ -3146,20 +6446,20 @@ namespace MyNamespace.Strategies
             if (tick <= 0m) { this.LogInfo("[BuildMicroCompositeFromHist] MC: TickSize noch 0/unbekannt -> Abbruch"); return mc; }
 
             // Men?-Parameter einlesen (Chart-Menu steuert Verhalten)
-            int minZoneTicks = Math.Max(1, this.MinZoneTicks);
-            decimal minProminence = Math.Max(0m, this.MinProminence);
-            decimal minVolShare = Math.Max(0m, this.MinVolShare);
-            decimal minWidthPctVA = Math.Max(0m, this.MinWidthPctVA);
-            int gapTicks = Math.Max(0, this.GapTicks);
-            int topNHVNs = Math.Max(1, this.TopNHVNs);
-            int topNLVNs = Math.Max(1, this.TopNLVNs);
-            int maxDistTicks = Math.Max(1, this.MaxDistTicks);
-            int menuSmooth = Math.Max(1, this.SmoothTicks); // nutzt das Men?
+            int minZoneTicks = Math.Max(1, (minZoneTicksOverride > 0) ? minZoneTicksOverride : this.MinZoneTicks);
+            decimal minProminence = Math.Max(0m, (minProminenceOverride >= 0m) ? minProminenceOverride : this.MinProminence);
+            decimal minVolShare = Math.Max(0m, (minVolShareOverride >= 0m) ? minVolShareOverride : this.MinVolShare);
+            decimal minWidthPctVA = Math.Max(0m, (minWidthPctVAOverride >= 0m) ? minWidthPctVAOverride : this.MinWidthPctVA);
+            int gapTicks = Math.Max(0, (gapTicksOverride >= 0) ? gapTicksOverride : this.GapTicks);
+            int topNHVNs = Math.Max(1, (topNHVNsOverride > 0) ? topNHVNsOverride : this.TopNHVNs);
+            int topNLVNs = Math.Max(1, (topNLVNsOverride > 0) ? topNLVNsOverride : this.TopNLVNs);
+            int maxDistTicks = Math.Max(1, (maxDistTicksOverride > 0) ? maxDistTicksOverride : this.MaxDistTicks);
+            int menuSmooth = Math.Max(1, (smoothTicks > 0) ? smoothTicks : this.SmoothTicks);
 
             // NEU: Men?schalter f?r Cap/Klemmung
-            bool clampToVA = this.ClampZonesToVA;
-            bool enableCap = this.EnableCapZoneWidth;
-            int capTicks = Math.Max(1, this.CapZoneWidthTicks);
+            bool clampToVA = clampToVAOverride ?? this.ClampZonesToVA;
+            bool enableCap = enableCapOverride ?? this.EnableCapZoneWidth;
+            int capTicks = Math.Max(1, (capTicksOverride > 0) ? capTicksOverride : this.CapZoneWidthTicks);
 
             // AwayFromZero wie ATAS
             decimal RoundToTick(decimal p)
@@ -3170,20 +6470,20 @@ namespace MyNamespace.Strategies
                 return r * tick;
             }
 
-            SortedDictionary<decimal, decimal> NormalizeToTicks(SortedDictionary<decimal, decimal> h)
+            SortedDictionary<decimal, decimal> NormalizeHistToTicks(SortedDictionary<decimal, decimal> h, Func<decimal, decimal> roundFunc)
             {
                 var n = new SortedDictionary<decimal, decimal>();
                 if (h == null) return n;
                 foreach (var kv in h)
                 {
-                    var p = RoundToTick(kv.Key);
+                    var p = roundFunc(kv.Key);
                     if (!n.ContainsKey(p)) n[p] = kv.Value; else n[p] += kv.Value;
                 }
                 return n;
             }
 
-            var normAll = NormalizeToTicks(hist);
-            var normDev = NormalizeToTicks(developingHist);
+            var normAll = NormalizeHistToTicks(hist, RoundToTick);
+            var normDev = NormalizeHistToTicks(developingHist, RoundToTick);
 
             decimal sumAll = normAll.Values.Sum();
             decimal sumDev = normDev.Values.Sum();
@@ -3193,8 +6493,7 @@ namespace MyNamespace.Strategies
             // Achse min..max
             var minP = normAll.Keys.Min();
             var maxP = normAll.Keys.Max();
-            var prices = new List<decimal>();
-            for (decimal p = minP; p <= maxP; p += tick) prices.Add(p);
+            var prices = BuildPriceAxis(minP, maxP, tick);
             if (prices.Count == 0) { this.LogInfo("[BuildMicroCompositeFromHist] MC: prices leer -> return"); return mc; }
             int last = prices.Count - 1;
             //this.LogInfo($"MC: Axis {minP} .. {maxP} ({prices.Count} levels)");
@@ -3208,7 +6507,13 @@ namespace MyNamespace.Strategies
                 {
                     if (!normCompleted.ContainsKey(kv.Key)) continue;
                     var after = normCompleted[kv.Key] - kv.Value;
-                    if (after < 0m) { negClamped++; negSum += (-after); after = 0m; }
+                    if (after < 0m)
+                    {
+                        this.LogInfo($"⚠ Completed negative at {kv.Key:F2}: was {normCompleted[kv.Key]:F0}, dev={kv.Value:F0}, result clamped to 0");
+                        negClamped++;
+                        negSum += (-after);
+                        after = 0m;
+                    }
                     normCompleted[kv.Key] = after;
                 }
             }
@@ -3287,36 +6592,9 @@ namespace MyNamespace.Strategies
             mc.TotalVol = mc.LevelVols.Values.Sum();
             mc.POCVol = mc.LevelVols.TryGetValue(mc.POC, out var pocVolTmp) ? pocVolTmp : 0m;
 
-            // Triangular-Smoothing (Menu)
-            decimal[] SmoothTriangular(decimal[] y, int span)
-            {
-                if (span <= 1 || y.Length == 0) return (decimal[])y.Clone();
-                int half = Math.Max(1, span);
-                var weights = new List<int>();
-                for (int i = 1; i <= half; i++) weights.Add(i);
-                for (int i = half - 1; i >= 1; i--) weights.Add(i);
-                int radius = weights.Count / 2;
-
-                var ys = new decimal[y.Length];
-                for (int i = 0; i < y.Length; i++)
-                {
-                    decimal s = 0m; int wsum = 0;
-                    for (int k = -radius; k <= radius; k++)
-                    {
-                        int wi = Math.Abs(k);
-                        int wv = weights[wi];
-                        int j = i + k;
-                        if (j < 0 || j >= y.Length) continue;
-                        s += y[j] * wv;
-                        wsum += wv;
-                    }
-                    ys[i] = (wsum > 0) ? (s / wsum) : y[i];
-                }
-                return ys;
-            }
-
             var raw = prices.Select(p => mc.LevelVols[p]).ToArray();
-            var smooth = SmoothTriangular(raw, menuSmooth);
+
+            var smooth = SmoothTriangularCached(raw, menuSmooth);
             decimal S(int i) => smooth[i];
 
             // Extrema etc. (unver?ndert)
@@ -3548,6 +6826,19 @@ namespace MyNamespace.Strategies
             // HVN scoren + filtern
             int hvnRejectedWidth = 0, hvnRejectedWidthPct = 0, hvnRejectedProm = 0, hvnRejectedVol = 0;
             var hvnScored = new List<(int L, int R, int P, decimal score)>();
+            if (valleys.Count == 0)
+            {
+#if DEBUG
+                throw new InvalidOperationException("[BuildMC] valleys array is empty - cannot compute prominence");
+#else
+                    this.LogWarn("[BuildMC] valleys array is empty - skipping HVN scoring");
+#endif
+                mc.HVNZones = new();
+                mc.LVNZones = new();
+                mc.HVNs = new();
+                mc.LVNs = new();
+                return mc;
+            }
             foreach (var h in hvnIntervalsFull)
             {
                 int Lh = h.L, Rh = h.R, P = h.P;
@@ -3567,11 +6858,12 @@ namespace MyNamespace.Strategies
 
                 if (width < minZoneTicks) { hvnRejectedWidth++; continue; }
                 if (widthPctVA < minWidthPctVA) { hvnRejectedWidthPct++; continue; }
-                if (prom < minProminence) { hvnRejectedProm++; continue; }
-                if (volShare < minVolShare) { hvnRejectedVol++; continue; }
+                bool strongPlateau = (volShare >= (minVolShare * 1.8m)) && (widthPctVA >= (minWidthPctVA * 1.8m));
+                if (prom < minProminence && !strongPlateau) { hvnRejectedProm++; continue; }
+                if (volShare < minVolShare && !strongPlateau) { hvnRejectedVol++; continue; }
 
                 decimal centerPrice = prices[(Lh + Rh) / 2];
-                decimal sc = 0.45m * prom + 0.35m * volShare + 0.10m * widthPctVA + 0.10m * DistanceWeight(centerPrice, curPrice);
+                decimal sc = 0.25m * prom + 0.45m * volShare + 0.20m * widthPctVA + 0.10m * DistanceWeight(centerPrice, curPrice);
                 hvnScored.Add((Lh, Rh, P, sc));
             }
 
@@ -3585,13 +6877,14 @@ namespace MyNamespace.Strategies
             // LVN scoren + filtern
             int lvnRejectedWidth = 0, lvnRejectedWidthPct = 0;
             var lvnScored = new List<(int L, int R, int V, decimal score)>();
+            decimal minWidthPctVA_LVN = Math.Max(0m, minWidthPctVA * 0.25m);
             foreach (var l in lvnIntervals)
             {
                 int Ll = l.L, Rl = l.R;
                 int width = Rl - Ll + 1;
                 decimal widthPctVA = VAWidthTicks > 0 ? (decimal)width / VAWidthTicks : 0m;
                 if (width < minZoneTicks) { lvnRejectedWidth++; continue; }
-                if (widthPctVA < minWidthPctVA) { lvnRejectedWidthPct++; continue; }
+                if (widthPctVA < minWidthPctVA_LVN) { lvnRejectedWidthPct++; continue; }
 
                 int V = (Ll + Rl) / 2;
                 int k = Math.Max(0, peaks.FindLastIndex(p => p <= Rl));
@@ -3722,16 +7015,40 @@ namespace MyNamespace.Strategies
             if (valleys.Any(i => i < 0 || i > last))
                 this.LogInfo("[BuildMicroCompositeFromHist] BuildMC: WARN valleys out of bounds");
 
-            // HVN/LVN-Zonen f?llen
+            // HVN/LVN-Zonen füllen
             mc.HVNZones ??= new();
             mc.HVNZones.Clear();
             foreach (var z in hvnIntervals)
+            {
+                if (z.L < 0 || z.R >= prices.Count || z.L > z.R)
+                {
+                    var errMsg = $"[BuildMC] HVN interval out of bounds: L={z.L}, R={z.R}, prices.Count={prices.Count}";
+#if DEBUG
+                    throw new InvalidOperationException(errMsg);
+#else
+                        this.LogWarn(errMsg);
+                        continue;
+#endif
+                }
                 mc.HVNZones.Add((Start: prices[z.L], End: prices[z.R]));
+            }
 
             mc.LVNZones ??= new();
             mc.LVNZones.Clear();
             foreach (var z in lvnFiltered)
+            {
+                if (z.L < 0 || z.R >= prices.Count || z.L > z.R)
+                {
+                    var errMsg = $"[BuildMC] LVN interval out of bounds: L={z.L}, R={z.R}, prices.Count={prices.Count}";
+#if DEBUG
+                    throw new InvalidOperationException(errMsg);
+#else
+                        this.LogWarn(errMsg);
+                        continue;
+#endif
+                }
                 mc.LVNZones.Add((Start: prices[z.L], End: prices[z.R]));
+            }
 
             // Peaks/Valleys
             IEnumerable<int> InBounds(IEnumerable<int> idxs) => (idxs ?? Array.Empty<int>()).Where(i => i >= 0 && i <= last);
@@ -3883,8 +7200,7 @@ namespace MyNamespace.Strategies
             var minP = hist.Keys.Min();
             var maxP = hist.Keys.Max();
 
-            var prices = new List<decimal>();
-            for (decimal p = minP; p <= maxP; p += tick) prices.Add(p);
+            var prices = BuildPriceAxis(minP, maxP, tick);
 
             int c = prices.IndexOf(poc);
             if (c < 0)
@@ -4043,6 +7359,12 @@ namespace MyNamespace.Strategies
             var prev = GetCandle(bar - 1);
             var curr = GetCandle(bar);
 
+            if (prev == null || curr == null)
+            {
+                this.LogInfo($"[VW_TryStart] GetCandle returned null at bar {bar}");
+                return;
+            }
+
             bool prevBull = IsBull(prev.Open, prev.Close);
             bool prevBear = IsBear(prev.Open, prev.Close);
             bool currBull = IsBull(curr.Open, curr.Close);
@@ -4073,7 +7395,10 @@ namespace MyNamespace.Strategies
         {
             if (!_vwActive) return;
 
-            AddBarToHistCustom(_vwHist, _vwStartBar, +1);
+            if (bar <= _vwLastBar) return;
+
+            AddBarToHistCustom(_vwHist, bar, +1);
+            _vwLastBar = bar;
             if (!HasSufficientWindow(_vwHist, minBins: 5, minVol: 50m))
             {
                 // zu klein, noch kein POC berechnen, keine Logs
@@ -4081,8 +7406,8 @@ namespace MyNamespace.Strategies
                 _vwPrevPOC = 0m;
                 return;
             }
-            _vwPOC = ComputePocFromHist(_vwHist);
             _vwPrevPOC = _vwPOC;
+            _vwPOC = ComputePocFromHist(_vwHist);
         }
 
         private void HandleVolumeWindowFeature(int bar)
@@ -4712,39 +8037,103 @@ namespace MyNamespace.Strategies
                 speedOk = z >= Sweep_MinTradeRateZ;
             }
 
+
             return speedOk;
         }
 
         // =========================================================================
         // Stacked-Imbalance | Anfang
         // =========================================================================
-        
-        public struct StackedImbalanceResult
+        // =========================================================================
+        // Stacked-Imbalance | Korrigierte Version (V2.1)
+        // =========================================================================
+
+        public class StackedImbalanceResult
         {
-            // l?ngster Stack irgendwo im Bar
+            // längster Stack irgendwo im Bar
             public int BuyCountMax;
             public int SellCountMax;
 
-            // anchored am Bar-Extrem (direkt unter dem High bzw. ?ber dem Low)
+            // anchored am Bar-Extrem (direkt unter dem High bzw. über dem Low)
             public int BuyCountTopAnchored;
             public int SellCountBottomAnchored;
 
-            // optional: Preise der anchored Stacks (kannst du bei Bedarf loggen)
+            // optional: Preise der anchored Stacks
             public decimal[] BuyTopAnchoredPrices;
             public decimal[] SellBottomAnchoredPrices;
 
             public int TotalPairs;
             public int BuyPairsCount;
             public int SellPairsCount;
-            public decimal AvgBuyImbVol;
-            public decimal AvgSellImbVol;
-            public decimal BaseVolMedian;
+
+            // 🔴 KORRIGIERT: AvgImbVol basiert jetzt auf qualifizierten Imbalances
+            public decimal AvgBuyImbVolQualified;
+            public decimal AvgSellImbVolQualified;
+
+            // 🔴 KORRIGIERT: Separate Mediane für Buy- und Sell-Basisvolumen
+            public decimal BuyBaseVolMedian;      // Median der Bid-Volumen für Buy-Imbalances
+            public decimal SellBaseVolMedian;     // Median der Ask-Volumen für Sell-Imbalances
+
+            // NEU: Qualitäts-Metriken (bereits vorhanden, werden jetzt konsistenter genutzt)
+            public decimal BuyVolMedian;      // Median der Buy-Imbalance-Volumes (qualifiziert)
+            public decimal SellVolMedian;     // Median der Sell-Imbalance-Volumes (qualifiziert)
+            public int QualifiedBuyCount;     // Anzahl Imbalances über MinVol (bereits BuyPairsCount)
+            public int QualifiedSellCount;    // Anzahl Imbalances über MinVol (bereits SellPairsCount)
+
+            // 🔴 NEU: Volume-Scores für konsistente Berechnung (wird in ComputeImbalanceScoreV2 gesetzt)
+            public decimal VolBuyScore01;     // Volume-Score für Buy-Seite (0-1)
+            public decimal VolSellScore01;    // Volume-Score für Sell-Seite (0-1)
+
+            // 🔴 NEU: Weighted-Scores für Debugging und Konsistenz-Prüfung
+            public decimal WeightedBuy;       // Weighted Score für Buy-Seite
+            public decimal WeightedSell;      // Weighted Score für Sell-Seite
 
             public decimal ImbalanceScore;
             public string ImbalanceScoreLabel;
 
-            // Guard: zu wenige Preis-Level f?r Imbalance-Berechnung
             public bool InsufficientLevels;
+
+            // 🟢 NEU: SPATIAL-DELTA-PROPERTIES (MINIMAL!)
+            // ════════════════════════════════════════════════════════════════
+
+            /// <summary>
+            /// Delta-Ratio OBEN (Top-Zone): 0=100% rot, 0.5=neutral, 1=100% grün
+            /// </summary>
+            public decimal TopDeltaRatio { get; set; }
+
+            /// <summary>
+            /// Delta-Ratio UNTEN (Bottom-Zone): 0=100% rot, 0.5=neutral, 1=100% grün
+            /// </summary>
+            public decimal BottomDeltaRatio { get; set; }
+
+            /// <summary>
+            /// Dominanz oben: "GREEN" (>60%), "RED" (<40%), oder "NEUTRAL"
+            /// </summary>
+            public string TopDominance { get; set; } = "NEUTRAL";
+
+            /// <summary>
+            /// Dominanz unten: "GREEN" (>60%), "RED" (<40%), oder "NEUTRAL"
+            /// </summary>
+            public string BottomDominance { get; set; } = "NEUTRAL";
+
+            /// <summary>
+            /// Gesamtes Netto-Delta der Kerze (Ask-gesamt - Bid-gesamt)
+            /// </summary>
+            public decimal NetDeltaTotal { get; set; }
+
+            /// <summary>
+            /// Ist der Trade ein "Perfect Setup"? (automatisch erkannt)
+            /// </summary>
+            public bool IsPerfectLongSetup { get; set; }
+            public bool IsPerfectShortSetup { get; set; }
+            public string PerfectSetupReason { get; set; } = "";
+
+            public decimal UpperWickDeltaRatio { get; set; }
+            public decimal LowerWickDeltaRatio { get; set; }
+            public string UpperWickDominance { get; set; } = "NEUTRAL";
+            public string LowerWickDominance { get; set; } = "NEUTRAL";
+            public decimal UpperWickAbsDeltaTotal { get; set; }
+            public decimal LowerWickAbsDeltaTotal { get; set; }
         }
 
         private List<decimal[]> BuildVolumesArrayForBar(int bar)
@@ -4752,11 +8141,19 @@ namespace MyNamespace.Strategies
             var res = new List<decimal[]>();
 
             var cndl = GetCandle(bar);
-            if (cndl == null) return res;
+            if (cndl == null)
+            {
+                this.LogWarn($"[BuildVolumesArrayForBar] Bar {bar}: GetCandle returned null");
+                return res;
+            }
 
             // TickSize sicher bestimmen (kein InstrumentInfo!)
             decimal ts = InstrumentInfo?.TickSize ?? _tickSize;
-            if (ts <= 0m) return res;
+            if (ts <= 0m)
+            {
+                this.LogWarn($"[BuildVolumesArrayForBar] Bar {bar}: Invalid TickSize={ts}, InstrumentInfo.TickSize={InstrumentInfo?.TickSize}, _tickSize={_tickSize}");
+                return res;
+            }
 
             for (var price = cndl.Low; price <= cndl.High; price += ts)
             {
@@ -4764,6 +8161,7 @@ namespace MyNamespace.Strategies
                 if (vi == null) continue;
                 res.Add(new[] { price, vi.Bid, vi.Ask });
             }
+
             return res;
         }
 
@@ -4783,94 +8181,196 @@ namespace MyNamespace.Strategies
                 return res;
             }
 
-            decimal ratioFactor = p.ImbalanceRatioPct / 100m;
+            decimal ratioFactor = 1.0m + (p.ImbalanceRatioPct / 100m);
             res.TotalPairs = n - 1;
 
-            // Flags: wo liegt eine Imbalance vor?
-            // Buy (Bid/Ask): Bid(i+1) > Ask(i) * ratio AND Bid(i+1) > minVol
-            // Sell (Ask/Bid): Ask(i+1) > Bid(i) * ratio AND Ask(i+1) > minVol
-            var buyImb = new bool[n];  // i refers to pair (i, i+1)
+            var buyImb = new bool[n];
             var sellImb = new bool[n];
 
-            var buyImbVolumes = new List<decimal>();
-            var sellImbVolumes = new List<decimal>();
-            var baseVolumes = new List<decimal>(n * 2);
+            var allBidVolumesForBuyReference = new List<decimal>();
+            var allAskVolumesForSellReference = new List<decimal>();
+            var buyImbVolumesQualified = new List<decimal>();
+            var sellImbVolumesQualified = new List<decimal>();
+
+            // 🟢 NEU: Delta-Tracking nach Zonen
+            decimal topGreenDelta = 0m;
+            decimal topRedDelta = 0m;
+            decimal bottomGreenDelta = 0m;
+            decimal bottomRedDelta = 0m;
+            decimal totalGreenDelta = 0m;
+            decimal totalRedDelta = 0m;
+
+            decimal upperWickGreenDelta = 0m;
+            decimal upperWickRedDelta = 0m;
+            decimal lowerWickGreenDelta = 0m;
+            decimal lowerWickRedDelta = 0m;
+
+            var cndl = GetCandle(bar);
+            decimal low = cndl.Low;
+            decimal high = cndl.High;
+            decimal range = high - low;
+            decimal threshold33 = low + (range / 3m);
+            decimal threshold66 = low + (2m * range / 3m);
+
+            decimal bodyLow = Math.Min(cndl.Open, cndl.Close);
+            decimal bodyHigh = Math.Max(cndl.Open, cndl.Close);
+
+            // ═══════════════════════════════════════════════════════════════
+            // DIAGONALE ITERATION (wie zuvor)
+            // ═══════════════════════════════════════════════════════════════
 
             for (int i = 0; i < n - 1; i++)
             {
-                decimal bidHigh = vols[i + 1][1];
-                decimal askLow = vols[i][2];
-                baseVolumes.Add((bidHigh + askLow) / 2m);
+                decimal price = vols[i][0];
+                decimal bidUnten = vols[i][1];
+                decimal askUnten = vols[i][2];
+                decimal bidOben = vols[i + 1][1];
+                decimal askOben = vols[i + 1][2];
 
-                decimal bidFilter = askLow * ratioFactor;
-                if (!(p.IgnoreZeroValues && bidFilter == 0m))
+                allBidVolumesForBuyReference.Add(bidUnten);
+                allAskVolumesForSellReference.Add(askUnten);
+
+                // 🟢 NEU: Berechne Delta pro Level und akkumuliere nach Zone
+                decimal delta = askUnten - bidUnten;  // Ask (aggressive Käufe) - Bid (aggressive Verkäufe)
+
+                // Bestimme Zone basierend auf UNTEREN Level-Preis
+                bool isTopZone = price > threshold66;
+                bool isBottomZone = price < threshold33;
+
+                bool isUpperWick = price > bodyHigh;
+                bool isLowerWick = price < bodyLow;
+
+                if (delta > 0)
                 {
-                    if (bidHigh > bidFilter && bidHigh > p.ImbalanceVolumeMin)
+                    totalGreenDelta += delta;
+                    if (isTopZone) topGreenDelta += delta;
+                    if (isBottomZone) bottomGreenDelta += delta;
+                    if (isUpperWick) upperWickGreenDelta += delta;
+                    if (isLowerWick) lowerWickGreenDelta += delta;
+                }
+                else if (delta < 0)
+                {
+                    totalRedDelta += Math.Abs(delta);
+                    if (isTopZone) topRedDelta += Math.Abs(delta);
+                    if (isBottomZone) bottomRedDelta += Math.Abs(delta);
+                    if (isUpperWick) upperWickRedDelta += Math.Abs(delta);
+                    if (isLowerWick) lowerWickRedDelta += Math.Abs(delta);
+                }
+
+                // Imbalance-Erkennung (wie zuvor)
+                if (askOben > (bidUnten * ratioFactor))
+                {
+                    if (askOben >= p.ImbalanceVolumeMin)
                     {
                         buyImb[i] = true;
-                        buyImbVolumes.Add(bidHigh);
+                        buyImbVolumesQualified.Add(askOben);
                     }
                 }
 
-                decimal askHigh = vols[i + 1][2];
-                decimal bidLow = vols[i][1];
-                baseVolumes.Add((askHigh + bidLow) / 2m);
-                decimal askFilter = bidLow * ratioFactor;
-                if (!(p.IgnoreZeroValues && askFilter == 0m))
+                if (bidUnten > (askOben * ratioFactor))
                 {
-                    if (askHigh > askFilter && askHigh > p.ImbalanceVolumeMin)
+                    if (bidUnten >= p.ImbalanceVolumeMin)
                     {
                         sellImb[i] = true;
-                        sellImbVolumes.Add(askHigh);
+                        sellImbVolumesQualified.Add(bidUnten);
                     }
                 }
             }
 
-            // l?ngster zusammenh?ngender Block irgendwo
+            // ═══════════════════════════════════════════════════════════════
+            // SPATIAL-DELTA-RATIOS BERECHNEN
+            // ═══════════════════════════════════════════════════════════════
+
+            decimal topTotal = topGreenDelta + topRedDelta;
+            res.TopDeltaRatio = topTotal > 0 ? topGreenDelta / topTotal : 0.5m;
+            res.TopDominance = res.TopDeltaRatio > 0.6m ? "GREEN"
+                         : res.TopDeltaRatio < 0.4m ? "RED"
+                         : "NEUTRAL";
+
+            decimal bottomTotal = bottomGreenDelta + bottomRedDelta;
+            res.BottomDeltaRatio = bottomTotal > 0 ? bottomGreenDelta / bottomTotal : 0.5m;
+            res.BottomDominance = res.BottomDeltaRatio > 0.6m ? "GREEN"
+                            : res.BottomDeltaRatio < 0.4m ? "RED"
+                            : "NEUTRAL";
+
+            // Netto-Delta
+            res.NetDeltaTotal = totalGreenDelta - totalRedDelta;
+
+            decimal upperWickTotal = upperWickGreenDelta + upperWickRedDelta;
+            res.UpperWickAbsDeltaTotal = upperWickTotal;
+            res.UpperWickDeltaRatio = upperWickTotal > 0 ? upperWickGreenDelta / upperWickTotal : 0.5m;
+            res.UpperWickDominance = res.UpperWickDeltaRatio > 0.6m ? "GREEN"
+                                  : res.UpperWickDeltaRatio < 0.4m ? "RED"
+                                  : "NEUTRAL";
+
+            decimal lowerWickTotal = lowerWickGreenDelta + lowerWickRedDelta;
+            res.LowerWickAbsDeltaTotal = lowerWickTotal;
+            res.LowerWickDeltaRatio = lowerWickTotal > 0 ? lowerWickGreenDelta / lowerWickTotal : 0.5m;
+            res.LowerWickDominance = res.LowerWickDeltaRatio > 0.6m ? "GREEN"
+                                  : res.LowerWickDeltaRatio < 0.4m ? "RED"
+                                  : "NEUTRAL";
+
+            // ═══════════════════════════════════════════════════════════════
+            // PERFECT SETUP ERKENNUNG (MINIMAL!)
+            // ═══════════════════════════════════════════════════════════════
+
+            // 🟢 PERFECT LONG: Red-Imbalances-Bottom + Green-Delta-Top
+            if (res.SellCountBottomAnchored >= 2 &&
+                res.BottomDominance == "RED" &&
+                res.TopDominance == "GREEN")
+            {
+                res.IsPerfectLongSetup = true;
+                res.PerfectSetupReason = $"Sell-Imb({res.SellCountBottomAnchored}) Bottom-Red + Top-Green";
+            }
+
+            // 🔴 PERFECT SHORT: Green-Imbalances-Top + Red-Delta-Bottom
+            if (res.BuyCountTopAnchored >= 2 &&
+                res.TopDominance == "GREEN" &&
+                res.BottomDominance == "RED")
+            {
+                res.IsPerfectShortSetup = true;
+                res.PerfectSetupReason = $"Buy-Imb({res.BuyCountTopAnchored}) Top-Green + Bottom-Red";
+            }
+
+            // Rest wie zuvor (Anchored, Scores, etc.)
             res.BuyCountMax = LongestConsecutiveTrue(buyImb);
             res.SellCountMax = LongestConsecutiveTrue(sellImb);
 
-            res.BuyPairsCount = buyImbVolumes.Count;
-            res.SellPairsCount = sellImbVolumes.Count;
-            res.AvgBuyImbVol = buyImbVolumes.Count > 0 ? buyImbVolumes.Average() : 0m;
-            res.AvgSellImbVol = sellImbVolumes.Count > 0 ? sellImbVolumes.Average() : 0m;
-            res.BaseVolMedian = ComputeMedian(baseVolumes);
+            res.BuyPairsCount = buyImbVolumesQualified.Count;
+            res.SellPairsCount = sellImbVolumesQualified.Count;
+            res.QualifiedBuyCount = buyImbVolumesQualified.Count;
+            res.QualifiedSellCount = sellImbVolumesQualified.Count;
 
-            if (res.BuyPairsCount > 0 && res.AvgBuyImbVol < p.ImbalanceVolumeMin)
-            {
-                res.BuyPairsCount = 0;
-                res.AvgBuyImbVol = 0m;
-            }
+            res.AvgBuyImbVolQualified = buyImbVolumesQualified.Count > 0
+                ? buyImbVolumesQualified.Average()
+                : 0m;
+            res.AvgSellImbVolQualified = sellImbVolumesQualified.Count > 0
+                ? sellImbVolumesQualified.Average()
+                : 0m;
 
-            if (res.SellPairsCount > 0 && res.AvgSellImbVol < p.ImbalanceVolumeMin)
-            {
-                res.SellPairsCount = 0;
-                res.AvgSellImbVol = 0m;
-            }
+            res.BuyVolMedian = ComputeMedian(buyImbVolumesQualified);
+            res.SellVolMedian = ComputeMedian(sellImbVolumesQualified);
 
-            res.ImbalanceScore = ComputeImbalanceScore(res, p, out var scoreLabel);
-            res.ImbalanceScoreLabel = scoreLabel;
+            res.BuyBaseVolMedian = ComputeMedian(allBidVolumesForBuyReference);
+            res.SellBaseVolMedian = ComputeMedian(allAskVolumesForSellReference);
 
-            // anchored: direkt unter High ? i = n-2 downward, begrenzt durch MaxDepthTicksAnchored
+            // Anchored Calculation
             res.BuyCountTopAnchored = 0;
             var topBuyPrices = new List<decimal>();
-            int maxPairsTop = Math.Max(0, Math.Min(p.MaxDepthTicksAnchored, n - 1)); // Anzahl Paare
+            int maxPairsTop = Math.Max(0, Math.Min(p.MaxDepthTicksAnchored, n - 1));
             for (int k = 0; k < maxPairsTop; k++)
             {
                 int i = (n - 2) - k;
                 if (i < 0) break;
-
                 if (buyImb[i])
                 {
                     res.BuyCountTopAnchored++;
-                    // Preislevel im Stack f?r Buy: wir nehmen den oberen Preis der Paarung (i+1)
                     topBuyPrices.Add(vols[i + 1][0]);
                 }
                 else break;
             }
-            res.BuyTopAnchoredPrices = topBuyPrices.Count > 0 ? topBuyPrices.ToArray() : Array.Empty<decimal>();
+            res.BuyTopAnchoredPrices = topBuyPrices.ToArray();
 
-            // anchored: direkt ?ber Low ? i = 0 upward, begrenzt
             res.SellCountBottomAnchored = 0;
             var bottomSellPrices = new List<decimal>();
             int maxPairsBottom = Math.Max(0, Math.Min(p.MaxDepthTicksAnchored, n - 1));
@@ -4880,12 +8380,15 @@ namespace MyNamespace.Strategies
                 if (sellImb[i])
                 {
                     res.SellCountBottomAnchored++;
-                    // Preislevel f?r Sell: unterer Preis der Paarung (i)
                     bottomSellPrices.Add(vols[i][0]);
                 }
                 else break;
             }
-            res.SellBottomAnchoredPrices = bottomSellPrices.Count > 0 ? bottomSellPrices.ToArray() : Array.Empty<decimal>();
+            res.SellBottomAnchoredPrices = bottomSellPrices.ToArray();
+
+            // Score berechnen
+            res.ImbalanceScore = ComputeImbalanceScoreV2(res, p, out var scoreLabel);
+            res.ImbalanceScoreLabel = scoreLabel;
 
             return res;
         }
@@ -4911,12 +8414,16 @@ namespace MyNamespace.Strategies
             return values[mid];
         }
 
-        private decimal ComputeImbalanceScore(StackedImbalanceResult result, StackedImbParams p, out string label)
+        /// <summary>
+        /// Verbesserte Score-Berechnung mit nicht-linearer Volume-Skalierung
+        /// </summary>
+        private decimal ComputeImbalanceScoreV2(StackedImbalanceResult result, StackedImbParams p, out string label)
         {
-            const decimal wCoverage = 0.5m;
-            const decimal wAnchored = 0.3m;
-            const decimal wVolume = 0.2m;
-            const decimal eps = 1e-6m;
+            // Gewichtungen (konfigurierbar machen falls gewünscht)
+            const decimal wCoverage = 0.40m;   // Coverage-Anteil
+            const decimal wAnchored = 0.35m;   // Anchored wichtiger für Reversals
+            const decimal wVolume = 0.25m;     // Volume als Bestätigung
+            const decimal eps = 1e-9m;
 
             if (result.TotalPairs <= 1)
             {
@@ -4924,43 +8431,193 @@ namespace MyNamespace.Strategies
                 return 0m;
             }
 
+            // =====================================================================
+            // 1. COVERAGE SCORE: Anteil der Imbalance-Paare am Gesamtbar
+            // =====================================================================
             decimal coverageBuy = Clamp01Local((decimal)result.BuyCountMax / result.TotalPairs);
             decimal coverageSell = Clamp01Local((decimal)result.SellCountMax / result.TotalPairs);
 
-            decimal anchoredBuy = p.MaxDepthTicksAnchored > 0
-                ? Clamp01Local((decimal)result.BuyCountTopAnchored / p.MaxDepthTicksAnchored)
-                : 0m;
-            decimal anchoredSell = p.MaxDepthTicksAnchored > 0
-                ? Clamp01Local((decimal)result.SellCountBottomAnchored / p.MaxDepthTicksAnchored)
-                : 0m;
+            // =====================================================================
+            // 2. ANCHORED SCORE: Wie tief ist der Stack am Extrem verankert
+            // =====================================================================
+            decimal anchoredBuy = 0m;
+            decimal anchoredSell = 0m;
 
-            decimal volBuyNorm = result.BaseVolMedian > 0m ? result.AvgBuyImbVol / (result.BaseVolMedian + eps) : 0m;
-            decimal volSellNorm = result.BaseVolMedian > 0m ? result.AvgSellImbVol / (result.BaseVolMedian + eps) : 0m;
+            if (p.MaxDepthTicksAnchored > 0)
+            {
+                // KORRIGIERT: Nicht-lineare Skalierung - erste Levels wichtiger
+                anchoredBuy = ComputeAnchoredScore(result.BuyCountTopAnchored, p.MaxDepthTicksAnchored);
+                anchoredSell = ComputeAnchoredScore(result.SellCountBottomAnchored, p.MaxDepthTicksAnchored);
+            }
 
-            decimal volBuyScore = ClampLocal(volBuyNorm - 1m, -1m, 1m);
-            decimal volSellScore = ClampLocal(volSellNorm - 1m, -1m, 1m);
-            decimal volBuyScore01 = (volBuyScore + 1m) / 2m;
-            decimal volSellScore01 = (volSellScore + 1m) / 2m;
+            // 🔴 CRITICAL DEBUG - Anchored Werte SOFORT nach Berechnung
+            // string fmtDec6(decimal v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+            // this.LogWarn($"[ComputeImbalanceScoreV2-ANCHORED-RAW] " +
+            //              $"anchoredBuy={fmtDec6(anchoredBuy)}, anchoredSell={fmtDec6(anchoredSell)} (BEFORE any modifications)");
 
-            decimal weightedBuy = (wCoverage * coverageBuy) + (wAnchored * anchoredBuy) + (wVolume * volBuyScore01);
-            decimal weightedSell = (wCoverage * coverageSell) + (wAnchored * anchoredSell) + (wVolume * volSellScore01);
+            // =====================================================================
+            // 3. VOLUME SCORE: Wie stark sind die Imbalances im Vergleich zum Basis-Volumen
+            // =====================================================================
+            decimal volBuyScore01 = ComputeVolumeScore(result.AvgBuyImbVolQualified, result.BuyBaseVolMedian, p);
+            decimal volSellScore01 = ComputeVolumeScore(result.AvgSellImbVolQualified, result.SellBaseVolMedian, p);
+
+            // =====================================================================
+            // 4. FINALE SCORE-BERECHNUNG
+            // =====================================================================
+            decimal weightedBuy = (wCoverage * coverageBuy)
+                                + (wAnchored * anchoredBuy)
+                                + (wVolume * volBuyScore01);
+
+            decimal weightedSell = (wCoverage * coverageSell)
+                                + (wAnchored * anchoredSell)
+                                + (wVolume * volSellScore01);
+
+            // 🔴 NEU: Speichere die Volume-Scores und Weighted-Scores im Result
+            result.VolBuyScore01 = volBuyScore01;
+            result.VolSellScore01 = volSellScore01;
+            result.WeightedBuy = weightedBuy;
+            result.WeightedSell = weightedSell;
+
+            // 🔴 CRITICAL DEBUG
+            // fmtDec6 ist bereits oben definiert (Zeile 4990) - keine erneute Definition nötig
+
+            // this.LogWarn($"[ComputeImbalanceScoreV2-WEIGHTS] " +
+            //              $"coverageBuy={fmtDec6(coverageBuy)}, coverageSell={fmtDec6(coverageSell)} | " +
+            //              $"anchoredBuy={fmtDec6(anchoredBuy)}, anchoredSell={fmtDec6(anchoredSell)} | " +
+            //              $"volBuyScore01={fmtDec6(volBuyScore01)}, volSellScore01={fmtDec6(volSellScore01)}");
+
+            // this.LogWarn($"[ComputeImbalanceScoreV2-CALC] " +
+            //              $"wCoverage({fmtDec6(wCoverage)} * {fmtDec6(coverageBuy)}) + " +
+            //              $"wAnchored({fmtDec6(wAnchored)} * {fmtDec6(anchoredBuy)}) + " +
+            //              $"wVolume({fmtDec6(wVolume)} * {fmtDec6(volBuyScore01)}) = {fmtDec6(weightedBuy)}");
+
+            // this.LogWarn($"[ComputeImbalanceScoreV2-CALC] " +
+            //              $"wCoverage({fmtDec6(wCoverage)} * {fmtDec6(coverageSell)}) + " +
+            //              $"wAnchored({fmtDec6(wAnchored)} * {fmtDec6(anchoredSell)}) + " +
+            //              $"wVolume({fmtDec6(wVolume)} * {fmtDec6(volSellScore01)}) = {fmtDec6(weightedSell)}");
+
+            // this.LogWarn($"[ComputeImbalanceScoreV2-FINAL] " +
+            //              $"anchoredBuy={fmtDec6(anchoredBuy)} (used in calc), " +
+            //              $"anchoredSell={fmtDec6(anchoredSell)} (used in calc)");
+
+            decimal totalWeight = wCoverage + wAnchored + wVolume;
             decimal raw = weightedBuy - weightedSell;
-            decimal score = raw / (wCoverage + wAnchored + wVolume);
+            decimal score = raw / totalWeight;
             score = ClampLocal(score, -1m, 1m);
 
-            if (score >= 0.5m) label = "strong_buy";
-            else if (score >= 0.2m) label = "buy";
-            else if (score <= -0.5m) label = "strong_sell";
-            else if (score <= -0.2m) label = "sell";
-            else label = "neutral";
+            // =====================================================================
+            // 5. LABEL BESTIMMUNG mit Hysterese
+            // =====================================================================
+            label = DetermineScoreLabel(score, result);
 
             return score;
+        }
+
+        /// <summary>
+        /// Nicht-lineare Anchored-Score-Berechnung
+        /// Erste Levels am Extrem sind wichtiger als tiefere
+        /// </summary>
+        private decimal ComputeAnchoredScore(int anchoredCount, int maxDepth)
+        {
+            if (maxDepth <= 0 || anchoredCount <= 0) return 0m;
+
+            // Logarithmische Skalierung: Erste Levels zählen mehr
+            // 1 Level  → ~0.43
+            // 2 Levels → ~0.63
+            // 3 Levels → ~0.76
+            // 4 Levels → ~0.86
+            // 5 Levels → ~0.93
+            decimal ratio = (decimal)anchoredCount / maxDepth;
+            decimal logScore = (decimal)Math.Log(1.0 + (double)ratio * (Math.E - 1.0));
+
+            return Clamp01Local(logScore);
+        }
+
+        /// <summary>
+        /// KORRIGIERTE Volume-Score-Berechnung mit Threshold und nicht-linearer Skalierung
+        /// </summary>
+        private decimal ComputeVolumeScore(decimal avgImbVol, decimal baseMedian, StackedImbParams p)
+        {
+            const decimal eps = 1e-9m;
+
+            // Kein Imbalance-Volumen → Score 0
+            if (avgImbVol <= 0m) return 0m;
+
+            // Basis-Median zu niedrig → verwende MinVol als Referenz
+            // 🔴 KORRIGIERT: Nutze p.ImbalanceVolumeMin nur, wenn BaseMedian <= eps.
+            // Ansonsten sollte der Median die Referenz sein.
+            decimal reference = baseMedian;
+            if (reference <= eps) reference = p.ImbalanceVolumeMin;
+            if (reference <= eps) return 0m; // Falls beides 0 ist
+
+            decimal ratio = avgImbVol / reference;
+
+            // 🔴 DEBUG
+            // string fmtDec6(decimal v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+            // this.LogWarn($"[ComputeVolumeScore] avgImbVol={fmtDec6(avgImbVol)}, " +
+            //              $"baseMedian={fmtDec6(baseMedian)}, reference={fmtDec6(reference)}, " +
+            //              $"ratio={fmtDec6(ratio)}, ImbalanceVolumeMin={fmtDec6(p.ImbalanceVolumeMin)}");
+
+            // =====================================================================
+            // NEUE LOGIK: Threshold-basierte Skalierung
+            // =====================================================================
+            //
+            // ratio < 1.0  → Score = 0 (unter Referenz, nicht aussagekräftig)
+            // ratio = 1.0  → Score = 0 (genau Referenz, neutral)
+            // ratio = 1.5  → Score ≈ 0.25
+            // ratio = 2.0  → Score ≈ 0.50
+            // ratio = 3.0  → Score ≈ 0.75
+            // ratio >= 4.0 → Score = 1.0 (Maximum)
+            //
+            // Formel: score = (ratio - 1) / 3, clamped to [0, 1]
+            // Das bedeutet: 4x das Basisvolumen = maximaler Score
+            // =====================================================================
+
+            if (ratio <= 1.0m)
+            {
+                return 0m;  // Unter oder gleich Referenz → kein positiver Beitrag
+            }
+
+            // Lineare Skalierung ab Threshold 1.0, Maximum bei 4.0
+            decimal score = (ratio - 1.0m) / 3.0m;
+
+            // this.LogWarn($"[ComputeVolumeScore] score(pre-clamp)={fmtDec6(score)}, " +
+            //              $"score(post-clamp)={fmtDec6(Clamp01Local(score))}");
+
+            return Clamp01Local(score);
+        }
+
+        /// <summary>
+        /// Label-Bestimmung mit Kontext-Bewertung
+        /// </summary>
+        private string DetermineScoreLabel(decimal score, StackedImbalanceResult result)
+        {
+            // Mindestanforderungen für starke Signale
+            bool hasBuyStack = result.BuyCountMax >= 2 || result.BuyCountTopAnchored >= 2;
+            bool hasSellStack = result.SellCountMax >= 2 || result.SellCountBottomAnchored >= 2;
+
+            if (score >= 0.5m && hasBuyStack)
+                return "strong_buy";
+            if (score >= 0.25m && hasBuyStack)
+                return "buy";
+            if (score >= 0.15m)
+                return "weak_buy";
+
+            if (score <= -0.5m && hasSellStack)
+                return "strong_sell";
+            if (score <= -0.25m && hasSellStack)
+                return "sell";
+            if (score <= -0.15m)
+                return "weak_sell";
+
+            return "neutral";
         }
 
         private static decimal Clamp01Local(decimal value) => ClampLocal(value, 0m, 1m);
 
         private static decimal ClampLocal(decimal value, decimal min, decimal max)
             => value < min ? min : (value > max ? max : value);
+
         // =========================================================================
         // Stacked-Imbalance | Ende
         // =========================================================================
@@ -4983,7 +8640,7 @@ namespace MyNamespace.Strategies
                 if (!EnableImbalanceScoreCsvExport || !UseDailyCsvFiles)
                     return;
             }
-                
+
             // Wenn noch kein Writer existiert, erstmalig erstellen
             if (_csvWriter == null)
             {
@@ -5012,7 +8669,7 @@ namespace MyNamespace.Strategies
                     return;
                 }
             }
-                
+
             // WICHTIG: Nicht mehr GetCurrentBarDate() aufrufen!
             // Verwende das gespeicherte Datum für die gesamte Session
             // Das verhindert die "Index out of range" Fehler
@@ -5025,18 +8682,18 @@ namespace MyNamespace.Strategies
             {
                 // WICHTIG: Verwende das Backtest-Datum von der ersten gültigen Bar
                 string backtestDate = GetBacktestDateFromFirstBar();
-                
+
                 // Instrumentnamen sicher für Dateiname machen
                 string instrumentName = (InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "Unknown");
                 foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
                     instrumentName = instrumentName.Replace(ch, '_');
-                
-                string timeframeLabel = _researchTimeframeLabel ?? "TF";
+
+                string timeframeLabel = "TF";
                 string outDir = @"C:\Users\User\Documents\Strategieauswertung";
                 System.IO.Directory.CreateDirectory(outDir);
-                
+
                 _csvPath = System.IO.Path.Combine(outDir, $"{instrumentName}_{timeframeLabel}_ovsnapshots_{backtestDate}.csv");
-                
+
                 // Falls Überschreiben aktiviert und Datei existiert, löschen
                 if (OverwriteExistingCsv && System.IO.File.Exists(_csvPath))
                 {
@@ -5050,10 +8707,10 @@ namespace MyNamespace.Strategies
                         this.LogWarn($"[OnInitialize] Could not delete existing CSV file {_csvPath}: {ex.Message}");
                     }
                 }
-                
+
                 _csvWriter = new BackgroundCsvWriter(_csvPath, CsvHeader);
                 _currentCsvDate = backtestDate;
-                
+
                 this.LogInfo($"[InitializeDailyCsvWriter] CSV Writer created -> path={_csvPath}");
             }
             catch (Exception ex)
@@ -5071,7 +8728,7 @@ namespace MyNamespace.Strategies
                 foreach (var ch in System.IO.Path.GetInvalidFileNameChars())
                     instrumentName = instrumentName.Replace(ch, '_');
 
-                string timeframeLabel = _researchTimeframeLabel ?? "TF";
+                string timeframeLabel = "TF";
                 string outDir = @"C:\Users\User\Documents\Strategieauswertung";
                 System.IO.Directory.CreateDirectory(outDir);
 
@@ -5106,7 +8763,7 @@ namespace MyNamespace.Strategies
                 // WICHTIG: Wir haben jetzt gültige Bars (CurrentBar >= 0)
                 // Wir brauchen das Datum von der ersten DATEN-Bar, nicht von CurrentBar
                 // CurrentBar gibt oft das aktuelle Systemdatum zurück während der Initialisierung
-                
+
                 if (CurrentBar >= 0)
                 {
                     // Versuche, das Datum von der ersten Daten-Bar zu bekommen (Bar 0)
@@ -5117,23 +8774,23 @@ namespace MyNamespace.Strategies
                         var localTime = firstDataCandle.Time;
                         var utcTime = firstDataCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         // Prüfen, ob das Datum sinnvoll ist (nicht das heutige Datum)
                         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
                         if (result != today)
                         {
                             this.LogInfo($"[GetBacktestDateFromFirstBar] INFO: Using FirstDataBar (Bar 0) - Local={localTime:O}, UTC={utcTime:O}, Result={result}");
-                            
+
                             // Speichere dieses Datum für zukünftige Verwendung
                             _storedBacktestDate = result;
                             this.LogInfo($"[GetBacktestDateFromFirstBar] INFO: Stored first data bar date: {_storedBacktestDate}");
-                            
+
                             return result;
                         }
                         else
                         {
                             this.LogInfo("[GetBacktestDateFromFirstBar] INFO: FirstDataBar returned today's date, trying to find actual backtest data");
-                            
+
                             // Versuche, eine Bar in der Mitte des Datensatzes zu finden
                             // Das sollte das echte Backtest-Datum sein
                             return GetBacktestDateFromMiddleOfData();
@@ -5150,7 +8807,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogWarn($"[GetBacktestDateFromFirstBar] Failed: {ex.Message}");
             }
-            
+
             // Absoluter Fallback
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
             _storedBacktestDate = fallback;
@@ -5172,9 +8829,9 @@ namespace MyNamespace.Strategies
                         var localTime = middleCandle.Time;
                         var utcTime = middleCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         this.LogInfo($"[GetBacktestDateFromMiddleOfData] INFO: Using middle bar (Bar {CurrentBar / 2}) - Local={localTime:O}, UTC={utcTime:O}, Result={result}");
-                        
+
                         // Prüfen, ob das Datum sinnvoll ist
                         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
                         if (result != today)
@@ -5185,7 +8842,7 @@ namespace MyNamespace.Strategies
                         }
                     }
                 }
-                
+
                 // Fallback: Versuche die aktuelle Bar (wenn sie nicht heute ist)
                 var currentCandle = GetCandle(CurrentBar);
                 if (currentCandle != null)
@@ -5193,7 +8850,7 @@ namespace MyNamespace.Strategies
                     var localTime = currentCandle.Time;
                     var utcTime = currentCandle.Time.ToUniversalTime();
                     var result = utcTime.ToString("yyyy-MM-dd");
-                    
+
                     var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
                     if (result != today)
                     {
@@ -5207,7 +8864,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogWarn($"[GetBacktestDateFromMiddleOfData] Failed: {ex.Message}");
             }
-            
+
             // Absoluter Fallback
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
             _storedBacktestDate = fallback;
@@ -5223,14 +8880,13 @@ namespace MyNamespace.Strategies
                 this.LogInfo($"[GetStoredBacktestDate] INFO: Using stored backtest date: {_storedBacktestDate}");
                 return _storedBacktestDate;
             }
-            
-            // WICHTIG: Wie ResearchCollector - speichere die Zeit BEIM ERSTEN AUFRUF
-            // und verwende sie für die gesamte Session
+
+            // WICHTIG: speichere die Zeit BEIM ERSTEN AUFRUF und verwende sie für die gesamte Session
             try
             {
                 this.LogInfo("[GetStoredBacktestDate] INFO: No stored date available, capturing current bar time");
-                
-                // Versuche, die Zeit von der aktuellen Bar zu bekommen (wie ResearchCollector)
+
+                // Versuche, die Zeit von der aktuellen Bar zu bekommen
                 if (CurrentBar >= 0)
                 {
                     var currentCandle = GetCandle(CurrentBar);
@@ -5239,7 +8895,7 @@ namespace MyNamespace.Strategies
                         var localTime = currentCandle.Time;
                         var utcTime = currentCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         // Speichere das Datum für die gesamte Session
                         _storedBacktestDate = result;
                         this.LogInfo($"[GetStoredBacktestDate] INFO: Captured and stored backtest date from current bar: {_storedBacktestDate}");
@@ -5259,7 +8915,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogWarn($"[GetStoredBacktestDate] Failed to capture backtest date: {ex.Message}");
             }
-            
+
             // Wenn alles fehlschlägt, verwenden Sie das aktuelle Datum
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
             _storedBacktestDate = fallback;
@@ -5281,7 +8937,7 @@ namespace MyNamespace.Strategies
                         var localTime = currentCandle.Time;
                         var utcTime = currentCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         this.LogInfo($"[GetCurrentBarDate] INFO: Using CurrentBar - CurrentBar={CurrentBar}, Local={localTime:O}, UTC={utcTime:O}, Result={result}");
                         return result;
                     }
@@ -5294,7 +8950,7 @@ namespace MyNamespace.Strategies
                 {
                     // WICHTIG: Kein Error-Log mehr, wenn CurrentBar < 0 - das ist normal während der Initialisierung
                     this.LogDebug("[GetCurrentBarDate] DEBUG: CurrentBar < 0, no valid bars yet, using stored date");
-                    
+
                     // Wenn noch keine gültigen Bars da sind, verwende das gespeicherte Datum
                     if (!string.IsNullOrEmpty(_storedBacktestDate))
                     {
@@ -5302,7 +8958,7 @@ namespace MyNamespace.Strategies
                         return _storedBacktestDate;
                     }
                 }
-                
+
                 // Fallback: Versuche, die Zeit von der ersten Bar zu bekommen
                 if (CurrentBar >= 0)
                 {
@@ -5312,16 +8968,16 @@ namespace MyNamespace.Strategies
                         var localTime = firstCandle.Time;
                         var utcTime = firstCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         this.LogInfo($"[GetCurrentBarDate] INFO: Using FirstCandle - Local={localTime:O}, UTC={utcTime:O}, Result={result}");
-                        
+
                         // Speichere dieses Datum für zukünftige Verwendung
                         if (string.IsNullOrEmpty(_storedBacktestDate))
                         {
                             _storedBacktestDate = result;
                             this.LogInfo($"[GetCurrentBarDate] INFO: Stored first candle date: {_storedBacktestDate}");
                         }
-                        
+
                         return result;
                     }
                     else
@@ -5335,14 +8991,14 @@ namespace MyNamespace.Strategies
                 // Nur noch als Debug loggen, nicht als Warn - das ist während der Initialisierung normal
                 this.LogDebug($"[GetCurrentBarDate] DEBUG: Could not get bar date: {ex.Message}");
             }
-            
+
             // Absoluter Fallback auf gespeichertes Datum oder aktuelles Datum
             if (!string.IsNullOrEmpty(_storedBacktestDate))
             {
                 this.LogDebug($"[GetCurrentBarDate] DEBUG: Using stored backtest date as fallback: {_storedBacktestDate}");
                 return _storedBacktestDate;
             }
-            
+
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
             this.LogDebug($"[GetCurrentBarDate] DEBUG: Using absolute fallback UTC date: {fallback}");
             return fallback;
@@ -5361,9 +9017,9 @@ namespace MyNamespace.Strategies
                         var localTime = firstCandle.Time;
                         var utcTime = firstCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         this.LogInfo($"[GetCurrentBarDate] INFO: Using FirstCandle - Local={localTime:O}, UTC={utcTime:O}, Result={result}");
-                        
+
                         // Wenn auch das erste Bar das heutige Datum hat, versuchen wir es mit einer anderen Methode
                         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
                         if (result == today)
@@ -5371,7 +9027,7 @@ namespace MyNamespace.Strategies
                             this.LogInfo($"[GetCurrentBarDate] INFO: FirstCandle also returned today's date, trying chart-based method");
                             return GetDateFromChartInfo();
                         }
-                        
+
                         return result;
                     }
                     else
@@ -5379,7 +9035,7 @@ namespace MyNamespace.Strategies
                         this.LogInfo("[GetCurrentBarDate] INFO: GetCandle(0) returned null");
                     }
                 }
-                
+
                 // Methode 3: Versuche, das Datum aus ChartInfo zu bekommen
                 return GetDateFromChartInfo();
             }
@@ -5387,7 +9043,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogWarn($"[GetCurrentBarDate] GetBacktestDateFromChart failed: {ex.Message}");
             }
-            
+
             // Absoluter Fallback auf aktuelles Datum
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
             this.LogInfo($"[GetCurrentBarDate] INFO: Using absolute fallback UTC date: {fallback}");
@@ -5400,9 +9056,9 @@ namespace MyNamespace.Strategies
             {
                 // WICHTIG: Wir brauchen das Datum vom LETZTEN BAR im Chart (der eigentliche Test-Tag)
                 // nicht vom Anfang oder von der Mitte
-                
+
                 this.LogInfo($"[GetCurrentBarDate] INFO: Trying to get date from LAST BAR in chart");
-                
+
                 if (CurrentBar >= 0)
                 {
                     // Das ist der entscheidende Punkt: Wir nehmen die LETZTE Bar (CurrentBar)
@@ -5413,15 +9069,15 @@ namespace MyNamespace.Strategies
                         var localTime = lastCandle.Time;
                         var utcTime = lastCandle.Time.ToUniversalTime();
                         var result = utcTime.ToString("yyyy-MM-dd");
-                        
+
                         this.LogInfo($"[GetCurrentBarDate] INFO: Using LAST Bar ({CurrentBar}) - Local={localTime:O}, UTC={utcTime:O}, Result={result}");
-                        
+
                         // Prüfen, ob das Ergebnis sinnvoll ist (nicht das heutige Datum)
                         var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
                         if (result == today)
                         {
                             this.LogInfo($"[GetCurrentBarDate] INFO: Last bar also returned today's date - ATAS limitation detected");
-                            
+
                             // Wenn ATAS wirklich immer das heutige Datum liefert, versuchen wir einen anderen Ansatz:
                             // Wir könnten das Datum manuell aus dem Chart-Titel oder einer anderen Quelle extrahieren
                             // Aber vorerst geben wir das heutige Datum zurück mit entsprechender Log-Meldung
@@ -5431,7 +9087,7 @@ namespace MyNamespace.Strategies
                         {
                             this.LogInfo($"[GetCurrentBarDate] INFO: SUCCESS: Got backtest date from last bar: {result}");
                         }
-                        
+
                         return result;
                     }
                     else
@@ -5443,36 +9099,44 @@ namespace MyNamespace.Strategies
                 {
                     this.LogInfo($"[GetCurrentBarDate] INFO: CurrentBar < 0, no bars available");
                 }
-                
+
                 this.LogInfo("[GetCurrentBarDate] INFO: ChartInfo method failed, no alternative available");
             }
             catch (Exception ex)
             {
                 this.LogWarn($"[GetCurrentBarDate] GetDateFromChartInfo failed: {ex.Message}");
             }
-            
+
             // Wenn alles fehlschlägt, verwenden wir das aktuelle Datum
             var fallback = DateTime.UtcNow.ToString("yyyy-MM-dd");
-            this.LogInfo($"[GetCurrentBarDate] INFO: All methods failed, using current UTC date: {fallback}");
             return fallback;
         }
 
         // Hauptlogik pro Bar und pro Tick auf dem letzten Bar
         protected override void OnCalculate(int bar, decimal value)
         {
-            
-
-            int maxIdx = CurrentBar;
-
-            if (bar < 0 || maxIdx < 0 || bar > maxIdx || InstrumentInfo == null || InstrumentInfo.Instrument == null || _tickSize == 0m)
+            try
             {
-                this.LogInfo($"OnCalculate: Ungültiger Zustand (bar={bar}, maxIdx={maxIdx}, InstrumentInfo={InstrumentInfo != null}, Instrument={InstrumentInfo?.Instrument != null}, _tickSize={_tickSize}) -> überspringe.");
-                return;
-            }
-            
-            // Tageswechsel prüfen und ggf. neuen Writer erstellen
-            CheckAndRecreateCsvWriterIfNeeded();
-            int b = bar;
+                if (UseTick900ForMarketStructure && !_msLeaderElectionAttempted)
+                    TryAcquireMarketStructureLeadership();
+
+                
+
+                if (UseTick900ForMarketStructure)
+                    EnsureTick900BackfillRequested(bar);
+
+                int maxIdx = CurrentBar;
+
+                if (bar < 0 || maxIdx < 0 || bar > maxIdx || InstrumentInfo == null || InstrumentInfo.Instrument == null || _tickSize == 0m)
+                {
+                    this.LogInfo($"OnCalculate: Ungültiger Zustand (bar={bar}, maxIdx={maxIdx}, InstrumentInfo={InstrumentInfo != null}, Instrument={InstrumentInfo?.Instrument != null}, _tickSize={_tickSize}) -> überspringe.");
+                    return;
+                }
+
+                // Tageswechsel prüfen und ggf. neuen Writer erstellen
+                CheckAndRecreateCsvWriterIfNeeded();
+
+                int b = bar;
 
             var c = GetCandle(bar);
             if (c == null) // Explizite Null-Pr?fung f?r aktuelle Kerze
@@ -5530,6 +9194,28 @@ namespace MyNamespace.Strategies
                 int mcBaseBar = _lastCalculatedBar;
                 UpdateMicroCompositeRolling(mcBaseBar);
                 _currentMC = BuildMicroCompositeFromHist(_mcHist, SmoothingTicks, TopNPeaks);
+
+                var mcRolling = GetRollingMicroComposite();
+                bool sameRef = object.ReferenceEquals(_currentMC, mcRolling);
+                int hvnZonesCur = _currentMC?.HVNZones?.Count ?? 0;
+                int lvnZonesCur = _currentMC?.LVNZones?.Count ?? 0;
+                int hvnZonesRoll = mcRolling?.HVNZones?.Count ?? 0;
+                int lvnZonesRoll = mcRolling?.LVNZones?.Count ?? 0;
+                decimal tickDbg = InstrumentInfo?.TickSize ?? _tickSize;
+
+                string ZonesToString(List<(decimal Start, decimal End)> zs)
+                {
+                    if (zs == null || zs.Count == 0) return "-";
+                    int take = Math.Min(zs.Count, 6);
+                    var parts = new List<string>(take);
+                    for (int i = 0; i < take; i++)
+                        parts.Add($"[{zs[i].Start:F2}-{zs[i].End:F2}]");
+                    return string.Join(" ", parts);
+                }
+
+                string hvnCurStr = ZonesToString(_currentMC?.HVNZones);
+                string hvnRollStr = ZonesToString(mcRolling?.HVNZones);
+                //this.LogInfo($"[MC-SNAP] barClosed={mcBaseBar} tick={tickDbg:F2} sameRef={sameRef} | cur: POC={_currentMC?.POC:F2} VAH={_currentMC?.VAH:F2} VAL={_currentMC?.VAL:F2} HVNZones={hvnZonesCur} {hvnCurStr} LVNZones={lvnZonesCur} | roll: POC={mcRolling?.POC:F2} VAH={mcRolling?.VAH:F2} VAL={mcRolling?.VAL:F2} HVNZones={hvnZonesRoll} {hvnRollStr} LVNZones={lvnZonesRoll}");
 
                 // Feature auf abgeschlossener Kerze ausf?hren
                 HandleVolumeWindowFeature(mcBaseBar);
@@ -5741,9 +9427,9 @@ namespace MyNamespace.Strategies
             _sweepDir[bar] = sweepUp ? 1 : (sweepDn ? -1 : 0);
 
 
-
             // 11) Stacked Imbalance auf zuletzt geschlossener Kerze (bar-1)
             int imbBar = Math.Max(0, b - 1);
+
             var pImb = new StackedImbParams
             {
                 ImbalanceRatioPct = _imbalanceRatioPct,
@@ -5753,44 +9439,61 @@ namespace MyNamespace.Strategies
             };
             var r = ComputeStackedImbalanceForBar(imbBar, pImb);
 
-            // Optional: Mindestl?nge global anwenden (falls gew?nscht)
-            int buyMax = r.BuyCountMax >= _imbalanceRangeMin ? r.BuyCountMax : 0;
-            int sellMax = r.SellCountMax >= _imbalanceRangeMin ? r.SellCountMax : 0;
-            // Anchored-Counts meist ohne Mindestl?nge:
-            int buyTop = r.BuyCountTopAnchored;
-            int sellBottom = r.SellCountBottomAnchored;
-
-            // Ergebnisse in die vorhandenen readonly-Serien schreiben (keine Neuzuweisung)
-            _stackedBuyImbCount[imbBar] = (decimal)buyMax;
-            _stackedSellImbCount[imbBar] = (decimal)sellMax;
-            _stackedBuyImbTopCount[imbBar] = (decimal)buyTop;
-            _stackedSellImbBottomCount[imbBar] = (decimal)sellBottom;
+            // Schreibe Ergebnisse
+            _stackedBuyImbCount[imbBar] = (decimal)r.BuyCountMax;
+            _stackedSellImbCount[imbBar] = (decimal)r.SellCountMax;
+            _stackedBuyImbTopCount[imbBar] = (decimal)r.BuyCountTopAnchored;
+            _stackedSellImbBottomCount[imbBar] = (decimal)r.SellCountBottomAnchored;
             _imbalanceScoreSeries[imbBar] = r.ImbalanceScore;
             _imbalanceScoreLabelSeries[imbBar] = r.ImbalanceScoreLabel ?? string.Empty;
-            if (_stackedBuyImbCount == null || _stackedSellImbCount == null || _stackedBuyImbTopCount == null || _stackedSellImbBottomCount == null)
+
+            // -------------------------------------------------------------------------
+            // Structured Imbalance-Score Log (für Debugging und Verifizierung)
+            // -------------------------------------------------------------------------
+
+            // ✅ KORREKT: Verwende exakt die gleichen Konstanten wie in ComputeImbalanceScoreV2()
+            const decimal wCoverage = 0.40m;
+            const decimal wAnchored = 0.35m;
+            const decimal wVolume = 0.25m;
+            const decimal totalWeight = wCoverage + wAnchored + wVolume; // = 1.0m
+
+            // 🔴 KORRIGIERT: Berechne Coverage basierend auf den bereits qualifizierten Max-Counts
+            decimal totalPairs = Math.Max(1, r.TotalPairs);
+            decimal coverageBuy = ClampLocal((decimal)r.BuyCountMax / totalPairs, 0m, 1m);
+            decimal coverageSell = ClampLocal((decimal)r.SellCountMax / totalPairs, 0m, 1m);
+
+            // Anchored-Scores (diese MÜSSEN mit ComputeImbalanceScoreV2 identisch sein!)
+            decimal anchoredBuy = ComputeAnchoredScore(r.BuyCountTopAnchored, _imbMaxDepthTicksAnchored);
+            decimal anchoredSell = ComputeAnchoredScore(r.SellCountBottomAnchored, _imbMaxDepthTicksAnchored);
+
+            // 🔴 WICHTIG: Verwende die bereits berechneten Volume-Scores und Weighted-Scores aus dem Result!
+            // Diese wurden in ComputeImbalanceScoreV2 berechnet und gespeichert.
+            decimal volBuyScore01 = r.VolBuyScore01;
+            decimal volSellScore01 = r.VolSellScore01;
+            decimal weightedBuy = r.WeightedBuy;
+            decimal weightedSell = r.WeightedSell;
+
+            // ✅ KORREKT: Verwende die gespeicherten Weighted-Scores direkt
+            // Keine Neuberechnung mehr nötig!
+
+            // ✅ KORREKT: Finale Score-Berechnung (EXAKT wie in ComputeImbalanceScoreV2)
+            decimal calculatedScore = (weightedBuy - weightedSell) / totalWeight;
+            calculatedScore = ClampLocal(calculatedScore, -1m, 1m);
+
+            // 🔴 KRITISCH: Überprüfe auf Mismatch
+            decimal tolerance = 0.000001m;
+            if (Math.Abs(calculatedScore - r.ImbalanceScore) > tolerance)
             {
-                this.LogWarn($"[OnCalculate-Imbalance] Serien null: buy={_stackedBuyImbCount == null}, sell={_stackedSellImbCount == null}, top={_stackedBuyImbTopCount == null}, bottom={_stackedSellImbBottomCount == null}");
+                this.LogWarn($"[ImbalanceScore Mismatch] Calculated={calculatedScore:F6}, " +
+                             $"Actual={r.ImbalanceScore:F6}, Diff={Math.Abs(calculatedScore - r.ImbalanceScore):F6}, " +
+                             $"volBuyScore01={volBuyScore01:F6}, volSellScore01={volSellScore01:F6}, " +
+                             $"coverageBuy={coverageBuy:F6}, coverageSell={coverageSell:F6}, " +
+                             $"anchoredBuy={anchoredBuy:F6}, anchoredSell={anchoredSell:F6}");
             }
 
-            // Structured Imbalance-Score Log
-            const decimal wCoverage = 0.5m;
-            const decimal wAnchored = 0.3m;
-            const decimal wVolume = 0.2m;
-            decimal totalPairs = Math.Max(1, r.TotalPairs);
-            decimal coverageBuy = ClampLocal(r.BuyCountMax / totalPairs, 0m, 1m);
-            decimal coverageSell = ClampLocal(r.SellCountMax / totalPairs, 0m, 1m);
-            decimal anchoredBuy = _imbMaxDepthTicksAnchored > 0
-                ? ClampLocal((decimal)r.BuyCountTopAnchored / _imbMaxDepthTicksAnchored, 0m, 1m)
-                : 0m;
-            decimal anchoredSell = _imbMaxDepthTicksAnchored > 0
-                ? ClampLocal((decimal)r.SellCountBottomAnchored / _imbMaxDepthTicksAnchored, 0m, 1m)
-                : 0m;
-            decimal volBuyNorm = r.BaseVolMedian > 0m ? r.AvgBuyImbVol / (r.BaseVolMedian + 1e-6m) : 0m;
-            decimal volSellNorm = r.BaseVolMedian > 0m ? r.AvgSellImbVol / (r.BaseVolMedian + 1e-6m) : 0m;
-            decimal volBuyScore01 = (ClampLocal(volBuyNorm - 1m, -1m, 1m) + 1m) / 2m;
-            decimal volSellScore01 = (ClampLocal(volSellNorm - 1m, -1m, 1m) + 1m) / 2m;
-            decimal weightedBuy = (wCoverage * coverageBuy) + (wAnchored * anchoredBuy) + (wVolume * volBuyScore01);
-            decimal weightedSell = (wCoverage * coverageSell) + (wAnchored * anchoredSell) + (wVolume * volSellScore01);
+            // Für volBuyNorm/volSellNorm (nur für Logging)
+            decimal volBuyNorm = r.BuyBaseVolMedian > 0m ? r.AvgBuyImbVolQualified / (r.BuyBaseVolMedian + 1e-6m) : 0m;
+            decimal volSellNorm = r.SellBaseVolMedian > 0m ? r.AvgSellImbVolQualified / (r.SellBaseVolMedian + 1e-6m) : 0m;
 
             string fmtDec6Local(decimal v) => v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -5800,19 +9503,30 @@ namespace MyNamespace.Strategies
                 $"\"BuyMax\":{r.BuyCountMax},\"SellMax\":{r.SellCountMax}," +
                 $"\"BuyAnch\":{r.BuyCountTopAnchored},\"SellAnch\":{r.SellCountBottomAnchored}," +
                 $"\"BuyPairs\":{r.BuyPairsCount},\"SellPairs\":{r.SellPairsCount}," +
-                $"\"AvgBuyVol\":{fmtDec6Local(r.AvgBuyImbVol)},\"AvgSellVol\":{fmtDec6Local(r.AvgSellImbVol)}," +
-                $"\"BaseVol\":{fmtDec6Local(r.BaseVolMedian)}," +
+                $"\"AvgBuyVol\":{fmtDec6Local(r.AvgBuyImbVolQualified)},\"AvgSellVol\":{fmtDec6Local(r.AvgSellImbVolQualified)}," +
+                $"\"BuyBaseVol\":{fmtDec6Local(r.BuyBaseVolMedian)},\"SellBaseVol\":{fmtDec6Local(r.SellBaseVolMedian)}," +
                 $"\"coverageBuy\":{fmtDec6Local(coverageBuy)},\"coverageSell\":{fmtDec6Local(coverageSell)}," +
                 $"\"anchoredBuy\":{fmtDec6Local(anchoredBuy)},\"anchoredSell\":{fmtDec6Local(anchoredSell)}," +
                 $"\"volBuyNorm\":{fmtDec6Local(volBuyNorm)},\"volSellNorm\":{fmtDec6Local(volSellNorm)}," +
                 $"\"volBuyScore01\":{fmtDec6Local(volBuyScore01)},\"volSellScore01\":{fmtDec6Local(volSellScore01)}," +
                 $"\"weightedBuy\":{fmtDec6Local(weightedBuy)},\"weightedSell\":{fmtDec6Local(weightedSell)}," +
+                $"\"calculatedScore\":{fmtDec6Local(calculatedScore)}," +
                 $"\"score\":{fmtDec6Local(r.ImbalanceScore)},\"label\":\"{r.ImbalanceScoreLabel}\"" +
                 $"}}";
 
             if (imbBar != _lastImbalanceLogBar)
             {
-                this.LogInfo(imbalanceLog.Replace("{", "{{").Replace("}", "}}"));
+                // 🔴 NUR IM ENTRY-FENSTER LOGGEN: Prüfe ob wir uns in der Pattern-Prüfung befinden
+                // Wir verwenden einen einfachen Check: Nur loggen wenn der aktuelle Bar innerhalb der letzten 10 Bars ist
+                // und wir nicht in der historischen Datensammlung sind (history mode)
+                bool isInEntryWindow = (CurrentBar - imbBar) <= 10 && CurrentBar > 0;
+
+                if (isInEntryWindow)
+                {
+                    var msg = imbalanceLog.Replace("{", "{{").Replace("}", "}}");
+                    if (!ShouldSuppressNoisyLog(msg))
+                        this.LogInfo(msg);
+                }
                 _lastImbalanceLogBar = imbBar;
             }
 
@@ -5836,9 +9550,10 @@ namespace MyNamespace.Strategies
                         r.SellCountMax.ToString(System.Globalization.CultureInfo.InvariantCulture),
                         r.BuyPairsCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
                         r.SellPairsCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        fmtDec6Local(r.AvgBuyImbVol),
-                        fmtDec6Local(r.AvgSellImbVol),
-                        fmtDec6Local(r.BaseVolMedian),
+                        fmtDec6Local(r.AvgBuyImbVolQualified),
+                        fmtDec6Local(r.AvgSellImbVolQualified),
+                        fmtDec6Local(r.BuyBaseVolMedian),
+                        fmtDec6Local(r.SellBaseVolMedian),
                         fmtDec3Local(coverageBuy),
                         fmtDec3Local(coverageSell),
                         fmtDec3Local(anchoredBuy),
@@ -5915,7 +9630,30 @@ namespace MyNamespace.Strategies
             }
 
 
-            // Fr?her Guard: schweren Teil ggf. ?berspringen, aber NICHT returnen
+            // === Tick-leichte Trade-Management-Updates (m?ssen auch laufen, wenn heavy-work f?r diesen Bar bereits gelaufen ist) ===
+            // 1) BestSinceEntry aktualisieren (pro Tick, intrabar)
+            if (_positionOpen)
+            {
+                var last = Security?.LastTradePrice ?? 0m;
+                if (last > 0m)
+                {
+                    if (_isLongTrade) _bestSinceEntry = Math.Max(_bestSinceEntry, last);
+                    else _bestSinceEntry = Math.Min(_bestSinceEntry, last);
+                    //this.LogInfo($"[OnCalculate] Tick-Update: Last={last}, BestSinceEntry={_bestSinceEntry} (Long={_isLongTrade})");
+                }
+
+                // 2) BreakEven pro Tick ausf?hren, sobald Manager initialisiert sind
+                // (Manager-Init bleibt weiter unten im heavy-work Teil)
+                if (_managersInitialized && !_isExitPlacementPending && EnableBreakEven)
+                {
+                    //this.LogInfo($"[OnCalculate] BreakEven-Conditions: PosOpen={_positionOpen}, ManagersInit={_managersInitialized}, ExitPending={_isExitPlacementPending}, BE={EnableBreakEven}");
+                    //this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() per tick.");
+                    try { ProcessBreakEvenTick(); }
+                    catch (Exception ex) { this.LogWarn($"[OnCalculate] ProcessBreakEvenTick Exception: {ex.Message}"); }
+                }
+            }
+
+            // Früher Guard: schweren Teil ggf. ?berspringen, aber NICHT returnen
             if (_lastProcessedBar == bar)
             {
                 this.LogDebug($"[OnCalculate] SKIPPED heavy work: Already processed bar={bar}.");
@@ -5945,7 +9683,7 @@ namespace MyNamespace.Strategies
 
                                 if (EnableBreakEven)
                                 {
-                                    this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() after pending clear.");
+                                    //this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() after pending clear.");
                                     try { ProcessBreakEvenTick(); }
                                     catch (Exception ex) { this.LogWarn($"[OnCalculate] ProcessBreakEvenTick Exception: {ex.Message}"); }
                                 }
@@ -6005,35 +9743,18 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                // 2) BestSinceEntry aktualisieren (falls Position offen)
-                if (_positionOpen)
-                {
-                    var last = Security?.LastTradePrice ?? 0m;
-                    if (last > 0m)
-                    {
-                        if (_isLongTrade) _bestSinceEntry = Math.Max(_bestSinceEntry, last);
-                        else _bestSinceEntry = Math.Min(_bestSinceEntry, last);
-                        this.LogInfo($"[OnCalculate] Tick-Update: Last={last}, BestSinceEntry={_bestSinceEntry} (Long={_isLongTrade})");
-                    }
-                }
-
-                // 3) Manager-Init (Fallback) und 4) BreakEven-Tick
+                // 2) Manager-Init (Fallback) und 3) BreakEven-Tick
+                //this.LogInfo($"[OnCalculate] BreakEven-Conditions: PosOpen={_positionOpen}, ManagersInit={_managersInitialized}, ExitPending={_isExitPlacementPending}, BE={EnableBreakEven}");
                 if (_slOrder != null && _tpOrder != null && _positionOpen && !_managersInitialized && !_isExitPlacementPending)
                 {
                     InitializeManagersAfterEntry(_lastTpSlResult);
                     this.LogInfo("[OnCalculate] Managers initialized in fallback.");
                     if (EnableBreakEven)
                     {
-                        this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() post-init.");
+                        //this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() post-init.");
                         try { ProcessBreakEvenTick(); }
                         catch (Exception ex) { this.LogWarn($"[OnCalculate] ProcessBreakEvenTick Exception: {ex.Message}"); }
                     }
-                }
-                else if (_positionOpen && _managersInitialized && !_isExitPlacementPending && EnableBreakEven)
-                {
-                    this.LogInfo("[OnCalculate] Calling ProcessBreakEvenTick() per tick.");
-                    try { ProcessBreakEvenTick(); }
-                    catch (Exception ex) { this.LogWarn($"[OnCalculate] ProcessBreakEvenTick Exception: {ex.Message}"); }
                 }
 
                 // 5) Bar-Close-Trailing
@@ -6132,6 +9853,15 @@ namespace MyNamespace.Strategies
             bool isNewSession = IsNewSession(bar);
 
             if (isNewSession)
+                _marketStructureContext?.Reset();
+
+            if (isNewSession)
+            {
+                _msTick900Aggregator?.Reset();
+                _msTick900BucketSessionStart = DateTime.MinValue;
+            }
+
+            if (isNewSession)
             {
                 // Eine neue Session hat begonnen
                 // Die Werte des vorherigen Tages sind nun die abgeschlossenen Werte des _currentDay...
@@ -6140,14 +9870,17 @@ namespace MyNamespace.Strategies
                     _previousDayOpen = _currentDayOpen;
                     _previousDayHigh = _currentDayHigh;
                     _previousDayLow = _currentDayLow;
-                    _previousDayClose = GetCandle(_lastSessionStartBar).Close; // Close der letzten Kerze der vorherigen Session
+                    var lastSessionCandle = GetCandle(_lastSessionStartBar);
+                    _previousDayClose = lastSessionCandle != null ? lastSessionCandle.Close : 0m; // Close der letzten Kerze der vorherigen Session
 
                     // Korrektur: Das Close des Vortages ist das Close des letzten Balkens des Vortages.
                     // ATAS-Indikatoren arbeiten oft mit dem Close des letzten Balkens VOR dem NewSession-Balken.
                     // Wenn der letzte Balken des Vortages der Balken (bar-1) war, dann ist dessen Close der korrekte Wert.
                     if (bar > 0)
                     {
-                        _previousDayClose = GetCandle(bar - 1).Close;
+                        var prevCandle = GetCandle(bar - 1);
+                        if (prevCandle != null)
+                            _previousDayClose = prevCandle.Close;
                     }
                 }
 
@@ -6177,52 +9910,176 @@ namespace MyNamespace.Strategies
             decimal currentVAH = 0m;
             decimal currentVAL = 0m;
 
+            bool hasDailyLevels = _dailyLevels != null
+                && _dailyLevels.DataSeries != null
+                && _dailyLevels.DataSeries.Count >= 4
+                && _dailyLevels.DataSeries[0] != null
+                && _dailyLevels.DataSeries[2] != null
+                && _dailyLevels.DataSeries[3] != null;
+
             // --- R?ckw?rtssuche f?r POC (DataSeries[0]) ---
-            for (int i = bar; i >= 0; i--)
+            if (hasDailyLevels)
             {
-                // ?berpr?fen, ob der Index f?r diese DataSeries g?ltig ist
-                // (WICHTIG, da DataSeries.Count durch _targetBar begrenzt sein kann)
-                if (_dailyLevels.DataSeries[0].Count > i)
+                for (int i = bar; i >= 0; i--)
                 {
-                    decimal val = (decimal)_dailyLevels.DataSeries[0][i];
-                    if (val != 0m)
+                    // ?berpr?fen, ob der Index f?r diese DataSeries g?ltig ist
+                    // (WICHTIG, da DataSeries.Count durch _targetBar begrenzt sein kann)
+                    if (_dailyLevels.DataSeries[0].Count > i)
                     {
-                        currentPOC = val;
-                        break; // Letzten Nicht-Null-POC gefunden
+                        object raw = _dailyLevels.DataSeries[0][i];
+                        decimal val = raw != null ? Convert.ToDecimal(raw) : 0m;
+                        if (val != 0m)
+                        {
+                            currentPOC = val;
+                            break; // Letzten Nicht-Null-POC gefunden
+                        }
                     }
                 }
             }
             //this.LogInfo($"[DEBUG] Bar {bar}: R?ckw?rtssuche POC ergibt: {currentPOC}");
             // --- R?ckw?rtssuche f?r VAH (DataSeries[2]) ---
-            for (int i = bar; i >= 0; i--)
+            if (hasDailyLevels)
             {
-                if (_dailyLevels.DataSeries[2].Count > i)
+                for (int i = bar; i >= 0; i--)
                 {
-                    decimal val = (decimal)_dailyLevels.DataSeries[2][i];
-                    if (val != 0m)
+                    if (_dailyLevels.DataSeries[2].Count > i)
                     {
-                        currentVAH = val;
-                        break; // Letzten Nicht-Null-VAH gefunden
+                        object raw = _dailyLevels.DataSeries[2][i];
+                        decimal val = raw != null ? Convert.ToDecimal(raw) : 0m;
+                        if (val != 0m)
+                        {
+                            currentVAH = val;
+                            break; // Letzten Nicht-Null-VAH gefunden
+                        }
                     }
                 }
             }
             //this.LogInfo($"[DEBUG] Bar {bar}: R?ckw?rtssuche VAH ergibt: {currentVAH}");
             // --- R?ckw?rtssuche f?r VAL (DataSeries[3]) ---
-            for (int i = bar; i >= 0; i--)
+            if (hasDailyLevels)
             {
-                if (_dailyLevels.DataSeries[3].Count > i)
+                for (int i = bar; i >= 0; i--)
                 {
-                    decimal val = (decimal)_dailyLevels.DataSeries[3][i];
-                    if (val != 0m)
+                    if (_dailyLevels.DataSeries[3].Count > i)
                     {
-                        currentVAL = val;
-                        break; // Letzten Nicht-Null-VAL gefunden
+                        object raw = _dailyLevels.DataSeries[3][i];
+                        decimal val = raw != null ? Convert.ToDecimal(raw) : 0m;
+                        if (val != 0m)
+                        {
+                            currentVAL = val;
+                            break; // Letzten Nicht-Null-VAL gefunden
+                        }
                     }
                 }
             }
             //this.LogInfo($"[DEBUG] Bar {bar}: R?ckw?rtssuche VAL ergibt: {currentVAL}");
 
+            // =====================
+            // Daily Profile für WegFrei (Range-Bar kompatibel: bar-count getriggert)
+            // =====================
+            bool dailyEnabled = (EnableDailyProfilePathSystem || ShowDailyProfileLevels || ShowDailyHistogram);
+            if (dailyEnabled)
+            {
+                // Reset am Session-Start (ATAS-konform wie DynamicLevels: IsNewSession/DataProvider.IsNewSession)
+                if (isNewSession)
+                {
+                    _dailyProfileDate = c.Time.Date;
+                    _dailyProfileClosedHist.Clear();
+                    _dailyProfileDevHist.Clear();
+                    _dailyProfileCombinedHist.Clear();
+                    _dailyProfileDevBar = -1;
+                    _lastDailyProfileRecalcBar = -1;
+                    _lastDailyProfileRecalcPOC = 0m;
+                    _lastDailyProfileRecalcVAH = 0m;
+                    _lastDailyProfileRecalcVAL = 0m;
+                    _lastDailyProfileActiveVolSignature = 0;
+                    _lastDailyProfileActiveVolRecalcTime = DateTime.MinValue;
+                    _dailyProfileForPath = null;
+                    _prevDailyProfileForPath = null;
+                    _dailyProfileForVisual = null;
+                    _dailyProfileSeededForDate = false;
 
+                    _dailyHvnNextId = 1;
+                    _dailyHvnTracked.Clear();
+                    _dailyHvnLastOutputIds = new();
+                }
+
+                bool justEnabled = !_prevDailyProfileEnabledFlag && dailyEnabled;
+                _prevDailyProfileEnabledFlag = dailyEnabled;
+
+                // Build Daily histogram directly from tick-based cumulative trades (PublicActiveVolume)
+                var snapSig = _publicActiveVolume != null ? _publicActiveVolume.Signature : 0;
+                bool histChanged = snapSig != 0 && snapSig != _lastDailyProfileActiveVolSignature;
+                if (histChanged)
+                {
+                    var tmp = new SortedDictionary<decimal, decimal>();
+                    foreach (var kv in _publicActiveVolume.GetTotalSnapshot())
+                    {
+                        if (kv.Value <= 0m) continue;
+                        var px = RoundToTick(kv.Key);
+                        if (tmp.TryGetValue(px, out var v)) tmp[px] = v + kv.Value;
+                        else tmp[px] = kv.Value;
+                    }
+
+                    // Wichtig: nur übernehmen, wenn Snapshot verwertbar ist.
+                    // Sonst kann _dailyProfileCombinedHist kurzzeitig leer werden und die Zonen verschwinden.
+                    if (tmp.Count > 0)
+                    {
+                        _dailyProfileCombinedHist.Clear();
+                        foreach (var kv in tmp) _dailyProfileCombinedHist[kv.Key] = kv.Value;
+                        _lastDailyProfileActiveVolSignature = snapSig;
+                    }
+                }
+
+                    // Wir verlassen uns auf ATAS DynamicLevels für POC/VAH/VAL. Wenn diese noch nicht bereit sind, überspringen Sie die tägliche Neuberechnung der Zone.
+
+                    bool levelsChanged = currentPOC != 0m && currentVAH != 0m && currentVAL != 0m &&
+                                     (currentPOC != _lastDailyProfileRecalcPOC || currentVAH != _lastDailyProfileRecalcVAH || currentVAL != _lastDailyProfileRecalcVAL);
+
+                var now = c.LastTime;
+                if (now == default)
+                    now = c.Time;
+                const int IntrabarMinMs = 250;
+                bool intrabarReady = _lastDailyProfileActiveVolRecalcTime == DateTime.MinValue || (now - _lastDailyProfileActiveVolRecalcTime).TotalMilliseconds >= IntrabarMinMs;
+
+                bool shouldRecalc = _lastDailyProfileRecalcBar < 0
+                    || levelsChanged
+                    || (histChanged && intrabarReady)
+                    || (bar - _lastDailyProfileRecalcBar) >= Math.Max(1, DailyProfileRecalcEveryNBars);
+                if (shouldRecalc)
+                {
+                    if (currentPOC != 0m && currentVAH != 0m && currentVAL != 0m)
+                    {
+                        RecalcDailyProfileForPath(currentPOC, currentVAH, currentVAL);
+                        RecalcDailyProfileForVisual(currentPOC, currentVAH, currentVAL);
+                        _lastDailyProfileActiveVolRecalcTime = now;
+                    }
+                    _lastDailyProfileRecalcBar = bar;
+                    if (currentPOC != 0m && currentVAH != 0m && currentVAL != 0m)
+                    {
+                        _lastDailyProfileRecalcPOC = currentPOC;
+                        _lastDailyProfileRecalcVAH = currentVAH;
+                        _lastDailyProfileRecalcVAL = currentVAL;
+                    }
+                }
+
+                // Debug-Log unabhängig vom Recalc-Trigger, damit Logs auch bei großen Recalc-Intervallen weiterlaufen.
+                if (ShowDailyProfileLevels)
+                {
+                    const int DailyDbgEveryNBars = 50;
+                    bool shouldDbg = _lastDailyProfileDebugBar < 0 || (bar - _lastDailyProfileDebugBar) >= DailyDbgEveryNBars || isNewSession;
+                    if (shouldDbg)
+                    {
+                        _lastDailyProfileDebugBar = bar;
+                        decimal totalVol = 0m;
+                        foreach (var kv in _dailyProfileCombinedHist) totalVol += kv.Value;
+                        int hvnZones = _dailyProfileForPath?.HVNZones?.Count ?? 0;
+                        int lvnZones = _dailyProfileForPath?.LVNZones?.Count ?? 0;
+                        int levels = _dailyProfileCombinedHist.Count;
+                      //this.LogInfo($"[DailyProfile-DBG] bar={bar} levels={levels} totalVol={totalVol:F0} sig={snapSig} histChanged={histChanged} shouldRecalc={shouldRecalc} POC={currentPOC:F2} VAH={currentVAH:F2} VAL={currentVAL:F2} HVNZones={hvnZones} LVNZones={lvnZones} pathNull={(_dailyProfileForPath == null)} visualNull={(_dailyProfileForVisual == null)}");
+                    }
+                }
+            }
 
             // === SCHRITT 2: Den Beginn eines neuen Tages KORREKT erkennen ===
             // Wir vergleichen den reinen Datumsteil (ohne Uhrzeit) der aktuellen und der vorherigen Kerze.
@@ -6238,7 +10095,14 @@ namespace MyNamespace.Strategies
                 if (bar > 0)
                 {
                     // Die GetPreviousDayVolumeProfile Methode gibt ein Tuple zur?ck
-                    (_pdPOC, _pdVAH, _pdVAL) = _volumeProfileGenerator.GetPreviousDayVolumeProfile(bar - 1);
+                    if (_volumeProfileGenerator != null)
+                        (_pdPOC, _pdVAH, _pdVAL) = _volumeProfileGenerator.GetPreviousDayVolumeProfile(bar - 1);
+                    else
+                    {
+                        _pdPOC = 0m;
+                        _pdVAH = 0m;
+                        _pdVAL = 0m;
+                    }
                 }
                 else
                 {
@@ -6314,17 +10178,34 @@ namespace MyNamespace.Strategies
             ///Die Pivot-Werte abrufen ===
             // Wir greifen auf die DataSeries des Indikators zu, um die Werte zu bekommen.
             // .Last() gibt uns den Wert f?r die aktuelle Kerze.
-            decimal pp = (decimal)_pivots.DataSeries[0][bar];
-            decimal s1 = (decimal)_pivots.DataSeries[1][bar];
-            decimal s2 = (decimal)_pivots.DataSeries[2][bar];
-            decimal s3 = (decimal)_pivots.DataSeries[3][bar];
-            decimal r1 = (decimal)_pivots.DataSeries[4][bar];
-            decimal r2 = (decimal)_pivots.DataSeries[5][bar];
-            decimal r3 = (decimal)_pivots.DataSeries[6][bar];
-            decimal m1 = (decimal)_pivots.DataSeries[7][bar];
-            decimal m2 = (decimal)_pivots.DataSeries[8][bar];
-            decimal m3 = (decimal)_pivots.DataSeries[9][bar];
-            decimal m4 = (decimal)_pivots.DataSeries[10][bar];
+            decimal pp = 0m, s1 = 0m, s2 = 0m, s3 = 0m, r1 = 0m, r2 = 0m, r3 = 0m, m1 = 0m, m2 = 0m, m3 = 0m, m4 = 0m;
+            if (_pivots != null && _pivots.DataSeries != null && _pivots.DataSeries.Count >= 11)
+            {
+                bool ok = true;
+                for (int si = 0; si <= 10; si++)
+                {
+                    if (_pivots.DataSeries[si] == null || _pivots.DataSeries[si].Count <= bar)
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if (ok)
+                {
+                    pp = Convert.ToDecimal(_pivots.DataSeries[0][bar]);
+                    s1 = Convert.ToDecimal(_pivots.DataSeries[1][bar]);
+                    s2 = Convert.ToDecimal(_pivots.DataSeries[2][bar]);
+                    s3 = Convert.ToDecimal(_pivots.DataSeries[3][bar]);
+                    r1 = Convert.ToDecimal(_pivots.DataSeries[4][bar]);
+                    r2 = Convert.ToDecimal(_pivots.DataSeries[5][bar]);
+                    r3 = Convert.ToDecimal(_pivots.DataSeries[6][bar]);
+                    m1 = Convert.ToDecimal(_pivots.DataSeries[7][bar]);
+                    m2 = Convert.ToDecimal(_pivots.DataSeries[8][bar]);
+                    m3 = Convert.ToDecimal(_pivots.DataSeries[9][bar]);
+                    m4 = Convert.ToDecimal(_pivots.DataSeries[10][bar]);
+                }
+            }
 
             // Berechnen Sie die runden Zahlen direkt mit dem Punkt-Schritt ===
             var currentPrice = c.Close;
@@ -6705,7 +10586,7 @@ namespace MyNamespace.Strategies
 
                     // Diagnose: welcher Z-Bar ist der letzte geschriebene?
                     int latestZBar = (_volBurstZ != null && _volBurstZ.Count > 0) ? _volBurstZ.Keys.Max() : -1;
-                    this.LogInfo($"[OnCalculate] newBar: current={bar}, closed={closed}, lastEval={_lastEvalBar}, latestZBar={latestZBar}");
+                    this.LogInfo($"[OnCalculate] 🆕 newBar: current={bar}, closed={closed}, lastEval={_lastEvalBar}, latestZBar={latestZBar}");
 
                     if (_lastEvalBar == closed)
                     {
@@ -6764,11 +10645,50 @@ namespace MyNamespace.Strategies
                     this.LogDebug($"[OnCalculate SNAP] Bar={closed} Time={closedCandle.Time:O} High={closedCandle.High:F2} Low={closedCandle.Low:F2} Close={closedCandle.Close:F2} " +
                         $"Volume={closedCandle.Volume:F2} Delta={closedCandle.Delta:F2} VolBurstZ={Volumenburst:F4} CvdImpulse={CVDImpuls:F4} AggPressure={DruckAnteil:F4} TradeRateZ={TradeRate:F4}");
 
-                    //this.LogInfo($"[OC] call Evaluate: current={bar}, closed={closed}, VolZ={Volumenburst:F6}");
+                    // Cluster-/PriceInfo Felder für Orderflow-Regeln (FinishedAuction, POC-Delta)
+                    var lowPvi = closedCandle.GetPriceVolumeInfo(closedCandle.Low);
+                    var highPvi = closedCandle.GetPriceVolumeInfo(closedCandle.High);
+                    decimal bidAtLow = lowPvi != null ? (decimal)lowPvi.Bid : 0m;
+                    decimal askAtLow = lowPvi != null ? (decimal)lowPvi.Ask : 0m;
+                    decimal bidAtHigh = highPvi != null ? (decimal)highPvi.Bid : 0m;
+                    decimal askAtHigh = highPvi != null ? (decimal)highPvi.Ask : 0m;
+
+                    // POC über MaxVolumePriceInfo (Fallback: Close). POC-Delta = Ask - Bid am POC-Level.
+                    decimal candlePocPrice = closedCandle.Close;
+                    decimal pocDelta = 0m;
+                    try
+                    {
+                        var pocPvi = closedCandle.MaxVolumePriceInfo;
+                        if (pocPvi != null)
+                        {
+                            candlePocPrice = (decimal)pocPvi.Price;
+                            pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
+                        }
+                    }
+                    catch
+                    {
+                        // ignore, use fallback
+                    }
+
+                    int sessionStartBarForNumbering = 0;
+                    for (int i = Math.Max(0, closed); i >= 0; i--)
+                    {
+                        if (IsNewSession(i))
+                        {
+                            sessionStartBarForNumbering = i;
+                            break;
+                        }
+                    }
+
+                    int chartBarNumber = closed + 1;
+                    int sessionBarNumber = (closed - sessionStartBarForNumbering) + 1;
+
                     // Snapshot aktualisieren 
                     ovSnapshot = new OvSnapshot
                     {
                         Bar = closed,
+                        ChartBarNumber = chartBarNumber,
+                        SessionBarNumber = sessionBarNumber,
                         Open = closedCandle.Open,
                         High = closedCandle.High,
                         Low = closedCandle.Low,
@@ -6778,6 +10698,12 @@ namespace MyNamespace.Strategies
                         Delta = closedCandle.Delta,
                         Ask = closedCandle.Ask,
                         Bid = closedCandle.Bid,
+                        CandlePocPrice = candlePocPrice,
+                        PocDelta = pocDelta,
+                        BidAtLow = bidAtLow,
+                        AskAtLow = askAtLow,
+                        BidAtHigh = bidAtHigh,
+                        AskAtHigh = askAtHigh,
                         MaxCounterShareBull = maxBull,
                         MaxCounterShareBear = maxBear,
                         VolBurstZ = Volumenburst,
@@ -6811,14 +10737,29 @@ namespace MyNamespace.Strategies
                         StackedImbMinVolPerLevel = _imbalanceVolumeMin,
                         StackedImbRatioPct = _imbalanceRatioPct,
                         StackedImbRangeMin = _imbalanceRangeMin,
-                        StackedImbMaxDepthTicks = _imbMaxDepthTicksAnchored
+                        StackedImbMaxDepthTicks = _imbMaxDepthTicksAnchored,
+                        // 🟢 NEU: Spatial-Delta Properties
+                        TopDeltaRatio = r.TopDeltaRatio,
+                        BottomDeltaRatio = r.BottomDeltaRatio,
+                        TopDominance = r.TopDominance,
+                        BottomDominance = r.BottomDominance,
+                        NetDeltaTotal = r.NetDeltaTotal,
+                        IsPerfectLongSetup = r.IsPerfectLongSetup,
+                        IsPerfectShortSetup = r.IsPerfectShortSetup,
+                        PerfectSetupReason = r.PerfectSetupReason,
+                        UpperWickDeltaRatio = r.UpperWickDeltaRatio,
+                        LowerWickDeltaRatio = r.LowerWickDeltaRatio,
+                        UpperWickDominance = r.UpperWickDominance,
+                        LowerWickDominance = r.LowerWickDominance,
+                        UpperWickAbsDeltaTotal = r.UpperWickAbsDeltaTotal,
+                        LowerWickAbsDeltaTotal = r.LowerWickAbsDeltaTotal
                     };
 
 
 
 
                     this.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                        "[OnCalculate_SNAP] Bar={0} Time={1:O} High={2:F2} Low={3:F2} Close={4:F2} Volume={5:F2} Delta={6:F2} Ask={7:F2} Bid={8:F2} " +
+                        "[OnCalculate_SNAP] 🆕 Bar={0} Time={1:O} High={2:F2} Low={3:F2} Close={4:F2} Volume={5:F2} Delta={6:F2} Ask={7:F2} Bid={8:F2} " +
                         "MaxBull={9:F4} MaxBear={10:F4} VolBurstZ={11:F4} CvdImpulse={12:F4} CvdCoherence={13:F4} AggPressure={14:F4} TradeRateZ={15:F4} Efficiency={16:F4} " +
                         "BuyTrades={17} SellTrades={18} TotalTrades={19} IttZ={20:F4} SweepUp={21} SweepDn={22} " +
                         "StackedBuyCount={23} StackedSellCount={24} StackedBuyTop={25} StackedSellBottom={26} StackedImbRatioPct={27:F4} StackedImbMinVolPerLevel={28} StackedImbRangeMin={29} StackedImbMaxDepthTicks={30} " +
@@ -6855,13 +10796,26 @@ namespace MyNamespace.Strategies
                     // **********************************************************************************
                     MarketRegime currentMarketRegime = MarketRegime.None;
 
-                    _marketRegimeDetails = GetCurrentMarketRegime(closed, ovSnapshot);
-                    if (_marketRegimeDetails == null)
+                    var cReg = GetCandle(closed);
+                    var pReg = GetCandle(closed - 1);
+                    if (cReg == null || pReg == null)
                     {
-                        this.LogWarn($"[OnCalculate] GetCurrentMarketRegime returned null for bar {closed}");
+                        this.LogWarn($"[OnCalculate] Market Regime cannot be determined: missing candle(s) for bar {closed}");
+                        _marketRegimeDetails = new MarketRegimeDetails { Regime = MarketRegime.Normal };
+                        currentMarketRegime = _marketRegimeDetails.Regime;
                     }
                     else
                     {
+                        var cndl = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cReg, ovSnapshot?.NetDeltaTotal ?? 0m);
+                        var prevCndl = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pReg, ovSnapshot?.NetDeltaTotal ?? 0m);
+
+                        _marketRegimeDetails = _marketRegimeEvaluator.GetCurrentMarketRegime(closed, ovSnapshot, _myClusterStatistic, cndl, prevCndl);
+                        if (_marketRegimeDetails == null)
+                        {
+                            this.LogWarn($"[OnCalculate] MarketRegimeEvaluator returned null for bar {closed}");
+                            _marketRegimeDetails = new MarketRegimeDetails { Regime = MarketRegime.Normal };
+                        }
+
                         currentMarketRegime = _marketRegimeDetails.Regime;
                         this.LogInfo($"[OnCalculate] Market Regime for bar {closed + 1} calculated: {currentMarketRegime}");
                         this.LogDebug($"[OnCalculate] MarketRegimeDetails for bar {closed}: Regime={_marketRegimeDetails.Regime}");
@@ -6871,7 +10825,7 @@ namespace MyNamespace.Strategies
                     // Setze das Feld im Snapshot (string)
                     ovSnapshot.MarketRegime = currentMarketRegime.ToString();
 
-                    
+
                     // ========== PHASE 4: FEATURES ==========
 
                     this.LogDebug($"[OnCalculate-OF-FEAT] Aufruf von FeatureCalculator f?r bar {closed} (slopeWin=12, inflectionWin=5, persistDepth=20)");
@@ -7046,8 +11000,73 @@ namespace MyNamespace.Strategies
                     {
                         // --- Lokale Sicherungen / Fallbacks ---
                         var localCurrentRegime = (currentMarketRegime == null) ? MarketRegime.None : currentMarketRegime;
-                        var localCurrentDirectionalBias = (_marketStateEngine != null) ? _marketStateEngine.CurrentBias : MarketDirectionalBias.Undefined;
-                        var localCurrentMarketStateForDetector = (_marketStateEngine != null) ? _marketStateEngine.CurrentMarketState : null;
+
+                        try
+                        {
+                            if (_marketStateEngineV2 != null && ovSnapshot != null && _currentVwapSnapshot != null)
+                            {
+                                var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
+                                    bar: feat?.Bar ?? ovSnapshot.Bar,
+                                    high: ovSnapshot.High,
+                                    close: ovSnapshot.Close,
+                                    vwap: _currentVwapSnapshot.Current,
+                                    upperBand1: _currentVwapSnapshot.UpperBand1,
+                                    lowerBand1: _currentVwapSnapshot.LowerBand1,
+                                    upperBand2: _currentVwapSnapshot.UpperBand2,
+                                    lowerBand2: _currentVwapSnapshot.LowerBand2,
+                                    upperBand3: _currentVwapSnapshot.UpperBand3,
+                                    lowerBand3: _currentVwapSnapshot.LowerBand3,
+                                    currentVah: currentVAH,
+                                    currentVal: currentVAL,
+                                    candlePocPrice: ovSnapshot.CandlePocPrice,
+                                    regime: localCurrentRegime);
+
+                                _currentMarketStateV2 = _marketStateEngineV2.Update(v2Input);
+                            }
+                        }
+                        catch (Exception exV2Pre)
+                        {
+                            this.LogWarn($"[OnCalculate MarketStateV2-pre] failed: {exV2Pre.GetType().Name}: {exV2Pre.Message}");
+                        }
+
+                        if (_currentMarketStateV2 == null)
+                            _currentMarketStateV2 = new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localCurrentRegime };
+
+                        var localCurrentDirectionalBias = _currentMarketStateV2.Bias;
+                        var localCurrentMarketStateForDetector = _currentMarketStateV2;
+
+                        if (_marketStructureContext != null && closed >= 0)
+                        {
+                            try
+                            {
+                                var cndl = GetCandle(closed);
+                                if (cndl != null)
+                                {
+                                    var mcndl = new IndicatorCandleAdapter(cndl, ovSnapshot?.NetDeltaTotal ?? 0m);
+                                    var vwapNow = _currentVwapSnapshot?.Current ?? 0m;
+                                    try
+                                    {
+                                        _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
+                                        _marketStructureContext.WickZoneMinTicks = GetEffectiveMarketStructureWickMinTicks(currentMarketRegime);
+                                    }
+                                    catch { }
+                                    _marketStructureContext.Update(
+                                        closed,
+                                        mcndl,
+                                        ovSnapshot,
+                                        tickSize: _tickSize,
+                                        vwap: vwapNow,
+                                        recentOf: null,
+                                        allowZoneCreation: !UseTick900ForMarketStructure,
+                                        allowZoneLifecycle: true);
+                                }
+                            }
+                            catch (Exception exMs)
+                            {
+                                this.LogWarn($"[MarketStructureContext] Update failed: {exMs.GetType().Name}: {exMs.Message}");
+                            }
+                        }
+
                         var localCurrentMarketStructureContext = (_marketStructureContext != null) ? _marketStructureContext : null;
 
 
@@ -7125,153 +11144,25 @@ namespace MyNamespace.Strategies
                             (localCurrentMarketStateForDetector.GetType().GetProperty("Confidence") != null ? localCurrentMarketStateForDetector.GetType().GetProperty("Confidence").GetValue(localCurrentMarketStateForDetector)?.ToString() ?? "null" : "null")
                             : "null";
 
-                        // Konfiguration / Anzahl der Evaluatoren (defensiv ? direkter Zugriff versuchen, Fallback auf Reflexion eines wahrscheinlich privaten Feldes)
-                        var configuredPatternCount = _strategySetup?.PatternConditionConfigs?.Count ?? 0;
+                        // Konfiguration / Anzahl der Evaluatoren
+                        var configuredPatternCount = _strategySetup?.PatternDefaultThresholds?.Count ?? 0;
                         int evaluatorCount = 0;
                         string evaluatorPreview = string.Empty;
                         try
                         {
-                            var labels = new List();
-
-
-
-
-                            // DIAG: Quelle ermitteln
-                            var evalsProp = _patternSignaturer?.GetType().GetProperty("Evaluators");
-                            if (evalsProp != null)
+                            var evals = _patternRunner?.Evaluators;
+                            evaluatorCount = evals?.Count ?? 0;
+                            if (evals != null)
                             {
-                                this.LogDebug("[OnCalculate DIAG] _patternSignaturer Zeigt ?ffentliche Eigenschaften ?Evaluators? an ? Lesen aus Eigenschaften.");
+                                evaluatorPreview = string.Join(",", evals.Take(6).Select(e => e == null ? "(null)" : $"{e.GetType().Name}|{e.Type}|{e.Direction}"));
                             }
                             else
                             {
-                                this.LogDebug("[OnCalculate DIAG] _patternSignaturer Gibt die ?ffentliche Eigenschaft ?Evaluators? NICHT frei ? versucht, auf private Felder zur?ckzugreifen..");
+                                evaluatorPreview = "n/a";
                             }
-
-                            // Sammle und logge beide Quellen parallel f?r Diagnose (wenn vorhanden)
-                            try
-                            {
-                                if (evalsProp != null)
-                                {
-                                    var evalsVal = evalsProp.GetValue(_patternSignaturer) as System.Collections.IEnumerable;
-                                    if (evalsVal != null)
-                                    {
-                                        int i = 0;
-                                        var propParts = new List<string>();
-                                        foreach (var e in evalsVal)
-                                        {
-                                            var id = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e);
-                                            string typeName = e?.GetType().Name ?? "null";
-                                            string dir = "n/a";
-                                            try
-                                            {
-                                                if (e is IPatternEvaluator pe) dir = pe.Direction.ToString();
-                                                else
-                                                {
-                                                    var propDir = e?.GetType().GetProperty("Direction");
-                                                    if (propDir != null) dir = propDir.GetValue(e)?.ToString() ?? "n/a";
-                                                }
-                                            }
-                                            catch { dir = "err"; }
-                                            propParts.Add($"prop#{i}:{typeName}[{dir}]id={id}");
-                                            i++;
-                                        }
-                                        this.LogDebug("[OnCalculate DIAG] evaluators (property) = " + string.Join(" | ", propParts));
-                                    }
-                                    else
-                                    {
-                                        this.LogDebug("[OnCalculate DIAG] evaluators property returned null or not IEnumerable");
-                                    }
-                                }
-                            }
-                            catch (Exception exPropDiag)
-                            {
-                                this.LogDebug("[OnCalculate DIAG] reading evaluators property failed: " + exPropDiag.Message);
-                            }
-
-                            // private field fallback - auch separat loggen
-                            try
-                            {
-                                var field = _patternSignaturer?.GetType().GetField("_evaluators", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                                if (field != null)
-                                {
-                                    var val = field.GetValue(_patternSignaturer) as System.Collections.IList;
-                                    if (val != null)
-                                    {
-                                        var fieldParts = new List<string>();
-                                        for (int i = 0; i < val.Count; i++)
-                                        {
-                                            var e = val[i];
-                                            var id = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(e);
-                                            string typeName = e?.GetType().Name ?? "null";
-                                            string dir = "n/a";
-                                            try
-                                            {
-                                                if (e is IPatternEvaluator pe) dir = pe.Direction.ToString();
-                                                else
-                                                {
-                                                    var propDir = e?.GetType().GetProperty("Direction");
-                                                    if (propDir != null) dir = propDir.GetValue(e)?.ToString() ?? "n/a";
-                                                }
-                                            }
-                                            catch { dir = "err"; }
-                                            fieldParts.Add($"field#{i}:{typeName}[{dir}]id={id}");
-                                        }
-                                        this.LogDebug("[OnCalculate DIAG] evaluators (field _evaluators) = " + string.Join(" | ", fieldParts));
-                                    }
-                                    else
-                                    {
-                                        this.LogDebug("[OnCalculate DIAG] private field _evaluators returned null or not IList");
-                                    }
-                                }
-                                else
-                                {
-                                    this.LogDebug("[OnCalculate DIAG] no private field named _evaluators found on _patternSignaturer");
-                                }
-                            }
-                            catch (Exception exFieldDiag)
-                            {
-                                this.LogDebug("[OnCalculate DIAG] reading private field _evaluators failed: " + exFieldDiag.Message);
-                            }
-
-                            // Jetzt wie bisher: kompakte Preview (bevorzuge Property, fallback auf Feld)
-                            int localEvaluatorCount = 0;
-                            var localLabels = new List<string>();
-                            if (evalsProp != null)
-                            {
-                                var evalsVal = evalsProp.GetValue(_patternSignaturer) as System.Collections.IEnumerable;
-                                if (evalsVal != null)
-                                {
-                                    foreach (var e in evalsVal)
-                                    {
-                                        localEvaluatorCount++;
-                                        if (localLabels.Count < 6)
-                                            localLabels.Add(GetEvaluatorLabel(e));
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                var field = _patternSignaturer?.GetType().GetField("_evaluators", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                                var val = field?.GetValue(_patternSignaturer) as System.Collections.IList;
-                                if (val != null)
-                                {
-                                    localLabels = new List<string>();
-                                    localEvaluatorCount = val.Count;
-                                    foreach (var e in val)
-                                    {
-                                        if (localLabels.Count < 6)
-                                            localLabels.Add(GetEvaluatorLabel(e));
-                                    }
-                                }
-                            }
-
-                            evaluatorCount = localEvaluatorCount;
-                            evaluatorPreview = localLabels.Count == 0 ? (evaluatorCount == 0 ? "n/a" : "unnamed") : string.Join(",", localLabels);
-                            // Ende try
                         }
                         catch (Exception ex)
                         {
-                            // defensiv: Fehler loggen, aber nicht die ganze OnCalculate abbrechen
                             this.LogDebug("[OnCalculate DIAG] evaluator introspection failed: " + ex.Message);
                             evaluatorCount = 0;
                             evaluatorPreview = "n/a";
@@ -7343,9 +11234,9 @@ namespace MyNamespace.Strategies
                         // Hinweis: IsDetected ist readonly und ergibt sich aus Type == OrderflowPatternType.None.
 
 
-                        if (_patternSignaturer == null)
+                        if (_patternRunner == null)
                         {
-                            this.LogWarn("[OnCalculate NEW LOG] _patternSignaturer ist null; DetectDominantOrderflowPattern wird nicht aufgerufen.");
+                            this.LogWarn("[OnCalculate NEW LOG] _patternRunner ist null; DetectDominantOrderflowPattern wird nicht aufgerufen.");
                         }
                         else if (feat == null)
                         {
@@ -7371,7 +11262,7 @@ namespace MyNamespace.Strategies
                             // Stelle sicher, dass die Reihenfolge der Parameter mit der Methodensignatur ?bereinstimmt:
                             int? currentBar = closed; // closed ist der geschlossene Bar-Index, den Du oben berechnet hast
 
-                            var result = _patternSignaturer.DetectDominantOrderflowPattern(
+                            var result = _patternRunner.DetectDominantOrderflowPattern(
                                 feat.Bar,
                                 _ofFeaturesHistory,
                                 safeOfFeaturesByBar,
@@ -7383,14 +11274,14 @@ namespace MyNamespace.Strategies
                             );
                             // Ergebnis-Handling: behalte detectedPattern (DetectedOrderflowPattern) f?r UpdateState,
                             // erstelle zus?tzlich detectedPatternEval (PatternEvaluationResult) f?r CSV / weitere Konsumenten.
-                            
+
 
                             // result kann null sein -> weiter behandeln wie bisher
                             if (result == null)
                             {
                                 this.LogDebug("[OnCalculate NEW LOG] DetectDominantOrderflowPattern returned NULL -> treat as no pattern.");
 
-                                
+
                                 // detectedPattern bleibt null (oder du kannst ein leeres DetectedOrderflowPattern setzen, falls n?tig)
                                 detectedPattern = null;
                                 // Erzeuge ein konsistentes PatternEvaluationResult.NotDetected, damit CSV-Code nicht null checks ?berall braucht
@@ -7422,47 +11313,126 @@ namespace MyNamespace.Strategies
                             }
                         }
 
-                        // NEW LOG: Vor UpdateState-Ausf?hrung Loggen
-                        this.LogDebug($"[OnCalculate NEW LOG] Before MarketStateEngine.UpdateState: patternDetected={detectedPattern.IsDetected}, featBar={(feat == null ? -1 : feat.Bar)}, currentRegime={localCurrentRegime}");
-
-                        // MarketStateEngine aufrufen und eventuelle Exceptions loggen
-                        MyNamespace.Strategies.Models.MarketState newMarketState = null;
-                        if (_marketStateEngine == null)
+                        // --- MarketStateEngineV2 (Player 1) ---
+                        try
                         {
-                            this.LogWarn("[OnCalculate NEW LOG] _marketStateEngine ist null; UpdateState wird nicht aufgerufen.");
-                        }
-                        else
-                        {
-                            try
+                            if (_marketStateEngineV2 != null && ovSnapshot != null && _currentVwapSnapshot != null)
                             {
-                                this.LogDebug($"[OnCalculate NEW LOG] Calling MarketStateEngine.UpdateState for bar={(feat == null ? -1 : feat.Bar)}");
-                                // UpdateState verwendet weiterhin detectedPattern (DetectedOrderflowPattern)
-                                newMarketState = _marketStateEngine.UpdateState(feat, localCurrentRegime, detectedPattern);
+                                var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
+                                    bar: feat?.Bar ?? ovSnapshot.Bar,
+                                    high: ovSnapshot.High,
+                                    close: ovSnapshot.Close,
+                                    vwap: _currentVwapSnapshot.Current,
+                                    upperBand1: _currentVwapSnapshot.UpperBand1,
+                                    lowerBand1: _currentVwapSnapshot.LowerBand1,
+                                    upperBand2: _currentVwapSnapshot.UpperBand2,
+                                    lowerBand2: _currentVwapSnapshot.LowerBand2,
+                                    upperBand3: _currentVwapSnapshot.UpperBand3,
+                                    lowerBand3: _currentVwapSnapshot.LowerBand3,
+                                    currentVah: currentVAH,
+                                    currentVal: currentVAL,
+                                    candlePocPrice: ovSnapshot.CandlePocPrice,
+                                    regime: localCurrentRegime);
 
-                                if (newMarketState == null)
+                                _currentMarketStateV2 = _marketStateEngineV2.Update(v2Input);
+
+                                decimal sd1 = _currentVwapSnapshot.UpperBand1 > 0m
+                                    ? (_currentVwapSnapshot.UpperBand1 - _currentVwapSnapshot.Current)
+                                    : 0m;
+                                bool inVa = currentVAH > 0m && currentVAL > 0m && ovSnapshot.Close >= currentVAL && ovSnapshot.Close <= currentVAH;
+
+                                string PhaseDe(MyNamespace.Strategies.Models.MarketPhaseV2? p)
                                 {
-                                    this.LogDebug("[OnCalculate NEW LOG] MarketStateEngine.UpdateState returned null.");
+                                    if (!p.HasValue) return "n/a";
+                                    switch (p.Value)
+                                    {
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Trend_Impulse: return "Starker Trend-Schub";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Healthy_Pullback: return "Gesunder Rücksetzer";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Range_Balanced: return "Seitwärts-Gleichgewicht";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Exhaustion: return "Markt-Erschöpfung";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Volatile_Breakout: return "Dynamischer Ausbruch";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Maturing_Trend: return "Ermüdender Trend";
+                                        default: return p.Value.ToString();
+                                    }
                                 }
-                                else
+
+                                string BiasDe(MyNamespace.Strategies.Models.MarketBiasV2? b)
                                 {
-                                    this.LogDebug($"[OnCalculate NEW LOG] MarketStateEngine updated state: NewState={(newMarketState.ToString() ?? "object")}");
+                                    if (!b.HasValue) return "n/a";
+                                    switch (b.Value)
+                                    {
+                                        case MyNamespace.Strategies.Models.MarketBiasV2.Long: return "Long";
+                                        case MyNamespace.Strategies.Models.MarketBiasV2.Short: return "Short";
+                                        case MyNamespace.Strategies.Models.MarketBiasV2.Neutral: return "Neutral";
+                                        default: return b.Value.ToString();
+                                    }
                                 }
-                            }
-                            catch (Exception exState)
-                            {
-                                this.LogWarn($"[OnCalculate NEW LOG] MarketStateEngine threw in UpdateState for bar {(feat == null ? -1 : feat.Bar)}: {exState.GetType().Name}: {exState.Message}\n{exState.StackTrace}");
+
+                                string VwapTrendstaerkeDe(decimal? zSlope)
+                                {
+                                    if (!zSlope.HasValue) return "n/a";
+                                    var a = Math.Abs(zSlope.Value);
+                                    if (a < 0.8m) return "niedrig";
+                                    if (a < 1.5m) return "mittel";
+                                    return "hoch";
+                                }
+
+                                string PocTreppenstrukturDe(int? staircase)
+                                {
+                                    if (!staircase.HasValue) return "n/a";
+                                    if (staircase.Value >= 3) return "eher aufwärts-stufig";
+                                    if (staircase.Value <= -3) return "eher abwärts-stufig";
+                                    return "eher unstrukturiert / Range";
+                                }
+
+                                string VolatilitaetDe(decimal? volMult, decimal sd1)
+                                {
+                                    if (!volMult.HasValue)
+                                        return sd1 > 0m ? "mittel" : "n/a";
+
+                                    if (volMult.Value < 0.9m) return "niedrig";
+                                    if (volMult.Value > 1.1m) return "hoch";
+                                    return "mittel";
+                                }
+
+                                string VolaKurzDe(string vola)
+                                {
+                                    if (string.IsNullOrWhiteSpace(vola))
+                                        return "n/a";
+                                    if (string.Equals(vola, "hoch", StringComparison.OrdinalIgnoreCase))
+                                        return "Hoch";
+                                    if (string.Equals(vola, "niedrig", StringComparison.OrdinalIgnoreCase))
+                                        return "Niedrig";
+                                    if (string.Equals(vola, "mittel", StringComparison.OrdinalIgnoreCase))
+                                        return "Normal";
+                                    return vola;
+                                }
+
+                                var volaKurz = VolaKurzDe(VolatilitaetDe(_currentMarketStateV2?.VolatilityMultiplier, sd1));
+                                _marketStateV2OverlayText = $"{PhaseDe(_currentMarketStateV2?.Phase)} | Bias={BiasDe(_currentMarketStateV2?.Bias)} | Vola={volaKurz}";
+
+                                var v2Sig = SmartLogger.ComposeSignature(
+                                    ("bar", (feat?.Bar ?? ovSnapshot.Bar).ToString()),
+                                    ("phase", (_currentMarketStateV2?.Phase.ToString() ?? "n/a")),
+                                    ("bias", (_currentMarketStateV2?.Bias.ToString() ?? "n/a")));
+                                SmartLogger.Instance.LogIfChanged(
+                                    category: "MarketStateV2",
+                                    sourceId: "MarketStateEngineV2",
+                                    barIndex: feat?.Bar ?? ovSnapshot.Bar,
+                                    message: $"Bar {feat?.Bar ?? ovSnapshot.Bar}: Phase={PhaseDe(_currentMarketStateV2?.Phase)} [{_currentMarketStateV2?.Phase}] | Bias={BiasDe(_currentMarketStateV2?.Bias)} | " +
+                                             $"Volatilität={VolatilitaetDe(_currentMarketStateV2?.VolatilityMultiplier, sd1)} (Multiplikator={_currentMarketStateV2?.VolatilityMultiplier:F2}, 1σ={sd1:F2}) | " +
+                                             $"VWAP-Trendstärke={VwapTrendstaerkeDe(_currentMarketStateV2?.ZSlope)} | " +
+                                             $"POC-Treppenstruktur={PocTreppenstrukturDe(_currentMarketStateV2?.StaircaseIndex)} (Index={_currentMarketStateV2?.StaircaseIndex}) | " +
+                                             $"VA={(inVa ? "✅ drin" : "❌ draußen")} (VAL={currentVAL:F2}, VAH={currentVAH:F2}) | " +
+                                             $"Kerzen-POC={ovSnapshot.CandlePocPrice:F2} | Tradeable={(_currentMarketStateV2?.IsTradeable == true ? "Ja" : "Nein")}",
+                                    signature: v2Sig,
+                                    backendLogAction: s => this.LogInfo($"[MarketStateV2] {s}")
+                                );
                             }
                         }
-
-                        // Wenn ein neuer State zur?ckkam, in lokale Variable ?bernehmen
-                        if (newMarketState != null)
+                        catch (Exception exV2)
                         {
-                            _currentMarketState = newMarketState;
-                            this.LogDebug($"[OnCalculate NEW LOG] _currentMarketState set (bar={(feat == null ? -1 : feat.Bar)})");
-                        }
-                        else
-                        {
-                            this.LogDebug($"[OnCalculate NEW LOG] _currentMarketState unchanged (bar={(feat == null ? -1 : feat.Bar)})");
+                            this.LogWarn($"[OnCalculate MarketStateV2] failed: {exV2.GetType().Name}: {exV2.Message}");
                         }
                     }
                     catch (Exception exOuter)
@@ -7476,27 +11446,7 @@ namespace MyNamespace.Strategies
                     }
                     catch (Exception ex) { this.LogError($"[OnCalculate] dbg log failed: {ex}"); }
 
-                    // --- SERIALIZE THRESHOLDS SNAPSHOT (FULL) using System.Text.Json ---
                     string thresholdsSnapshotJson = string.Empty;
-                    try
-                    {
-                        var thresholdsResultLocal = _thresholdsResolver?.LastAdaptiveThresholdsResult;
-                        if (thresholdsResultLocal != null)
-                        {
-                            var jsonOpts = new System.Text.Json.JsonSerializerOptions
-                            {
-                                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-                                WriteIndented = false
-                            };
-
-                            thresholdsSnapshotJson = System.Text.Json.JsonSerializer.Serialize(thresholdsResultLocal, jsonOpts);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        this.LogWarn($"[OnCalculate-CSV] Failed to serialize LastAdaptiveThresholdsResult with System.Text.Json: {ex.Message}");
-                        thresholdsSnapshotJson = string.Empty;
-                    }
                     // Robustified CSV extraction + enqueue (use instead of previous block)
                     try
                     {
@@ -7566,7 +11516,7 @@ namespace MyNamespace.Strategies
                                 try { patternDirection = detectedPattern?.Direction.ToString() ?? string.Empty; } catch { patternDirection = "UNKNOWN"; }
                                 try { patternCategory = detectedPattern?.Category.ToString() ?? string.Empty; } catch { patternCategory = "UNKNOWN"; }
 
-                               
+
                                 // Level kommt aus DetectedOrderflowPattern (nicht in PatternEvaluationResult) -> nimm detectedPattern.Level
                                 try { if (detectedPattern?.Level.HasValue == true) patternLevel = (double)detectedPattern.Level.Value; } catch { patternLevel = double.NaN; }
 
@@ -7634,109 +11584,88 @@ namespace MyNamespace.Strategies
                             try { inflectionPressure = f.InflectionPressure.ToString(); } catch { inflectionPressure = ""; }
                         }
 
-                        // --- GET PRUNER NULLIFIED FIELDS FROM ThresholdsResolver LAST RESULT ---
-                        // This reads the LastAdaptiveThresholdsResult property (must be implemented thread-safe on the resolver).
                         string prunerNullifiedFieldsLocal = string.Empty;
-                        try
-                        {
-                            prunerNullifiedFieldsLocal = _thresholdsResolver?.LastAdaptiveThresholdsResult?.NullifiedJoined ?? string.Empty;
-                        }
-                        catch (Exception exPrunerRead)
-                        {
-                            this.LogWarn($"[OnCalculate-CSV] Failed to read pruner info from thresholdsResolver: {exPrunerRead.Message}");
-                            prunerNullifiedFieldsLocal = string.Empty;
-                        }
 
                         // Compose and enqueue CSV line (if writer available)
                         string csvLine = null;
-                        
+
                         // Zus?tzliche Null-Pr?fungen vor der CSV-Verarbeitung
                         if (ovSnapshot == null)
                         {
-                            this.LogError("[OnCalculate-CSV_ERROR] ovSnapshot is null - skipping CSV processing");
+                            //this.LogError("[OnCalculate-CSV_ERROR] ovSnapshot is null - skipping CSV processing");
                         }
                         else if (_csvWriter == null)
                         {
-                            this.LogError("[OnCalculate-CSV_ERROR] _csvWriter is null - skipping CSV processing");
+                            //this.LogError("[OnCalculate-CSV_ERROR] _csvWriter is null - skipping CSV processing");
                         }
                         else
                         {
                             try
                             {
-                            // extract historyVersion + createdAt from thresholds result (defensive)
-                            int hv = -1;
-                            DateTime? createdAt = null;
-                            try
+                                // extract historyVersion + createdAt from thresholds result (defensive)
+                                int hv = -1;
+                                DateTime? createdAt = null;
+
+                                csvLine = ToCsvLine(
+                                    ovSnapshot,
+                                    InstrumentInfo?.Instrument ?? "UNKNOWN",
+                                    thresholdsSnapshotJson: thresholdsSnapshotJson,
+                                    historyVersion: hv,
+                                    thresholdsCreatedAtUtc: createdAt,
+                                    prunerNullifiedFields: prunerNullifiedFieldsLocal,
+                                    finalDecision: finalDecision,
+                                    metCriteriaList: metCriteriaListLocal,
+                                    metHardList: metHardListLocal,
+                                    metRelList: metRelListLocal,
+                                    compositeScore: compositeScore,
+                                    cvdMean30: cvdMean30,
+                                    cvdStd30: cvdStd30,
+                                    volBurstMax3: volBurstMax3,
+                                    volBurstAge: volBurstAge,
+                                    inflectionCount3: inflectionCount3,
+                                    softVolBurstFlag: softVolBurstFlag,
+                                    softNegativeFlag: softNegativeFlag,
+                                    // pattern/feature fields
+                                    patternType: patternType,
+                                    patternDirection: patternDirection,
+                                    patternCategory: patternCategory,
+                                    patternLevel: patternLevel,
+                                    patternConfidence: patternConfidence,
+                                    patternScore: patternScore,
+                                    patternCombinedConf: patternCombinedConf,
+                                    volBurstClass: volBurstClass,
+                                    volBurstCooldownLeft: volBurstCooldownLeft,
+                                    slopeCvd: slopeCvd,
+                                    slopePressure: slopePressure,
+                                    slopeEff: slopeEff,
+                                    slopeTradeRate: slopeTradeRate,
+                                    persistBull: persistBull,
+                                    persistBear: persistBear,
+                                    inflectionCvd: inflectionCvd,
+                                    inflectionPressure: inflectionPressure,
+                                    backtestRunId: backtestRunId,
+                                    commitHash: commitHash,
+                                    featureFlags: featureFlags
+                                );
+                            }
+                            catch (Exception exFmt)
                             {
-                                var thresholdsResultLocal = _thresholdsResolver?.LastAdaptiveThresholdsResult;
-                                if (thresholdsResultLocal != null)
+                                //this.LogError($"[OnCalculate-CSV_ERROR] ToCsvLine formatting failed for Bar={ovSnapshot.Bar}. Exception: {exFmt}");
+                                csvLine = null;
+                            }
+
+                            if (!string.IsNullOrEmpty(csvLine) && _csvWriter != null)
+                            {
+                                try
                                 {
-                                    try { hv = thresholdsResultLocal.HistoryVersion ?? -1; } catch { hv = -1; }
-                                    try { createdAt = thresholdsResultLocal.CreatedAtUtc; } catch { createdAt = null; }
+                                    _csvWriter.EnqueueLine(csvLine);
+                                    this.LogDebug($"[OnCalculate-CSV] Enqueued CSV line for Bar={ovSnapshot.Bar}.");
+                                }
+                                catch (Exception exEnq)
+                                {
+                                    //this.LogError($"[OnCalculate-CSV_ERROR] EnqueueLine failed for Bar={ovSnapshot.Bar}. Exception: {exEnq}");
                                 }
                             }
-                            catch { hv = -1; createdAt = null; }
-
-                            csvLine = ToCsvLine(
-                                ovSnapshot,
-                                InstrumentInfo?.Instrument ?? "UNKNOWN",
-                                thresholdsSnapshotJson: thresholdsSnapshotJson,
-                                historyVersion: hv,
-                                thresholdsCreatedAtUtc: createdAt,
-                                prunerNullifiedFields: prunerNullifiedFieldsLocal,
-                                finalDecision: finalDecision,
-                                metCriteriaList: metCriteriaListLocal,
-                                metHardList: metHardListLocal,
-                                metRelList: metRelListLocal,
-                                compositeScore: compositeScore,
-                                cvdMean30: cvdMean30,
-                                cvdStd30: cvdStd30,
-                                volBurstMax3: volBurstMax3,
-                                volBurstAge: volBurstAge,
-                                inflectionCount3: inflectionCount3,
-                                softVolBurstFlag: softVolBurstFlag,
-                                softNegativeFlag: softNegativeFlag,
-                                // pattern/feature fields
-                                patternType: patternType,
-                                patternDirection: patternDirection,
-                                patternCategory: patternCategory,
-                                patternLevel: patternLevel,
-                                patternConfidence: patternConfidence,
-                                patternScore: patternScore,
-                                patternCombinedConf: patternCombinedConf,
-                                volBurstClass: volBurstClass,
-                                volBurstCooldownLeft: volBurstCooldownLeft,
-                                slopeCvd: slopeCvd,
-                                slopePressure: slopePressure,
-                                slopeEff: slopeEff,
-                                slopeTradeRate: slopeTradeRate,
-                                persistBull: persistBull,
-                                persistBear: persistBear,
-                                inflectionCvd: inflectionCvd,
-                                inflectionPressure: inflectionPressure,
-                                backtestRunId: backtestRunId,
-                                commitHash: commitHash,
-                                featureFlags: featureFlags
-                            );
-                        }
-                        catch (Exception exFmt)
-                        {
-                            this.LogError($"[OnCalculate-CSV_ERROR] ToCsvLine formatting failed for Bar={ovSnapshot.Bar}. Exception: {exFmt}");
-                            csvLine = null;
-                        }
-
-                        if (!string.IsNullOrEmpty(csvLine) && _csvWriter != null)
-                        {
-                            try
-                            {
-                                _csvWriter.EnqueueLine(csvLine);
-                                this.LogDebug($"[OnCalculate-CSV] Enqueued CSV line for Bar={ovSnapshot.Bar}.");
-                            }
-                            catch (Exception exEnq)
-                            {
-                                this.LogError($"[OnCalculate-CSV_ERROR] EnqueueLine failed for Bar={ovSnapshot.Bar}. Exception: {exEnq}");
-                            }
-                        }
                         } // Ende des else-Blocks f?r CSV-Verarbeitung
                     }
                     catch (NullReferenceException nre)
@@ -7754,15 +11683,16 @@ namespace MyNamespace.Strategies
                     // ========== PHASE 6: SIGNAL EVALUATION ==========
 
 
-                    this.LogInfo($"[OnCalculate] Calling EvaluateSignalsAndOrders for closed={closed}, lastEvalBar(before)={_lastEvalBar}");
+                    //this.LogInfo($"[OnCalculate] Calling EvaluateSignalsAndOrders for closed={closed}, lastEvalBar(before)={_lastEvalBar}");
                     //this.LogInfo($"[DEBUG] Vor EvaluateSignalsAndOrders: Bar={bar}, POC={currentPOC}, VAH={currentVAH}, VAL={currentVAL}");
                     //this.LogInfo($"[DBG] Enter isNewBar: bar={bar}, closed={closed}, now={DateTime.UtcNow:O}, CurrentBar={CurrentBar}, _lastEvalBar={_lastEvalBar}");
                     EvaluateSignalsAndOrders(
                         closed, ovSnapshot, _ofFeaturesHistory, isBlockedLong, isBlockedShort,
-                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, vwSignal, vwEntryDir, vwEntryPrice, currentMarketRegime, detectedPattern, _currentMarketState);
+                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, vwSignal, vwEntryDir, vwEntryPrice, currentMarketRegime, detectedPattern, _currentMarketStateV2,
+                        _currentVwapSnapshot?.Current ?? 0m);
                     _lastEvalBar = closed;
 
-                    this.LogInfo($"[OnCalculate] EvaluateSignalsAndOrders completed for closed={closed}; setting _lastEvalBar={closed}");
+                    //this.LogInfo($"[OnCalculate] EvaluateSignalsAndOrders completed for closed={closed}; setting _lastEvalBar={closed}");
                 }
 
 
@@ -7898,28 +11828,6 @@ namespace MyNamespace.Strategies
                     // mc verwenden
                     // z.B. var poc = mc.POC; oder andere Auswertungen
                 }
-
-
-
-
-                if (bar != _lastProcessedBarIndex)
-                {
-                    if (_researchEnabled && _research != null && bar >= 0)
-                    {
-                        var current = GetCandle(bar);
-                        _research.UpdateBar(new ResearchBarInput
-                        {
-                            BarIndex = bar,
-                            Time = current.Time,
-                            High = current.High,
-                            Low = current.Low,
-                            Close = current.Close
-                        });
-                    }
-                }
-
-
-
                 var po = _pullbackOrder;       // lokale Momentaufnahme
                 if (po == null || _positionOpen) return;
 
@@ -8042,11 +11950,16 @@ namespace MyNamespace.Strategies
                     }
                 }
             }
+            }
+            catch (Exception ex)
+            {
+                this.LogError($"[OnCalculate-FATAL] bar={bar} CurrentBar={CurrentBar} ex={ex}");
+            }
         }
 
-        
 
-        
+
+
         private void LogVpsSnapshot(int bar)
         {
             if (_myClusterStatistic == null) return;
@@ -8136,7 +12049,7 @@ namespace MyNamespace.Strategies
 
             foreach (var tl in trackedLevels)
             {
-                
+
                 if (tl == null || tl.Value <= 0m)
                 {
                     //this.LogInfo($"DEBUG BuildLevelsSnapshot: Skipping Level due to null or zero value: Label='{tl?.Label}', Value={tl?.Value}");
@@ -8268,10 +12181,10 @@ namespace MyNamespace.Strategies
         }
 
 
-        
 
 
-                        
+
+
         // Lokale Replikation der Regime-Defaults (?ffentlich aufrufbar)
         private static void AdjustRegimeThresholdsLocal(OrderflowThresholds t, MarketRegime regime)
         {
@@ -8481,12 +12394,12 @@ namespace MyNamespace.Strategies
             }
 
             var significantLevels = new List<(decimal Level, string Source)>();
-            
+
             // Sammle alle relevanten Levels
             if (currentPOC > 0) significantLevels.Add((currentPOC, "CurrentPOC"));
             if (currentVAH > 0) significantLevels.Add((currentVAH, "CurrentVAH"));
             if (currentVAL > 0) significantLevels.Add((currentVAL, "CurrentVAL"));
-            
+
             // F?ge bekannte Level aus levelsSnapshot hinzu
             if (levelsSnapshot.CurrentPOC > 0) significantLevels.Add((levelsSnapshot.CurrentPOC, "Levels.CurrentPOC"));
             if (levelsSnapshot.CurrentVAH > 0) significantLevels.Add((levelsSnapshot.CurrentVAH, "Levels.CurrentVAH"));
@@ -8497,7 +12410,7 @@ namespace MyNamespace.Strategies
             if (levelsSnapshot.PreviousDayHigh > 0) significantLevels.Add((levelsSnapshot.PreviousDayHigh, "Levels.PrevHigh"));
             if (levelsSnapshot.PreviousDayLow > 0) significantLevels.Add((levelsSnapshot.PreviousDayLow, "Levels.PrevLow"));
             if (levelsSnapshot.PreviousDayClose > 0) significantLevels.Add((levelsSnapshot.PreviousDayClose, "Levels.PrevClose"));
-            
+
             // Pivot-Levels
             if (levelsSnapshot.PP > 0) significantLevels.Add((levelsSnapshot.PP, "Pivot.PP"));
             if (levelsSnapshot.R1 > 0) significantLevels.Add((levelsSnapshot.R1, "Pivot.R1"));
@@ -8506,25 +12419,25 @@ namespace MyNamespace.Strategies
             if (levelsSnapshot.S1 > 0) significantLevels.Add((levelsSnapshot.S1, "Pivot.S1"));
             if (levelsSnapshot.S2 > 0) significantLevels.Add((levelsSnapshot.S2, "Pivot.S2"));
             if (levelsSnapshot.S3 > 0) significantLevels.Add((levelsSnapshot.S3, "Pivot.S3"));
-            
+
             // M-Levels
             if (levelsSnapshot.M1 > 0) significantLevels.Add((levelsSnapshot.M1, "M.M1"));
             if (levelsSnapshot.M2 > 0) significantLevels.Add((levelsSnapshot.M2, "M.M2"));
             if (levelsSnapshot.M3 > 0) significantLevels.Add((levelsSnapshot.M3, "M.M3"));
             if (levelsSnapshot.M4 > 0) significantLevels.Add((levelsSnapshot.M4, "M.M4"));
-            
+
             // Runde Marken
             if (levelsSnapshot.RoundLevelBelow.HasValue && levelsSnapshot.RoundLevelBelow.Value > 0)
                 significantLevels.Add((levelsSnapshot.RoundLevelBelow.Value, "Round.Below"));
             if (levelsSnapshot.RoundLevelAbove.HasValue && levelsSnapshot.RoundLevelAbove.Value > 0)
                 significantLevels.Add((levelsSnapshot.RoundLevelAbove.Value, "Round.Above"));
-            
+
             // Session Highs/Lows
             foreach (var sessionHigh in levelsSnapshot.SessionHighs.Where(sh => sh.Value > 0))
                 significantLevels.Add((sessionHigh.Value, $"SessionHigh.{sessionHigh.Date:yyyyMMdd}"));
             foreach (var sessionLow in levelsSnapshot.SessionLows.Where(sl => sl.Value > 0))
                 significantLevels.Add((sessionLow.Value, $"SessionLow.{sessionLow.Date:yyyyMMdd}"));
-            
+
             // Extra-Levels (beliebige zus?tzliche Levels)
             foreach (var extraLevel in levelsSnapshot.Extra.Where(kv => kv.Value > 0))
                 significantLevels.Add((extraLevel.Value, $"Extra.{extraLevel.Key}"));
@@ -8537,9 +12450,9 @@ namespace MyNamespace.Strategies
                     significantLevels.Add((level.Value, $"Tracked.{level.Label}"));
                 }
             }
-            
+
             // NEU: MicroComposite Levels (falls verfügbar)
-            var mcForLevels = _currentMC ?? GetRollingMicroComposite();
+            var mcForLevels = EnableMicroCompositeSystem ? (_currentMC ?? GetRollingMicroComposite()) : null;
             if (mcForLevels != null)
             {
                 // Dynamischer POC, VAH, VAL aus MicroComposite
@@ -8549,20 +12462,33 @@ namespace MyNamespace.Strategies
                     significantLevels.Add((mcForLevels.VAH, "MC.VAH"));
                 if (mcForLevels.VAL > 0)
                     significantLevels.Add((mcForLevels.VAL, "MC.VAL"));
-                
-                // HVN/LVN Zonen (nur HVN-Zonen) -> Kanten nutzen (entspricht gerenderten Rechtecken)
-                foreach (var hvnZone in mcForLevels.HVNZones)
+
+                // HVN Zonen -> Kanten nutzen (entspricht gerenderten Rechtecken)
+                if (UseMicroCompositeHVNsForWegFreiAndDynamicTP)
                 {
-                    if (hvnZone.Start > 0) significantLevels.Add((hvnZone.Start, "MC.HVNZone.Start"));
-                    if (hvnZone.End > 0) significantLevels.Add((hvnZone.End, "MC.HVNZone.End"));
+                    foreach (var hvnZone in mcForLevels.HVNZones)
+                    {
+                        if (hvnZone.Start > 0) significantLevels.Add((hvnZone.Start, "MC.HVNZone.Start"));
+                        if (hvnZone.End > 0) significantLevels.Add((hvnZone.End, "MC.HVNZone.End"));
+                    }
                 }
-                
+
                 // LVN (Low Volume Nodes) werden entfernt - nur HVN f?r TP-Berechnung verwenden
-                
+
                 // LVN-Zonen werden entfernt
-                
+
                 this.LogDebug($"[LEVEL] MicroComposite hinzugef?gt: POC={_currentMC.POC:F2}, VAH={_currentMC.VAH:F2}, VAL={_currentMC.VAL:F2}, " +
                              $"HVNs={_currentMC.HVNs.Count}, LVNs={_currentMC.LVNs.Count}");
+            }
+
+            // Daily HVN Zonen als TP-Kandidaten (nur Kanten) - unabhängig vom MicroComposite.
+            if (_dailyProfileForPath != null && _dailyProfileForPath.HVNZones != null)
+            {
+                foreach (var z in _dailyProfileForPath.HVNZones)
+                {
+                    if (z.Start > 0) significantLevels.Add((z.Start, "D.HVNZone.Start"));
+                    if (z.End > 0) significantLevels.Add((z.End, "D.HVNZone.End"));
+                }
             }
 
             // Filtere und sortiere Levels basierend auf Richtung
@@ -8582,7 +12508,7 @@ namespace MyNamespace.Strategies
             }
 
             var nextLevel = relevantLevels.First();
-            var tpPrice = direction == OrderDirections.Buy 
+            var tpPrice = direction == OrderDirections.Buy
                 ? nextLevel.Level - _tickSize  // Ein Tick unter dem Level f?r Long
                 : nextLevel.Level + _tickSize;  // Ein Tick ?ber dem Level f?r Short
 
@@ -8598,7 +12524,7 @@ namespace MyNamespace.Strategies
                 else if (mcForLevels.HVNZones.Any(z => nextLevel.Level >= z.Start && nextLevel.Level <= z.End)) levelType = "MC-HVN-Zone";
                 else if (mcForLevels.LVNZones.Any(z => nextLevel.Level >= z.Start && nextLevel.Level <= z.End)) levelType = "MC-LVN-Zone";
             }
-            
+
             if (levelType == "Unbekannt")
             {
                 // Pr?fe statische Levels
@@ -8616,7 +12542,7 @@ namespace MyNamespace.Strategies
             return tpPrice;
         }
 
-        private void EvaluateSignalsAndOrders(int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, bool vwSignal, int vwEntryDir, decimal vwEntryPrice, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MarketState currentMarketState)
+        private void EvaluateSignalsAndOrders(int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, bool vwSignal, int vwEntryDir, decimal vwEntryPrice, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MyNamespace.Strategies.Models.MarketStateV2 currentMarketState, decimal currentVwap)
         {
             //this.LogInfo($"[DBG-EVAL] Start EvaluateSignalsAndOrders(closed={closed}) at {DateTime.UtcNow:O}");
 
@@ -8629,19 +12555,142 @@ namespace MyNamespace.Strategies
             if (seconds <= 0) seconds = 1;
             //this.LogInfo($"[Eval] bar={bar}, time={c.Time:O}");
             bool inSession = IsWithinAnyTradingSession(closed);
-            var input = null as ResearchBarInput;
             var tickSize = InstrumentInfo?.TickSize ?? _tickSize;
             int riskTicks = GetRiskTicks();
             bool wegFreiLong = true;
             bool wegFreiShort = true;
             string wegFreiLongBlocker = string.Empty;
             string wegFreiShortBlocker = string.Empty;
-            
+
+            bool wegFreiLongMC = true;
+            bool wegFreiShortMC = true;
+            string wegFreiLongBlockerMC = string.Empty;
+            string wegFreiShortBlockerMC = string.Empty;
+
+            bool wegFreiLongD = true;
+            bool wegFreiShortD = true;
+            string wegFreiLongBlockerD = string.Empty;
+            string wegFreiShortBlockerD = string.Empty;
+
+            if ((c.Time - _lastDailyWegFreiDebugHeartbeatTime).TotalSeconds >= 5)
+            {
+                _lastDailyWegFreiDebugHeartbeatTime = c.Time;
+                //this.LogInfo($"[DailyWegFreiDebug] PreCheck closed={closed} EnableDailyProfilePathSystem={EnableDailyProfilePathSystem} dailyProfileForPathNull={(_dailyProfileForPath == null)} dailyProfileForVisualNull={(_dailyProfileForVisual == null)} DailyHVNStrength={DailyHVNStrength} DailyDMinTicks={DailyDMinTicks} close={c.Close:F2}");
+            }
+
             if (EnableMicroCompositeSystem)
             {
                 var mcForPath = _currentMC ?? GetRollingMicroComposite();
-                wegFreiLong = IsPathFreeLongEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiLongBlocker);
-                wegFreiShort = IsPathFreeShortEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiShortBlocker);
+                wegFreiLongMC = IsPathFreeLongEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiLongBlockerMC);
+                wegFreiShortMC = IsPathFreeShortEnhanced(c.Close, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out wegFreiShortBlockerMC);
+            }
+
+            if (EnableDailyProfilePathSystem && _dailyProfileForPath != null)
+            {
+                var dailyCfg = GetDailyPathConfig();
+
+                if (DailyHVNStrength <= 0 && !dailyCfg.ForceAllHVNsStrong)
+                    //this.LogInfo($"[DailyWegFreiDebug] DailyHVNStrength={DailyHVNStrength} but dailyCfg.ForceAllHVNsStrong={dailyCfg.ForceAllHVNsStrong} ForceAllHVNsWeak={dailyCfg.ForceAllHVNsWeak}");
+
+                wegFreiLongD = IsPathFreeLongEnhanced(c.Close, DailyDMinTicks, riskTicks, _dailyProfileForPath, _prevDailyProfileForPath, tickSize, dailyCfg, out wegFreiLongBlockerD);
+                wegFreiShortD = IsPathFreeShortEnhanced(c.Close, DailyDMinTicks, riskTicks, _dailyProfileForPath, _prevDailyProfileForPath, tickSize, dailyCfg, out wegFreiShortBlockerD);
+
+                if (DailyHVNStrength <= 0 && wegFreiLongD)
+                {
+                    int hvnPts = _dailyProfileForPath.HVNs?.Count ?? 0;
+                    int hvnZones = _dailyProfileForPath.HVNZones?.Count ?? 0;
+                    int? nearestTicks = null;
+                    decimal? nearestPrice = null;
+                    string nearestKind = string.Empty;
+
+                    if (_dailyProfileForPath.HVNZones != null)
+                    {
+                        foreach (var z in _dailyProfileForPath.HVNZones)
+                        {
+                            decimal start = z.Start;
+                            decimal end = z.End;
+                            int dS = TicksBetweenAbs(start, c.Close);
+                            int dE = TicksBetweenAbs(end, c.Close);
+                            int d = Math.Min(dS, dE);
+                            if (!nearestTicks.HasValue || d < nearestTicks.Value)
+                            {
+                                nearestTicks = d;
+                                nearestPrice = (dS <= dE) ? start : end;
+                                nearestKind = "HVNZoneEdge";
+                            }
+                        }
+                    }
+
+                    if (_dailyProfileForPath.HVNs != null)
+                    {
+                        foreach (var hvn in _dailyProfileForPath.HVNs)
+                        {
+                            int d = TicksBetweenAbs(hvn, c.Close);
+                            if (!nearestTicks.HasValue || d < nearestTicks.Value)
+                            {
+                                nearestTicks = d;
+                                nearestPrice = hvn;
+                                nearestKind = "HVN";
+                            }
+                        }
+                    }
+
+                    if (nearestTicks.HasValue && nearestTicks.Value <= DailyDMinTicks)
+                    {
+                        //this.LogInfo($"[DailyWegFreiDebug] Allowed LONG despite DailyHVNStrength={DailyHVNStrength} ForceStrong={dailyCfg.ForceAllHVNsStrong} hvnPts={hvnPts} hvnZones={hvnZones} nearest={nearestKind}@{nearestPrice:F2} distTicks={nearestTicks} DailyDMinTicks={DailyDMinTicks} close={c.Close:F2}");
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(wegFreiLongBlockerD))
+                    wegFreiLongBlockerD = wegFreiLongBlockerD.StartsWith("MC.", StringComparison.OrdinalIgnoreCase)
+                        ? "D." + wegFreiLongBlockerD.Substring(3)
+                        : (wegFreiLongBlockerD.StartsWith("LVN_PATH", StringComparison.OrdinalIgnoreCase) ? "D." + wegFreiLongBlockerD : "D." + wegFreiLongBlockerD);
+
+                if (!string.IsNullOrWhiteSpace(wegFreiShortBlockerD))
+                    wegFreiShortBlockerD = wegFreiShortBlockerD.StartsWith("MC.", StringComparison.OrdinalIgnoreCase)
+                        ? "D." + wegFreiShortBlockerD.Substring(3)
+                        : (wegFreiShortBlockerD.StartsWith("LVN_PATH", StringComparison.OrdinalIgnoreCase) ? "D." + wegFreiShortBlockerD : "D." + wegFreiShortBlockerD);
+            }
+
+            wegFreiLong = (!EnableMicroCompositeSystem || wegFreiLongMC) && (!EnableDailyProfilePathSystem || wegFreiLongD);
+            wegFreiShort = (!EnableMicroCompositeSystem || wegFreiShortMC) && (!EnableDailyProfilePathSystem || wegFreiShortD);
+
+            if (!wegFreiLong)
+            {
+                if (EnableMicroCompositeSystem && !wegFreiLongMC && !string.IsNullOrWhiteSpace(wegFreiLongBlockerMC))
+                    wegFreiLongBlocker = wegFreiLongBlockerMC;
+                if (EnableDailyProfilePathSystem && !wegFreiLongD && !string.IsNullOrWhiteSpace(wegFreiLongBlockerD))
+                    wegFreiLongBlocker = string.IsNullOrWhiteSpace(wegFreiLongBlocker) ? wegFreiLongBlockerD : (wegFreiLongBlocker + " | " + wegFreiLongBlockerD);
+            }
+
+            if (!wegFreiShort)
+            {
+                if (EnableMicroCompositeSystem && !wegFreiShortMC && !string.IsNullOrWhiteSpace(wegFreiShortBlockerMC))
+                    wegFreiShortBlocker = wegFreiShortBlockerMC;
+                if (EnableDailyProfilePathSystem && !wegFreiShortD && !string.IsNullOrWhiteSpace(wegFreiShortBlockerD))
+                    wegFreiShortBlocker = string.IsNullOrWhiteSpace(wegFreiShortBlocker) ? wegFreiShortBlockerD : (wegFreiShortBlocker + " | " + wegFreiShortBlockerD);
+            }
+
+            // VWAP-Nähe Blocker - richtungsabhängig
+            if (EnableVwapProximityBlocker)
+            {
+                decimal proximityDistance = VwapProximityTicks * tickSize;
+
+                // Long Entry: Blockieren wenn Preis von OBEN nach UNTEN zum VWAP tendiert
+                if (c.Close < currentVwap && currentVwap - c.Close <= proximityDistance)
+                {
+                    wegFreiLong = false;
+                    wegFreiLongBlocker = $"VWAP-Nähe Long: Preis {c.Close:F4} nähert sich VWAP {currentVwap:F4} von oben (Abstand: {(currentVwap - c.Close) / tickSize:F1} < {VwapProximityTicks} Ticks)";
+                    this.LogInfo($"[VWAP Blocker] LONG blockiert: Preis nähert sich VWAP von oben");
+                }
+
+                // Short Entry: Blockieren wenn Preis von UNTEN nach OBEN zum VWAP tendiert
+                if (c.Close > currentVwap && c.Close - currentVwap <= proximityDistance)
+                {
+                    wegFreiShort = false;
+                    wegFreiShortBlocker = $"VWAP-Nähe Short: Preis {c.Close:F4} nähert sich VWAP {currentVwap:F4} von unten (Abstand: {(c.Close - currentVwap) / tickSize:F1} < {VwapProximityTicks} Ticks)";
+                    this.LogInfo($"[VWAP Blocker] SHORT blockiert: Preis nähert sich VWAP von unten");
+                }
             }
 
 
@@ -8825,162 +12874,49 @@ namespace MyNamespace.Strategies
             // ? WENN WIR HIER SIND, SIND ALLE GUARDS OK
             //this.LogInfo($"[DEBUG] ALL GUARDS PASSED - PROCEEDING WITH SIGNAL EVALUATION");     
 
-            // ========== SCHRITT 4: TRADE-SETUP VALIDIERUNG (Long/Short - robust) ==========
-            // Konfigurierbare Faktoren (lade idealerweise aus Strategy-Config/_thresholdManager)
-            decimal marketStatePerfectMatchFactor = 1.0m;    // Keine Anpassung
-            decimal marketStateGoodMatchFactor = 0.8m;       // Leichte Abwertung
-            decimal marketStateAcceptableMatchFactor = 0.6m; // Deutlichere Abwertung (optional)
-            decimal marketStateRiskyMatchFactor = 0.4m;      // Hohe Abwertung
-            decimal marketStateNoMatchFactor = 0.01m;       // Niemals 0 ? vermeide komplettes Hard-Blocking
-
-            // Weitere Schutz-/Policy-Parameter (konfigurierbar)
-            decimal minFactorFloor = 0.01m;                    // Absoluter Floor (niemals 0)
-            decimal strongConfidenceOverrideThreshold = 0.80m; // Ab hier evtl. Override statt voller Block
-
             bool isLongSetupValid = false;
             bool isShortSetupValid = false;
 
-            // Grundlegende Pr?fung f?r alle erkannten Muster
             if (detectedPattern.IsDetected && detectedPattern.ConfidenceScore >= 0.30m)
             {
-                decimal rawConfidence = detectedPattern.ConfidenceScore;
-                decimal factor = 1m;
+                const int pocKlebeZoneTicks = 6;
 
-                // Defensive: sichere Faktoren-Funktion
-                Func<decimal, decimal> safe = x => (x <= 0m) ? minFactorFloor : x;
-
-                // Normalize input factors (optional, sch?tzt vor 0/negativen Werten)
-                marketStatePerfectMatchFactor = safe(marketStatePerfectMatchFactor);
-                marketStateGoodMatchFactor = safe(marketStateGoodMatchFactor);
-                marketStateAcceptableMatchFactor = safe(marketStateAcceptableMatchFactor);
-                marketStateRiskyMatchFactor = safe(marketStateRiskyMatchFactor);
-                marketStateNoMatchFactor = safe(marketStateNoMatchFactor);
-
-                // Bestimme factor basierend auf Direction + Pattern + Market Bias
-                if (detectedPattern.Direction == OrderDirections.Buy)
+                if (levelsSnapshot != null)
                 {
-                    switch (detectedPattern.Type)
+                    if (levelsSnapshot.PreviousDayPOC > 0m)
                     {
-                        case OrderflowPatternType.PotentialLongTrendContinuation:
-                        case OrderflowPatternType.PotentialLongPullback:
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.BullishTrend)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways ||
-                                     currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStateGoodMatchFactor;
-                            else
-                                factor = marketStateNoMatchFactor; // BearishTrend -> contra
-                            break;
+                        int pdPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.PreviousDayPOC));
+                        if (pdPocDistTicks <= pocKlebeZoneTicks)
+                        {
+                            this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am POC vom Vortag (PdPOC={levelsSnapshot.PreviousDayPOC:F2}, Close={c.Close:F2}, dist={pdPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
+                            return;
+                        }
+                    }
 
-                        case OrderflowPatternType.PotentialLongBreakout:
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStateGoodMatchFactor;
-                            else
-                                factor = marketStateNoMatchFactor;
-                            break;
-
-                        case OrderflowPatternType.PotentialLongReversalBounce:
-                            // ReversalLong in BullishTrend ist oft ein legitimer Bounce -> moderate Behandlung
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways ||
-                                currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.BearishTrend)
-                                factor = marketStateRiskyMatchFactor; // Counter-Trend, riskant
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Undefined)
-                                factor = marketStateRiskyMatchFactor; // unsicher
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.BullishTrend)
-                                factor = marketStateGoodMatchFactor; // Bounce in Trend -> allow (nicht hart blocken)
-                            break;
-
-                        default:
-                            factor = marketStateNoMatchFactor;
-                            this.LogWarn($"[ADJ-CONF] Unknown Long PatternType: {detectedPattern.Type}. Applying no-match factor.");
-                            break;
+                    if (levelsSnapshot.CurrentPOC > 0m)
+                    {
+                        int curPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.CurrentPOC));
+                        if (curPocDistTicks <= pocKlebeZoneTicks)
+                        {
+                            this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am aktuellen POC (POC={levelsSnapshot.CurrentPOC:F2}, Close={c.Close:F2}, dist={curPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
+                            return;
+                        }
                     }
                 }
-                else if (detectedPattern.Direction == OrderDirections.Sell)
+
+                if (detectedPattern.Type == OrderflowPatternType.PotentialLongReversalBounce && detectedPattern.Direction == OrderDirections.Buy)
                 {
-                    switch (detectedPattern.Type)
-                    {
-                        case OrderflowPatternType.PotentialShortTrendContinuation:
-                        case OrderflowPatternType.PotentialShortPullback:
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.BearishTrend)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways ||
-                                     currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStateGoodMatchFactor;
-                            else
-                                factor = marketStateNoMatchFactor; // BullishTrend -> contra
-                            break;
-
-                        case OrderflowPatternType.PotentialShortBreakout:
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStateGoodMatchFactor;
-                            else
-                                factor = marketStateNoMatchFactor;
-                            break;
-
-                        case OrderflowPatternType.PotentialShortReversalBounce:
-                            if (currentMarketState.DirectionalBias == MarketDirectionalBias.Sideways ||
-                                currentMarketState.DirectionalBias == MarketDirectionalBias.Choppy)
-                                factor = marketStatePerfectMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.BullishTrend)
-                                factor = marketStateRiskyMatchFactor; // Counter-Trend
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.Undefined)
-                                factor = marketStateRiskyMatchFactor;
-                            else if (currentMarketState.DirectionalBias == MarketDirectionalBias.BearishTrend)
-                                factor = marketStateGoodMatchFactor; // Bounce in Trend -> allow
-                            break;
-
-                        default:
-                            factor = marketStateNoMatchFactor;
-                            this.LogWarn($"[ADJ-CONF] Unknown Short PatternType: {detectedPattern.Type}. Applying no-match factor.");
-                            break;
-                    }
+                    isLongSetupValid = true;
+                    this.LogInfo($"[SETUP-LONG] ✅ Long Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
+                }
+                else if (detectedPattern.Type == OrderflowPatternType.PotentialShortReversalBounce && detectedPattern.Direction == OrderDirections.Sell)
+                {
+                    isShortSetupValid = true;
+                    this.LogInfo($"[SETUP-SHORT] ✅ Short Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
                 }
                 else
                 {
-                    // Unknown direction ? sehr defensiv
-                    factor = marketStateNoMatchFactor;
-                    this.LogWarn($"[ADJ-CONF] Unknown Pattern Direction: {detectedPattern.Direction}. Applying no-match factor.");
-                }
-
-                // High-confidence override: starke raw-Signale nicht komplett wegdr?cken
-                if (rawConfidence >= strongConfidenceOverrideThreshold && factor <= minFactorFloor * 2m)
-                {
-                    factor = Math.Max(factor, marketStateRiskyMatchFactor);
-                    this.LogInfo($"[ADJ-CONF] Strong rawConfidence override applied: raw={rawConfidence:F2}, newFactor={factor:F2}");
-                }
-
-                // Anwenden Floor und Berechnung
-                decimal appliedFactor = Math.Max(factor, minFactorFloor);
-                decimal adjustedConfidence = rawConfidence * appliedFactor;
-
-                // Einheitliches, vollst?ndiges Logging
-                this.LogInfo($"[ADJ-CONF] Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}, Bias={currentMarketState.DirectionalBias}, " +
-                             $"Raw={rawConfidence:F2}, Factor={factor:F4}, AppliedFactor={appliedFactor:F4}, Adjusted={adjustedConfidence:F4}");
-
-                // Final pr?fen gegen Threshold (kann adaptiv sein)
-                if (adjustedConfidence >= 0.30m)
-                {
-                    if (detectedPattern.Direction == OrderDirections.Buy)
-                    {
-                        isLongSetupValid = true;
-                        this.LogInfo($"[SETUP-LONG] Long Setup valid (adjusted confidence): Pattern={detectedPattern.Type}, Bias={currentMarketState.DirectionalBias}, FinalConfidence={adjustedConfidence:F2}");
-                    }
-                    else
-                    {
-                        isShortSetupValid = true;
-                        this.LogInfo($"[SETUP-SHORT] Short Setup valid (adjusted confidence): Pattern={detectedPattern.Type}, Bias={currentMarketState.DirectionalBias}, FinalConfidence={adjustedConfidence:F2}");
-                    }
-                }
-                else
-                {
-                    this.LogInfo($"[SETUP-BLOCKED] Pattern {detectedPattern.Type} with bias {currentMarketState.DirectionalBias} blocked due to low adjusted confidence ({adjustedConfidence:F2})");
+                    this.LogDebug($"[SETUP-VALID] Kein V2-ReversalBounce Setup (Type={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                 }
             }
 
@@ -9109,77 +13045,21 @@ namespace MyNamespace.Strategies
 
                 switch (detectedPattern.Type)
                 {
-                    case OrderflowPatternType.PotentialLongTrendContinuation:
-                    case OrderflowPatternType.PotentialLongPullback:
-                        // F?r Pullbacks/Trend-Continuation: Limit-Order etwas unter VAL
-                        // ACHTUNG: Die Offset-Werte (z.B. -1 oder -3 Ticks) sollten in den Strategie-Parametern definierbar sein.
-                        longEntryPrice = c.Close - 1 * tickSize;
-                        entryTriggerLevelName = "VAL";
-                        entryTriggerLevel = levelsSnapshot.CurrentVAL;
-                        // Setup-Parameter f?r Trend/Pullback Long
-                        setup = new SetupParams
-                        {
-                            TpTicks = 15, // Beispiel: Gr??erer TP f?r Trend-Trades
-                            SlTicks = 8,
-                            BreakEvenLevelsTrendConfig = "7:1;15:5",
-                            TrailType = "CANDLE_HL",
-                            TrailActivateAfterTicks = 5,
-                            EarlyExitLevels = "POC",
-                            ProximityTicksForExit = 1m,
-                            EarlyExitMaxDistTicks = 50m,
-                            EarlyExitCloseAtLevel = false,
-                        };
-                        break;
-
-                    case OrderflowPatternType.PotentialLongBreakout:
-                        // F?r Breakouts: 
-                        longEntryPrice = p.Close - 1 * tickSize;
-                        entryTriggerLevelName = "VAH";
-                        entryTriggerLevel = levelsSnapshot.CurrentVAH;
-                        // Setup-Parameter f?r Breakout Long
-                        setup = new SetupParams
-                        {
-                            TpTicks = 10, // Beispiel: Kleinerer TP, schnelle Gewinne
-                            SlTicks = 5,
-                            BreakEvenLevelsTrendConfig = "3:1;8:3",
-                            TrailType = "FIXED_TICKS", // Beispiel: Fester Tick-Trail
-                            TrailActivateAfterTicks = 2,
-                            EarlyExitLevels = "VAH", // Oder ein anderes Level
-                            ProximityTicksForExit = 0.5m,
-                            EarlyExitMaxDistTicks = 30m,
-                            EarlyExitCloseAtLevel = true, // Beispiel: Limit am Level
-                        };
-                        break;
-
                     case OrderflowPatternType.PotentialLongReversalBounce:
-                        
-                        longEntryPrice = c.Close + 1 * tickSize;
-                        
-                        // Berechne dynamischen TP basierend auf n?chstem signifikanten Level
-                        var dynamicTpLevel = FindNextSignificantLevel(longEntryPrice, OrderDirections.Buy, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit, logCandidates: true);
-                        var dynamicTpTicks = (dynamicTpLevel - longEntryPrice) / tickSize;
-                        
-                        // Setup-Parameter f?r Reversal Long mit dynamischem TP und festem SL
+                        longEntryPrice = c.Close;
+                        entryTriggerLevelName = "CLOSE";
+                        entryTriggerLevel = c.Close;
+
+                        int slTicksLong = (int)Math.Round(((c.Close - (c.Low - tickSize)) / tickSize), MidpointRounding.AwayFromZero);
+                        if (slTicksLong < 1) slTicksLong = 1;
+
                         setup = new SetupParams
                         {
-                            TpType = "Vorgeschlagen", // NEU: TP-Typ setzen
-                            SlTicks = 8, // Feste 8 Ticks SL
-                            BreakEvenLevelsTrendConfig = "6:1;10:4",
-                            TrailType = "CANDLE",
+                            TpTicks = 10,
+                            SlTicks = slTicksLong,
+                            TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
-                            EarlyExitLevels = "", // Mehrere Levels m?glich
-                            ProximityTicksForExit = 1m,
-                            EarlyExitMaxDistTicks = 40m,
-                            EarlyExitCloseAtLevel = false,
-                            
-                            // NEU: Dynamische Level-TP Konfiguration
-                            UseDynamicLevelTp = true,
-                            DynamicLevelTpOffsetTicks = 1m,
-                            SuggestedTargetPrice = dynamicTpLevel,
-                            MaxDynamicTpDistanceTicks = 12m // NEU: Maximale Distanz auf 12 Ticks setzen
                         };
-                        
-                        this.LogInfo($"[DYNAMIC-TP] Long Reversal: Entry={longEntryPrice:F2}, TP={dynamicTpLevel:F2} ({dynamicTpTicks:F1} Ticks), SL=fest 8 Ticks");
                         break;
 
                     default:
@@ -9189,8 +13069,38 @@ namespace MyNamespace.Strategies
 
                 _activeTradeSetupParams = setup;
                 _entryBarIndex = closed;
+
+                bool entryWegFreiLong = true;
+                string entryWegFreiLongBlocker = string.Empty;
+                if (EnableMicroCompositeSystem)
+                {
+                    var mcForPath = _currentMC ?? GetRollingMicroComposite();
+                    entryWegFreiLong = IsPathFreeLongEnhanced(longEntryPrice, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out entryWegFreiLongBlocker);
+                }
+                if (EnableDailyProfilePathSystem && _dailyProfileForPath != null)
+                {
+                    var dailyCfgForEntry = GetDailyPathConfig();
+                    bool okDaily = IsPathFreeLongEnhanced(longEntryPrice, DailyDMinTicks, riskTicks, _dailyProfileForPath, _prevDailyProfileForPath, tickSize, dailyCfgForEntry, out var dailyBlocker);
+                    if (!okDaily)
+                    {
+                        entryWegFreiLong = false;
+                        var prefixed = dailyBlocker.StartsWith("MC.", StringComparison.OrdinalIgnoreCase)
+                            ? ("D." + dailyBlocker.Substring(3))
+                            : ("D." + dailyBlocker);
+                        entryWegFreiLongBlocker = string.IsNullOrWhiteSpace(entryWegFreiLongBlocker)
+                            ? prefixed
+                            : (entryWegFreiLongBlocker + " | " + prefixed);
+                    }
+                }
+
+                if (!entryWegFreiLong)
+                {
+                    this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert, da Weg nicht frei am EntryPrice={longEntryPrice:F2}. Blocker={entryWegFreiLongBlocker}");
+                    return;
+                }
+
                 this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}");
-                this.LogInfo($"[ORDER-LONG] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.DirectionalBias}, " +
+                this.LogInfo($"[ORDER-LONG] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={longEntryPrice:F2}.");
                 PlaceEntry(OrderDirections.Buy, longEntryPrice, closed);
                 return; // Beende die Methode nach Orderplatzierung
@@ -9211,76 +13121,21 @@ namespace MyNamespace.Strategies
 
                 switch (detectedPattern.Type)
                 {
-                    case OrderflowPatternType.PotentialShortTrendContinuation:
-                    case OrderflowPatternType.PotentialShortPullback:
-                        // F?r Pullbacks/Trend-Continuation: Limit-Order etwas ?ber VAH
-                        shortEntryPrice = c.Close + 4 * tickSize;
-                        entryTriggerLevelName = "VAH";
-                        entryTriggerLevel = levelsSnapshot.CurrentVAH;
-                        // Setup-Parameter f?r Trend/Pullback Short (analog Long)
-                        setup = new SetupParams
-                        {
-                            TpTicks = 15,
-                            SlTicks = 8,
-                            BreakEvenLevelsTrendConfig = "7:1;15:5",
-                            TrailType = "CANDLE_HL",
-                            TrailActivateAfterTicks = 5,
-                            EarlyExitLevels = "POC",
-                            ProximityTicksForExit = 1m,
-                            EarlyExitMaxDistTicks = 50m,
-                            EarlyExitCloseAtLevel = false,
-                        };
-                        break;
+                    case OrderflowPatternType.PotentialShortReversalBounce:
+                        shortEntryPrice = c.Close;
+                        entryTriggerLevelName = "CLOSE";
+                        entryTriggerLevel = c.Close;
 
-                    case OrderflowPatternType.PotentialShortBreakout:
-                        // F?r Breakouts: Stop-Limit Order etwas unter VAL
-                        shortEntryPrice = c.Close - 1 * tickSize;
-                        entryTriggerLevelName = "VAL";
-                        entryTriggerLevel = levelsSnapshot.CurrentVAL;
-                        // Setup-Parameter f?r Breakout Short (analog Long)
+                        int slTicksShort = (int)Math.Round((((c.High + tickSize) - c.Close) / tickSize), MidpointRounding.AwayFromZero);
+                        if (slTicksShort < 1) slTicksShort = 1;
+
                         setup = new SetupParams
                         {
                             TpTicks = 10,
-                            SlTicks = 5,
-                            BreakEvenLevelsTrendConfig = "3:1;8:3",
-                            TrailType = "FIXED_TICKS",
-                            TrailActivateAfterTicks = 2,
-                            EarlyExitLevels = "VAL",
-                            ProximityTicksForExit = 0.5m,
-                            EarlyExitMaxDistTicks = 30m,
-                            EarlyExitCloseAtLevel = true,
-                        };
-                        break;
-
-                    case OrderflowPatternType.PotentialShortReversalBounce:
-                        // F?r Reversal Bounce: Limit-Order leicht unter VAH (oder anderem Widerstand)
-                        shortEntryPrice = c.Close - 1 * tickSize;
-                       
-                        // Berechne dynamischen TP basierend auf n?chstem signifikanten Level
-                        var dynamicTpLevelShort = FindNextSignificantLevel(shortEntryPrice, OrderDirections.Sell, levelsSnapshot, currentPOC_Explicit, currentVAH_Explicit, currentVAL_Explicit, logCandidates: true);
-                        var dynamicTpTicksShort = (shortEntryPrice - dynamicTpLevelShort) / tickSize;
-                        
-                        // Setup-Parameter f?r Reversal Short mit dynamischem TP und festem SL
-                        setup = new SetupParams
-                        {
-                            TpType = "Vorgeschlagen", // NEU: TP-Typ setzen
-                            SlTicks = 8, // Feste 8 Ticks SL
-                            BreakEvenLevelsTrendConfig = "6:1;10:4",
-                            TrailType = "CANDLE",
+                            SlTicks = slTicksShort,
+                            TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
-                            EarlyExitLevels = "",
-                            ProximityTicksForExit = 1m,
-                            EarlyExitMaxDistTicks = 40m,
-                            EarlyExitCloseAtLevel = false,
-                            
-                            // NEU: Dynamische Level-TP Konfiguration
-                            UseDynamicLevelTp = true,
-                            DynamicLevelTpOffsetTicks = 1m,
-                            SuggestedTargetPrice = dynamicTpLevelShort,
-                            MaxDynamicTpDistanceTicks = 12m // NEU: Maximale Distanz auf 12 Ticks setzen
                         };
-                        
-                        this.LogInfo($"[DYNAMIC-TP] Short Reversal: Entry={shortEntryPrice:F2}, TP={dynamicTpLevelShort:F2} ({dynamicTpTicksShort:F1} Ticks), SL=fest 8 Ticks");
                         break;
 
                     default:
@@ -9290,8 +13145,38 @@ namespace MyNamespace.Strategies
 
                 _activeTradeSetupParams = setup;
                 _entryBarIndex = closed;
+
+                bool entryWegFreiShort = true;
+                string entryWegFreiShortBlocker = string.Empty;
+                if (EnableMicroCompositeSystem)
+                {
+                    var mcForPath = _currentMC ?? GetRollingMicroComposite();
+                    entryWegFreiShort = IsPathFreeShortEnhanced(shortEntryPrice, DMinTicks, riskTicks, mcForPath, null, tickSize, GetPathConfig(), out entryWegFreiShortBlocker);
+                }
+                if (EnableDailyProfilePathSystem && _dailyProfileForPath != null)
+                {
+                    var dailyCfgForEntry = GetDailyPathConfig();
+                    bool okDaily = IsPathFreeShortEnhanced(shortEntryPrice, DailyDMinTicks, riskTicks, _dailyProfileForPath, _prevDailyProfileForPath, tickSize, dailyCfgForEntry, out var dailyBlocker);
+                    if (!okDaily)
+                    {
+                        entryWegFreiShort = false;
+                        var prefixed = dailyBlocker.StartsWith("MC.", StringComparison.OrdinalIgnoreCase)
+                            ? ("D." + dailyBlocker.Substring(3))
+                            : ("D." + dailyBlocker);
+                        entryWegFreiShortBlocker = string.IsNullOrWhiteSpace(entryWegFreiShortBlocker)
+                            ? prefixed
+                            : (entryWegFreiShortBlocker + " | " + prefixed);
+                    }
+                }
+
+                if (!entryWegFreiShort)
+                {
+                    this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert, da Weg nicht frei am EntryPrice={shortEntryPrice:F2}. Blocker={entryWegFreiShortBlocker}");
+                    return;
+                }
+
                 this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}");
-                this.LogInfo($"[ORDER-SHORT] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.DirectionalBias}, " +
+                this.LogInfo($"[ORDER-SHORT] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={shortEntryPrice:F2}.");
                 PlaceEntry(OrderDirections.Sell, shortEntryPrice, closed);
                 return; // Beende die Methode nach Orderplatzierung
@@ -9451,14 +13336,17 @@ namespace MyNamespace.Strategies
 
 
 
-        
+
 
         private (bool isBlockedLong, TrackedLevel blockingLevel) IsCloseToResistance(decimal currentPrice, List<TrackedLevel> _untouchedLevels, decimal threshold)
         {
             foreach (var level in _untouchedLevels)
             {
-                // Widerstand ist ?ber dem aktuellen Preis, und der Abstand ist innerhalb des Schwellenwerts
-                if (level.Value > currentPrice && (level.Value - currentPrice) <= threshold)
+                // Widerstand ist über dem aktuellen Preis (oder Touch/kleiner Overshoot), und der Abstand ist innerhalb des Schwellenwerts
+                // Zusätzlich: 2-Tick Overshoot-Toleranz, damit ein Close genau auf dem Level oder leicht darüber trotzdem blockt.
+                var touchBuffer = 2m * _tickSize;
+                var dist = level.Value - currentPrice;
+                if (dist >= -touchBuffer && dist <= threshold)
                 {
                     return (true, level);
                 }
@@ -9478,8 +13366,11 @@ namespace MyNamespace.Strategies
         {
             foreach (var level in _untouchedLevels)
             {
-                // Unterst?tzung ist unter dem aktuellen Preis, und der Abstand ist innerhalb des Schwellenwerts
-                if (level.Value < currentPrice && (currentPrice - level.Value) <= threshold)
+                // Unterstützung ist unter dem aktuellen Preis (oder Touch/kleiner Overshoot), und der Abstand ist innerhalb des Schwellenwerts
+                // Zusätzlich: 2-Tick Overshoot-Toleranz, damit ein Close genau auf dem Level oder leicht darunter trotzdem blockt.
+                var touchBuffer = 2m * _tickSize;
+                var dist = currentPrice - level.Value;
+                if (dist >= -touchBuffer && dist <= threshold)
                 {
                     return (true, level);
                 }
@@ -9497,7 +13388,7 @@ namespace MyNamespace.Strategies
             return price >= lo && price <= hi;
         }
         private int GetRiskTicks() => Math.Max(DMinTicks, 1);
-        
+
         private static decimal? TryComputeMedianVol(SortedDictionary<decimal, decimal> levelVols)
         {
             if (levelVols == null || levelVols.Count == 0) return null;
@@ -9576,26 +13467,60 @@ namespace MyNamespace.Strategies
             decimal hvnPrice,
             MicroComposite mc,
             PathConfig cfg,
-            decimal tickSize
+            decimal tickSize,
+            bool insideValue
         )
         {
+            if (cfg.ForceAllHVNsStrong) return true;
+            if (cfg.ForceAllHVNsWeak) return false;
+
             // Ohne LevelVols: konservativ -> behandle HVN als stark (POCVol vorhanden)
-            if (mc.LevelVols == null || !mc.LevelVols.TryGetValue(hvnPrice, out var hvnVol))
+            if (mc.LevelVols == null || mc.LevelVols.Count == 0)
+                return true;
+
+            // HVN-Preis auf Tick-Grid / nächstes vorhandenes Level bringen
+            decimal key = hvnPrice;
+            if (!mc.LevelVols.ContainsKey(key))
+            {
+                key = Math.Round(hvnPrice / tickSize, 0, MidpointRounding.AwayFromZero) * tickSize;
+                if (!mc.LevelVols.ContainsKey(key))
+                {
+                    decimal best = 0m;
+                    int bestDist = int.MaxValue;
+                    foreach (var p in mc.LevelVols.Keys)
+                    {
+                        int d = (int)Math.Round((double)(Math.Abs(p - hvnPrice) / tickSize));
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            best = p;
+                            if (bestDist == 0) break;
+                        }
+                    }
+                    if (bestDist <= 2) key = best; // nur in unmittelbarer Nähe snapen
+                }
+            }
+
+            if (!mc.LevelVols.TryGetValue(key, out var hvnVol))
                 return true;
 
             var medianVol = TryComputeMedianVol(mc.LevelVols);
             decimal? prominence = null;
 
             // Nachbarpreise (?1 Tick)
-            decimal left = hvnPrice - tickSize;
-            decimal right = hvnPrice + tickSize;
+            decimal left = key - tickSize;
+            decimal right = key + tickSize;
             var vL = mc.LevelVols.TryGetValue(left, out var vl) ? vl : hvnVol;
             var vR = mc.LevelVols.TryGetValue(right, out var vr) ? vr : hvnVol;
             prominence = hvnVol - Math.Max(vL, vR);
 
-            bool strongVsPOC = mc.POCVol > 0m && hvnVol >= cfg.HVNStrengthVsPOC * mc.POCVol;
-            bool strongVsMedian = medianVol.HasValue && hvnVol >= cfg.HVNStrengthVsMedian * medianVol.Value;
-            bool prominent = (medianVol.HasValue && prominence.HasValue) ? prominence.Value >= cfg.MinProminenceVsMedian * medianVol.Value : true;
+            decimal pocFactor = insideValue ? cfg.HVNStrengthVsPOCInside : cfg.HVNStrengthVsPOCOutside;
+            decimal medFactor = insideValue ? cfg.HVNStrengthVsMedianInside : cfg.HVNStrengthVsMedianOutside;
+            decimal promFactor = insideValue ? cfg.MinProminenceVsMedianInside : cfg.MinProminenceVsMedianOutside;
+
+            bool strongVsPOC = mc.POCVol > 0m && hvnVol >= pocFactor * mc.POCVol;
+            bool strongVsMedian = medianVol.HasValue && hvnVol >= medFactor * medianVol.Value;
+            bool prominent = (medianVol.HasValue && prominence.HasValue) ? prominence.Value >= promFactor * medianVol.Value : true;
 
             return (strongVsPOC || strongVsMedian) && prominent;
         }
@@ -9624,20 +13549,87 @@ namespace MyNamespace.Strategies
             }
 
             decimal upperThreshold = currentPrice + (dMinTicks * tickSize);
+            decimal touchBuffer = 2m * tickSize;
+            decimal lowerBoundTouch = currentPrice - touchBuffer;
             bool insideValue = IsInsideValue(mcCurr, currentPrice);
 
+            // STRICT: Wenn innerhalb DMinTicks ein MC-Level/HVN (inkl. HVN-Zonen-Kanten) liegt, MUSS Entry geblockt werden.
+            // Damit k?nnen keine Trades mit TP "1 Tick vor HVN" entstehen.
+            if (mcCurr.POC >= lowerBoundTouch && mcCurr.POC <= upperThreshold)
+            {
+                blocker = $"MC.POC@{mcCurr.POC:F2}";
+                return false;
+            }
+
+            if (mcCurr.VAH >= lowerBoundTouch && mcCurr.VAH <= upperThreshold)
+            {
+                blocker = $"MC.VAH@{mcCurr.VAH:F2}";
+                return false;
+            }
+
+            if (cfg.UseHvnZonesForBlocking && mcCurr.HVNZones != null && mcCurr.HVNZones.Count > 0)
+            {
+                foreach (var z in mcCurr.HVNZones)
+                {
+                    bool intersects = !(z.End < lowerBoundTouch || z.Start > upperThreshold);
+                    if (!intersects) continue;
+
+                    decimal center = (z.Start + z.End) / 2m;
+                    bool insideValueForStrength = IsInsideValue(mcCurr, center);
+                    bool strong = IsStrongHVN(center, mcCurr, cfg, tickSize, insideValueForStrength);
+                    if (!strong)
+                    {
+                        if (this.DailyHVNStrength <= 0 && object.ReferenceEquals(mcCurr, _dailyProfileForPath))
+                            //this.LogInfo($"[DailyWegFreiDebug] Filtered HVNZone as WEAK despite DailyHVNStrength={DailyHVNStrength} ForceStrong={cfg.ForceAllHVNsStrong} center={center:F2} zone=[{z.Start:F2}-{z.End:F2}] insideValue={insideValueForStrength} upperTh={upperThreshold:F2}");
+                        continue;
+                    }
+
+                    bool startIn = (z.Start >= lowerBoundTouch && z.Start <= upperThreshold);
+                    bool endIn = (z.End >= lowerBoundTouch && z.End <= upperThreshold);
+                    decimal edge = currentPrice <= z.Start ? z.Start : z.End;
+
+                    blocker = $"MC.HVNZone@{edge:F2}";
+                    return false;
+                }
+            }
+
+            if (cfg.UseHvnZonesForBlocking && mcCurr.HVNs != null)
+            {
+                foreach (var hvn in mcCurr.HVNs)
+                {
+                    if (hvn < lowerBoundTouch || hvn > upperThreshold) continue;
+
+                    bool insideValueForStrength = IsInsideValue(mcCurr, hvn);
+                    bool strong = IsStrongHVN(hvn, mcCurr, cfg, tickSize, insideValueForStrength);
+                    if (!strong)
+                    {
+                        if (this.DailyHVNStrength <= 0 && object.ReferenceEquals(mcCurr, _dailyProfileForPath))
+                            //this.LogInfo($"[DailyWegFreiDebug] Filtered HVN as WEAK despite DailyHVNStrength={DailyHVNStrength} ForceStrong={cfg.ForceAllHVNsStrong} hvn={hvn:F2} insideValue={insideValueForStrength} upperTh={upperThreshold:F2}");
+                        continue;
+                    }
+                    blocker = $"MC.HVN@{hvn:F2}";
+                    return false;
+                }
+            }
+
             // LVN-Count: kombiniere Punkte + Zonen (als Tupel konvertiert)
-            int lvnCountPts = CountLVNsInPathUp(mcCurr.LVNs, currentPrice, upperThreshold);
-            int lvnCountZones = mcCurr.LVNZones != null
-                ? CountLVNZoneEdgesInPathUp(mcCurr.LVNZones, currentPrice, upperThreshold)
-                : 0;
-            int lvnCount = Math.Max(lvnCountPts, lvnCountZones);
+            int lvnCountPts = 0;
+            int lvnCountZones = 0;
+            int lvnCount = 0;
+            if (cfg.UseLvnPathForBlocking && cfg.RequiredLVNsInPath > 0)
+            {
+                lvnCountPts = CountLVNsInPathUp(mcCurr.LVNs, currentPrice, upperThreshold);
+                lvnCountZones = mcCurr.LVNZones != null
+                    ? CountLVNZoneEdgesInPathUp(mcCurr.LVNZones, currentPrice, upperThreshold)
+                    : 0;
+                lvnCount = Math.Max(lvnCountPts, lvnCountZones);
+            }
 
             int migDir = ValueMigrationDirection(mcPrev, mcCurr, tickSize);
 
             //this.LogInfo($"PathLong: price={currentPrice:F2} upperTh={upperThreshold:F2} dMinTicks={dMinTicks} riskTicks={riskTicks} insideValue={insideValue} lvnCount={lvnCount} migDir={migDir} lvnPts={lvnCountPts} lvnZones={lvnCountZones}");
 
-            if (lvnCount < cfg.RequiredLVNsInPath)
+            if (cfg.UseLvnPathForBlocking && cfg.RequiredLVNsInPath > 0 && lvnCount < cfg.RequiredLVNsInPath)
             {
                 //this.LogInfo($"PathLong: lvnCount {lvnCount} < erforderlich {cfg.RequiredLVNsInPath} ? false");
                 blocker = $"LVN_PATH<{cfg.RequiredLVNsInPath}";
@@ -9645,7 +13637,7 @@ namespace MyNamespace.Strategies
             }
 
             // POC blockt
-            if (IsInRangeOben(mcCurr.POC, currentPrice, upperThreshold))
+            if (mcCurr.POC >= lowerBoundTouch && mcCurr.POC <= upperThreshold)
             {
                 //this.LogInfo($"PathLong: POC {mcCurr.POC:F2} blocks in range ? false");
                 blocker = $"MC.POC@{mcCurr.POC:F2}";
@@ -9655,18 +13647,19 @@ namespace MyNamespace.Strategies
             // HVN-Blocker: zuerst Zonen (als Tupel), dann Punkt-HVNs
             decimal? closestStrongBlocker = null;
 
-            if (mcCurr.HVNZones != null && mcCurr.HVNZones.Count > 0)
+            if (cfg.UseHvnZonesForBlocking && mcCurr.HVNZones != null && mcCurr.HVNZones.Count > 0)
             {
                 foreach (var z in mcCurr.HVNZones)
                 {
-                    bool intersects = !(z.End < currentPrice || z.Start > upperThreshold);
+                    bool intersects = !(z.End < lowerBoundTouch || z.Start > upperThreshold);
                     if (!intersects) continue;
 
                     decimal center = (z.Start + z.End) / 2m;
-                    if (!IsStrongHVN(center, mcCurr, cfg, tickSize)) continue;
+                    bool insideValueForStrength = IsInsideValue(mcCurr, center);
+                    if (!IsStrongHVN(center, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
 
-                    bool startIn = IsInRangeOben(z.Start, currentPrice, upperThreshold);
-                    bool endIn = IsInRangeOben(z.End, currentPrice, upperThreshold);
+                    bool startIn = (z.Start >= lowerBoundTouch && z.Start <= upperThreshold);
+                    bool endIn = (z.End >= lowerBoundTouch && z.End <= upperThreshold);
                     decimal edge = startIn ? z.Start
                                   : endIn ? z.End
                                   : (TicksBetweenAbs(z.Start, currentPrice) <= TicksBetweenAbs(z.End, currentPrice) ? z.Start : z.End);
@@ -9679,12 +13672,14 @@ namespace MyNamespace.Strategies
                 }
             }
 
-            if (closestStrongBlocker == null && mcCurr.HVNs != null)
+            if (cfg.UseHvnZonesForBlocking && closestStrongBlocker == null && mcCurr.HVNs != null)
             {
                 foreach (var hvn in mcCurr.HVNs)
                 {
-                    if (!IsInRangeOben(hvn, currentPrice, upperThreshold)) continue;
-                    if (!IsStrongHVN(hvn, mcCurr, cfg, tickSize)) continue;
+                    if (hvn < lowerBoundTouch || hvn > upperThreshold) continue;
+
+                    bool insideValueForStrength = IsInsideValue(mcCurr, hvn);
+                    if (!IsStrongHVN(hvn, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
 
                     int dist = TicksBetweenAbs(hvn, currentPrice);
                     //this.LogInfo($"PathLong: candidate HVN {hvn:F2} distTicks={dist}");
@@ -9694,7 +13689,7 @@ namespace MyNamespace.Strategies
             }
 
             // VAH-Block
-            bool vahBlocks = IsInRangeOben(mcCurr.VAH, currentPrice, upperThreshold);
+            bool vahBlocks = (mcCurr.VAH >= lowerBoundTouch && mcCurr.VAH <= upperThreshold);
             if (vahBlocks)
             {
                 //this.LogInfo($"PathLong: VAH {mcCurr.VAH:F2} in range; insideValue={insideValue} relax={cfg.RelaxVAEdgesWhenOutsideValue}");
@@ -9710,7 +13705,7 @@ namespace MyNamespace.Strategies
                 }
             }
 
-            if (closestStrongBlocker.HasValue)
+            if (cfg.UseHvnZonesForBlocking && closestStrongBlocker.HasValue)
             {
                 int distTicks = TicksBetweenAbs(closestStrongBlocker.Value, currentPrice);
                 int minAllowed = Math.Max(dMinTicks, riskTicks * cfg.MinBlockerDistanceTicksVsRisk);
@@ -9748,20 +13743,74 @@ namespace MyNamespace.Strategies
             }
 
             decimal lowerThreshold = currentPrice - (dMinTicks * tickSize);
+            decimal touchBuffer = 2m * tickSize;
+            decimal upperBoundTouch = currentPrice + touchBuffer;
             bool insideValue = IsInsideValue(mcCurr, currentPrice);
 
-            int lvnCountPts = CountLVNsInPathDown(mcCurr.LVNs, currentPrice, lowerThreshold);
-            int lvnCountZones = mcCurr.LVNZones != null
-                ? CountLVNZoneEdgesInPathDown(mcCurr.LVNZones, currentPrice, lowerThreshold)
-                : 0;
-            int lvnCount = Math.Max(lvnCountPts, lvnCountZones);
+            // STRICT: Wenn innerhalb DMinTicks ein MC-Level/HVN (inkl. HVN-Zonen-Kanten) liegt, MUSS Entry geblockt werden.
+            if (mcCurr.POC <= upperBoundTouch && mcCurr.POC >= lowerThreshold)
+            {
+                blocker = $"MC.POC@{mcCurr.POC:F2}";
+                return false;
+            }
+
+            if (mcCurr.VAL <= upperBoundTouch && mcCurr.VAL >= lowerThreshold)
+            {
+                blocker = $"MC.VAL@{mcCurr.VAL:F2}";
+                return false;
+            }
+
+            if (cfg.UseHvnZonesForBlocking && mcCurr.HVNZones != null && mcCurr.HVNZones.Count > 0)
+            {
+                foreach (var z in mcCurr.HVNZones)
+                {
+                    bool intersects = !(z.Start > upperBoundTouch || z.End < lowerThreshold);
+                    if (!intersects) continue;
+
+                    decimal center = (z.Start + z.End) / 2m;
+                    bool insideValueForStrength = IsInsideValue(mcCurr, center);
+                    if (!IsStrongHVN(center, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
+
+                    bool startIn = (z.Start <= upperBoundTouch && z.Start >= lowerThreshold);
+                    bool endIn = (z.End <= upperBoundTouch && z.End >= lowerThreshold);
+                    decimal edge = currentPrice >= z.End ? z.End : z.Start;
+
+                    blocker = $"MC.HVNZone@{edge:F2}";
+                    return false;
+                }
+            }
+
+            if (cfg.UseHvnZonesForBlocking && mcCurr.HVNs != null)
+            {
+                foreach (var hvn in mcCurr.HVNs)
+                {
+                    if (hvn > upperBoundTouch || hvn < lowerThreshold) continue;
+
+                    bool insideValueForStrength = IsInsideValue(mcCurr, hvn);
+                    if (!IsStrongHVN(hvn, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
+                    blocker = $"MC.HVN@{hvn:F2}";
+                    return false;
+                }
+            }
+
+            int lvnCountPts = 0;
+            int lvnCountZones = 0;
+            int lvnCount = 0;
+            if (cfg.UseLvnPathForBlocking && cfg.RequiredLVNsInPath > 0)
+            {
+                lvnCountPts = CountLVNsInPathDown(mcCurr.LVNs, currentPrice, lowerThreshold);
+                lvnCountZones = mcCurr.LVNZones != null
+                    ? CountLVNZoneEdgesInPathDown(mcCurr.LVNZones, currentPrice, lowerThreshold)
+                    : 0;
+                lvnCount = Math.Max(lvnCountPts, lvnCountZones);
+            }
 
 
             int migDir = ValueMigrationDirection(mcPrev, mcCurr, tickSize);
 
             //this.LogInfo($"PathShort: price={currentPrice:F2} lowerTh={lowerThreshold:F2} dMinTicks={dMinTicks} riskTicks={riskTicks} insideValue={insideValue} lvnCount={lvnCount} migDir={migDir} lvnPts={lvnCountPts} lvnZones={lvnCountZones}");
 
-            if (lvnCount < cfg.RequiredLVNsInPath)
+            if (cfg.UseLvnPathForBlocking && cfg.RequiredLVNsInPath > 0 && lvnCount < cfg.RequiredLVNsInPath)
             {
                 //this.LogInfo($"PathShort: lvnCount {lvnCount} < erforderlich {cfg.RequiredLVNsInPath} ? false");
                 blocker = $"LVN_PATH<{cfg.RequiredLVNsInPath}";
@@ -9781,11 +13830,12 @@ namespace MyNamespace.Strategies
             {
                 foreach (var z in mcCurr.HVNZones)
                 {
-                    bool intersects = !(z.Start > currentPrice || z.End < lowerThreshold);
+                    bool intersects = !(z.Start > upperBoundTouch || z.End < lowerThreshold);
                     if (!intersects) continue;
 
                     decimal center = (z.Start + z.End) / 2m;
-                    if (!IsStrongHVN(center, mcCurr, cfg, tickSize)) continue;
+                    bool insideValueForStrength = IsInsideValue(mcCurr, center);
+                    if (!IsStrongHVN(center, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
 
                     bool startIn = IsInRangeUnten(z.Start, currentPrice, lowerThreshold);
                     bool endIn = IsInRangeUnten(z.End, currentPrice, lowerThreshold);
@@ -9806,8 +13856,9 @@ namespace MyNamespace.Strategies
             {
                 foreach (var hvn in mcCurr.HVNs)
                 {
-                    if (!IsInRangeUnten(hvn, currentPrice, lowerThreshold)) continue;
-                    if (!IsStrongHVN(hvn, mcCurr, cfg, tickSize)) continue;
+                    if (hvn > upperBoundTouch || hvn < lowerThreshold) continue;
+                    bool insideValueForStrength = IsInsideValue(mcCurr, hvn);
+                    if (!IsStrongHVN(hvn, mcCurr, cfg, tickSize, insideValueForStrength)) continue;
 
                     int dist = TicksBetweenAbs(hvn, currentPrice);
                     //this.LogInfo($"PathShort: candidate HVN {hvn:F2} distTicks={dist}");
@@ -9819,7 +13870,7 @@ namespace MyNamespace.Strategies
                 }
             }
 
-            bool valBlocks = IsInRangeUnten(mcCurr.VAL, currentPrice, lowerThreshold);
+            bool valBlocks = (mcCurr.VAL <= upperBoundTouch && mcCurr.VAL >= lowerThreshold);
             if (valBlocks)
             {
                 //this.LogInfo($"PathShort: VAL {mcCurr.VAL:F2} in range; insideValue={insideValue} relax={cfg.RelaxVAEdgesWhenOutsideValue}");
@@ -9835,7 +13886,7 @@ namespace MyNamespace.Strategies
                 }
             }
 
-            if (closestStrongBlocker.HasValue)
+            if (cfg.UseHvnZonesForBlocking && closestStrongBlocker.HasValue)
             {
                 int distTicks = TicksBetweenAbs(closestStrongBlocker.Value, currentPrice);
                 int minAllowed = Math.Max(dMinTicks, riskTicks * cfg.MinBlockerDistanceTicksVsRisk);
@@ -10058,9 +14109,9 @@ namespace MyNamespace.Strategies
             };
         }
 
-        
 
-        
+
+
 
 
         private decimal TryGetFillPrice(Order order, Security sec)
@@ -10157,7 +14208,7 @@ namespace MyNamespace.Strategies
         // Diese Methode wird automatisch von ATAS aufgerufen, wenn sich der Status einer Order ?ndert.
         protected override void OnOrderChanged(Order order)
         {
-           
+
             base.OnOrderChanged(order);
 
             //this.LogInfo($"[OnOrderChanged] Order received - Id: {order?.Id}, Status: {order?.Status()}, Direction: {order?.Direction}, Type: {order?.Type}");
@@ -10282,7 +14333,7 @@ namespace MyNamespace.Strategies
                 _isExitPlacementPending = true;
                 _managersInitialized = false;
 
-                
+
                 var dir = _isLongTrade ? OrderDirections.Buy : OrderDirections.Sell;
                 var candle = TryGetCandleAtOrBefore(CurrentBar) ?? _currentCandleData;
                 var levels = BuildLevelsSnapshot(_untouchedLevels);
@@ -10407,7 +14458,7 @@ namespace MyNamespace.Strategies
                 // Fallback: Setup1-Defaults setzen 
                 var setup = new SetupParams
                 {
-                    TpTicks = 15,                    
+                    TpTicks = 15,
                     SlTicks = 8,
                     BreakEvenLevelsTrendConfig = "10:2;15:10",  // Dein BE-Config
                     EarlyExitLevels = "",  // Deaktiviert
@@ -10514,17 +14565,17 @@ namespace MyNamespace.Strategies
                 }
             }
 
-            
+
             _entryFillPrice = entryPrice;
             _currentTradeDirection = tradeDirection;
 
-            this.LogInfo($"[PlaceTpSlOrders{methodSuffix}] Entry final: {_entryFillPrice:F5}, Dir: {_currentTradeDirection}, ATR: {_currentAtrValue:F5}");
+            this.LogInfo($"[PlaceTpSlOrders{methodSuffix}] Entry final: {_entryFillPrice:F5}, Dir: {_currentTradeDirection}");
 
             // Context aufbauen - mit Validierungs-Logs
             // Weg-Frei Status f?r TP/SL berechnen
             bool wegFreiLong = true;
             bool wegFreiShort = true;
-            
+
             if (EnableMicroCompositeSystem)
             {
                 var tickSize = InstrumentInfo?.TickSize ?? _tickSize;
@@ -10545,7 +14596,7 @@ namespace MyNamespace.Strategies
                 Tick = InstrumentInfo?.TickSize ?? 0.25m,
                 SetupParams = _activeTradeSetupParams,
                 TriggerLevel = _currentTriggerLevel,
-                
+
                 // NEU: System-Status f?r separate TP/SL-Strategien
                 EnableIsBlocked = this.EnableIsBlocked,
                 EnableMicroCompositeSystem = this.EnableMicroCompositeSystem,
@@ -10656,8 +14707,8 @@ namespace MyNamespace.Strategies
                 }
             }
         }
-                     
-                
+
+
         private void ResetTradeState()
         {
             this.LogInfo("ResetTradeState() aufgerufen: Setze alle Order- und Setup-Settings zur?ck.");
@@ -10828,8 +14879,8 @@ namespace MyNamespace.Strategies
                 }
 
                 // **3. Best-since-entry initialisieren (mit Null-Check)**
-                
-                
+
+
                 _managersInitialized = true;
                 this.LogInfo("[InitializeManagersAfterEntry] Manager-Initialisierung erfolgreich abgeschlossen.");
             }
@@ -11104,15 +15155,35 @@ namespace MyNamespace.Strategies
                 this.LogInfo("[LEVEL-AUTO] Level-System automatisch aktiviert, da Visualisierung gew?nscht.");
             }
 
-            // Auto-Aktivierung: Wenn Visualisierung gew?nscht aber MicroComposite-System deaktiviert
-            if (ShowMicroCompositeLevels && !EnableMicroCompositeSystem)
-            {
-                EnableMicroCompositeSystem = true;
-                this.LogInfo("[MC-AUTO] MicroComposite-System automatisch aktiviert, da Visualisierung gew?nscht.");
-            }
-
-            if (!EnableSignificantPreviousLevels && !ShowMicroCompositeLevels)
+            if (!EnableSignificantPreviousLevels && !ShowMicroCompositeLevels && !ShowDailyProfileLevels && !ShowDailyHistogram && !ShowMarketStructureZones && !ShowSyntheticTick900CandlesDebug && !ShowMarketStateV2Overlay)
                 return;
+
+            if (ShowMarketStateV2Overlay)
+            {
+                try
+                {
+                    var text = _marketStateV2OverlayText;
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        var font = _axisFont;
+                        var size = context.MeasureString(text, font);
+                        int y = 10;
+                        int rectW = size.Width + 10;
+                        int rectH = size.Height + 6;
+                        int chartW = 0;
+                        try { chartW = ChartInfo.PriceChartContainer.Region.Width; } catch { chartW = 0; }
+                        int x = (chartW > 0) ? Math.Max(0, (chartW - rectW) / 2) : 10;
+                        if (chartW > 0)
+                            x = Math.Min(x, Math.Max(0, chartW - rectW));
+                        var rect = new System.Drawing.Rectangle(x, y, rectW, rectH);
+                        context.FillRectangle(System.Drawing.Color.FromArgb(160, System.Drawing.Color.Black), rect);
+                        context.DrawString(text, font, System.Drawing.Color.White, rect.X + 5, rect.Y + 3);
+                    }
+                }
+                catch
+                {
+                }
+            }
 
             int x1 = ChartInfo.PriceChartContainer.Region.Width - Length;
             int x2 = ChartInfo.PriceChartContainer.Region.Width;
@@ -11179,6 +15250,7 @@ namespace MyNamespace.Strategies
                     // HVN-Zonen (Rot)
                     if (mc.HVNZones != null && mc.HVNZones.Count > 0 && ShowZoneRects)
                     {
+                        var pathCfg = GetPathConfig();
                         int hvnZoneWidth = (x2 - x1) / 2;
                         int hvnX1 = x2 - hvnZoneWidth;
 
@@ -11187,6 +15259,16 @@ namespace MyNamespace.Strategies
                             decimal pStart = z.Item1;
                             decimal pEnd = z.Item2;
 
+                            decimal centerPrice = (pStart + pEnd) / 2m;
+                            bool isStrong = IsStrongHVN(centerPrice, mc, pathCfg, _tickSize, IsInsideValue(mc, centerPrice));
+
+                            var penEdge = isStrong
+                                ? new RenderPen(System.Drawing.Color.DarkRed, 2)
+                                : penHVNEdge;
+                            var fillColor = isStrong
+                                ? System.Drawing.Color.FromArgb(95, System.Drawing.Color.Red)
+                                : System.Drawing.Color.FromArgb(50, System.Drawing.Color.IndianRed);
+
                             int yStart = (int)ChartInfo.GetYByPrice(pStart, false);
                             int yEnd = (int)ChartInfo.GetYByPrice(pEnd, false);
                             int top = Math.Min(yStart, yEnd);
@@ -11194,19 +15276,18 @@ namespace MyNamespace.Strategies
                             if (bottom == top) bottom = top + 1;
 
                             var rect = new System.Drawing.Rectangle(hvnX1, top, x2 - hvnX1, bottom - top);
-                            context.FillRectangle(System.Drawing.Color.FromArgb(50, System.Drawing.Color.IndianRed), rect);
+                            context.FillRectangle(fillColor, rect);
 
-                            context.DrawLine(penHVNEdge, hvnX1, yStart, x2, yStart);
-                            context.DrawLine(penHVNEdge, hvnX1, yEnd, x2, yEnd);
+                            context.DrawLine(penEdge, hvnX1, yStart, x2, yStart);
+                            context.DrawLine(penEdge, hvnX1, yEnd, x2, yEnd);
 
-                            DrawLabelOnPriceAxis(context, "HVN", top, _axisFont, System.Drawing.Color.IndianRed, _axisTextColor);
+                            DrawLabelOnPriceAxis(context, "HVN", top, _axisFont, isStrong ? System.Drawing.Color.DarkRed : System.Drawing.Color.IndianRed, _axisTextColor);
 
                             // Optional: genau eine Centerline je finaler Zone
                             if (ShowZoneCenters)
                             {
-                                decimal centerPrice = (pStart + pEnd) / 2m;
                                 int yCenter = (int)ChartInfo.GetYByPrice(centerPrice, false);
-                                context.DrawLine(penHVNCenter, hvnX1, yCenter, x2, yCenter);
+                                context.DrawLine(isStrong ? new RenderPen(System.Drawing.Color.DarkRed, 2) : penHVNCenter, hvnX1, yCenter, x2, yCenter);
                             }
                         }
                     }
@@ -11250,9 +15331,372 @@ namespace MyNamespace.Strategies
                     // Entfernt: Schleifen ?ber mc.HVNs / mc.LVNs (das waren Centerlines vieler Kandidaten)
                 }
             }
+
+            // 3) Daily Profile (nur Zonen, getrennt von MicroComposite)
+            if (ShowDailyProfileLevels)
+            {
+                var d = _dailyProfileForVisual ?? _dailyProfileForPath;
+                if (d != null)
+                {
+                    var penHVNEdge = new RenderPen(System.Drawing.Color.FromArgb(180, System.Drawing.Color.RoyalBlue), 1);
+                    penHVNEdge.DashPattern = new float[] { 4f, 3f };
+                    var penLVNEdge = new RenderPen(System.Drawing.Color.FromArgb(180, System.Drawing.Color.MediumPurple), 1);
+                    penLVNEdge.DashPattern = new float[] { 4f, 3f };
+
+                    int hvnX1 = x1;
+                    int lvnX1 = x1;
+
+                    // HVN-Zonen (Daily)
+                    if (d.HVNZones != null && d.HVNZones.Count > 0 && ShowZoneRects)
+                    {
+                        var pathCfg = GetDailyPathConfig();
+                        foreach (var z in d.HVNZones)
+                        {
+                            decimal pStart = z.Item1;
+                            decimal pEnd = z.Item2;
+
+                            decimal centerPrice = (pStart + pEnd) / 2m;
+                            bool isStrong = IsStrongHVN(centerPrice, d, pathCfg, _tickSize, IsInsideValue(d, centerPrice));
+
+                            var fillColor = isStrong
+                                ? System.Drawing.Color.FromArgb(85, System.Drawing.Color.RoyalBlue)
+                                : System.Drawing.Color.FromArgb(45, System.Drawing.Color.RoyalBlue);
+
+                            int yStart = (int)ChartInfo.GetYByPrice(pStart, false);
+                            int yEnd = (int)ChartInfo.GetYByPrice(pEnd, false);
+                            int top = Math.Min(yStart, yEnd);
+                            int bottom = Math.Max(yStart, yEnd);
+                            if (bottom == top) bottom = top + 1;
+
+                            var rect = new System.Drawing.Rectangle(hvnX1, top, x2 - hvnX1, bottom - top);
+                            context.FillRectangle(fillColor, rect);
+                            context.DrawLine(isStrong ? new RenderPen(System.Drawing.Color.RoyalBlue, 2) : penHVNEdge, hvnX1, yStart, x2, yStart);
+                            context.DrawLine(isStrong ? new RenderPen(System.Drawing.Color.RoyalBlue, 2) : penHVNEdge, hvnX1, yEnd, x2, yEnd);
+
+                            DrawLabelOnPriceAxis(context, "HVN-D", top, _axisFont, System.Drawing.Color.RoyalBlue, _axisTextColor);
+                        }
+                    }
+
+                    // LVN-Zonen (Daily)
+                    if (d.LVNZones != null && d.LVNZones.Count > 0 && ShowZoneRects)
+                    {
+                        foreach (var z in d.LVNZones)
+                        {
+                            decimal pStart = z.Item1;
+                            decimal pEnd = z.Item2;
+
+                            int yStart = (int)ChartInfo.GetYByPrice(pStart, false);
+                            int yEnd = (int)ChartInfo.GetYByPrice(pEnd, false);
+                            int top = Math.Min(yStart, yEnd);
+                            int bottom = Math.Max(yStart, yEnd);
+                            if (bottom == top) bottom = top + 1;
+
+                            var rect = new System.Drawing.Rectangle(lvnX1, top, x2 - lvnX1, bottom - top);
+                            context.FillRectangle(System.Drawing.Color.FromArgb(35, System.Drawing.Color.MediumPurple), rect);
+                            context.DrawLine(penLVNEdge, lvnX1, yStart, x2, yStart);
+                            context.DrawLine(penLVNEdge, lvnX1, yEnd, x2, yEnd);
+
+                            DrawLabelOnPriceAxis(context, "LVN-D", top, _axisFont, System.Drawing.Color.MediumPurple, _axisTextColor);
+                        }
+                    }
+                }
+            }
+
+            // 4) Daily Histogramm (Market-Profile Style)
+            if (ShowDailyHistogram)
+            {
+                var d = _dailyProfileForPath;
+                var hist = d?.LevelVols;
+                if (hist != null && hist.Count > 0 && _tickSize > 0m)
+                {
+                    decimal maxVol = 0m;
+                    foreach (var kv in hist)
+                        if (kv.Value > maxVol) maxVol = kv.Value;
+
+                    if (maxVol > 0m)
+                    {
+                        int right = ChartInfo.PriceChartContainer.Region.Width;
+                        int barWidthPx = Math.Max(20, DailyHistogramWidthPx);
+                        int alpha = Math.Max(5, Math.Min(255, DailyHistogramOpacity));
+                        var fillColor = System.Drawing.Color.FromArgb(alpha, System.Drawing.Color.SteelBlue);
+
+                        foreach (var kv in hist)
+                        {
+                            var price = kv.Key;
+                            var vol = kv.Value;
+                            if (vol <= 0m) continue;
+
+                            int y = (int)ChartInfo.GetYByPrice(price, false);
+                            int y2 = (int)ChartInfo.GetYByPrice(price + _tickSize, false);
+                            int h = Math.Max(1, Math.Abs(y2 - y));
+
+                            int w = (int)Math.Round((double)(vol / maxVol) * barWidthPx);
+                            if (w <= 0) continue;
+                        }
+                    }
+                }
+            }
+
+            // 4b) MarketStructure (Tick900) Zones
+            if (ShowMarketStructureZones)
+            {
+                MarketStructureContext.Zone[] zones = null;
+                try
+                {
+                    zones = _marketStructureContext?.ActiveZones?.ToArray();
+                }
+                catch { }
+
+                if (!_msZonesSnapshotDiagLogged)
+                {
+                    _msZonesSnapshotDiagLogged = true;
+                    int localCount = 0;
+                    try { localCount = zones?.Length ?? 0; } catch { }
+                    int snapCount = 0;
+                    try { snapCount = ReadZonesSnapshot()?.Count ?? 0; } catch { }
+                    this.LogInfo($"[MarketStructure:{_msInstanceId}] Render diag: isLeader={IsMarketStructureLeader()} localZones={localCount} snapZones={snapCount} mmf='{_msZonesMmfName ?? "-"}'");
+                }
+
+                if (!IsMarketStructureLeader())
+                {
+                    var snap = ReadZonesSnapshot();
+                    if (snap.Count > 0)
+                    {
+                        zones = snap
+                            .Select(s => new MarketStructureContext.Zone
+                            {
+                                Id = s.Id,
+                                Type = s.Type,
+                                Status = s.Status,
+                                Low = s.Low,
+                                High = s.High,
+                                IsMultiTouch = s.IsMultiTouch,
+                                MultiTouchScore = s.MultiTouchScore,
+                                IsConfirmed = s.IsConfirmed,
+                                CreatedBar = 0,
+                                LastTouchedBar = 0
+                            })
+                            .ToArray();
+                    }
+                }
+
+                if ((zones == null || zones.Length == 0) && !_msZonesDiagLogged)
+                {
+                    _msZonesDiagLogged = true;
+                    int ctxCount = 0;
+                    try { ctxCount = _marketStructureContext?.ActiveZones?.Count ?? 0; } catch { }
+                    this.LogInfo($"[MarketStructure:{_msInstanceId}] ShowMarketStructureZones enabled but no zones to draw. active={ctxCount} tickBars={_msTick900Bar} backfillCompleted={_msTick900BackfillCompleted}");
+                }
+
+                if (zones != null && zones.Length > 0)
+                {
+                    int xLeft = 0;
+                    int xRight = ChartInfo.PriceChartContainer.Region.Width;
+                    var penSupport = new RenderPen(System.Drawing.Color.FromArgb(200, System.Drawing.Color.ForestGreen), 1);
+                    var penResistance = new RenderPen(System.Drawing.Color.FromArgb(200, System.Drawing.Color.IndianRed), 1);
+                    var fillSupport = System.Drawing.Color.FromArgb(28, System.Drawing.Color.ForestGreen);
+                    var fillResistance = System.Drawing.Color.FromArgb(28, System.Drawing.Color.IndianRed);
+                    var fillTriggered = System.Drawing.Color.FromArgb(45, System.Drawing.Color.Goldenrod);
+
+                    foreach (var z in zones)
+                    {
+                        if (z == null)
+                            continue;
+                        // Nur frische/aktive Zonen zeichnen. Getriggerte/benutzte Zonen sollen verschwinden.
+                        if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
+                            continue;
+
+                        bool doLog = false;
+                        if (z.Id == 11 && !_msZone11RenderDiagLogged) { _msZone11RenderDiagLogged = true; doLog = true; }
+                        else if (z.Id == 12 && !_msZone12RenderDiagLogged) { _msZone12RenderDiagLogged = true; doLog = true; }
+                        else if (z.Id == 13 && !_msZone13RenderDiagLogged) { _msZone13RenderDiagLogged = true; doLog = true; }
+                        if (doLog)
+                            this.LogInfo($"[MarketStructure:{_msInstanceId}] Render ZoneDiag id={z.Id} source={(IsMarketStructureLeader() ? "local" : "snapshot")} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} bounds=[{z.Low:F2}..{z.High:F2}]");
+
+                        int yLow = (int)ChartInfo.GetYByPrice(z.Low, false);
+                        int yHigh = (int)ChartInfo.GetYByPrice(z.High, false);
+                        int top = Math.Min(yLow, yHigh);
+                        int bottom = Math.Max(yLow, yHigh);
+                        if (bottom == top)
+                            bottom = top + 1;
+
+                        var rect = new System.Drawing.Rectangle(xLeft, top, xRight - xLeft, bottom - top);
+                        var baseFill = (z.Type == MarketStructureContext.ZoneType.Support ? fillSupport : fillResistance);
+                        var basePen = z.Type == MarketStructureContext.ZoneType.Support ? penSupport : penResistance;
+
+                        int strength = 0;
+                        try { strength = z.IsMultiTouch ? Math.Max(1, z.MultiTouchScore) : 0; } catch { strength = 0; }
+
+                        // Normal zones: lighter (more transparent). MultiTouch zones: darker (less transparent)
+                        // strength 1 => strong, strength>=2 => very strong
+                        int fillAlpha = strength <= 0 ? 28 : (strength == 1 ? 55 : 80);
+                        int penAlpha = strength <= 0 ? 200 : (strength == 1 ? 230 : 255);
+
+                        // Pending zones: intentionally drawn much lighter and in gray so you can
+                        // see they are tradable for Immediate (A) but not yet zigzag-confirmed.
+                        bool pending = false;
+                        try { pending = !z.IsConfirmed; } catch { pending = false; }
+                        if (pending)
+                        {
+                            fillAlpha = Math.Max(6, fillAlpha / 4);
+                            penAlpha = Math.Max(80, penAlpha / 2);
+                        }
+
+                        var fillColor = pending
+                            ? System.Drawing.Color.FromArgb(fillAlpha, System.Drawing.Color.Gray)
+                            : System.Drawing.Color.FromArgb(fillAlpha, baseFill);
+                        var penColor = pending
+                            ? System.Drawing.Color.FromArgb(penAlpha, System.Drawing.Color.LightGray)
+                            : System.Drawing.Color.FromArgb(penAlpha, basePen.Color);
+                        var pen = new RenderPen(penColor, basePen.Width);
+
+                        context.FillRectangle(fillColor, rect);
+                        context.DrawLine(pen, xLeft, yLow, xRight, yLow);
+                        context.DrawLine(pen, xLeft, yHigh, xRight, yHigh);
+
+                        if (ShowMarketStructureZoneLabels)
+                        {
+                            int yMid = (int)ChartInfo.GetYByPrice(z.Mid, false);
+                            string label = z.Type == MarketStructureContext.ZoneType.Support
+                                ? $"SUP Z{z.Id}"
+                                : $"RES Z{z.Id}";
+
+                            if (z.IsMultiTouch)
+                                label += $" MT{Math.Max(1, z.MultiTouchScore)}";
+
+                            if (pending)
+                                label += " P";
+
+                            DrawLabelOnPriceAxis(
+                                context,
+                                label,
+                                yMid,
+                                _axisFont,
+                                z.Type == MarketStructureContext.ZoneType.Support ? penColor : penColor,
+                                _axisTextColor);
+                        }
+                    }
+                }
+            }
+
+            // 5) Synthetic Tick900 debug candles (OHLC overlay)
+            if (ShowSyntheticTick900CandlesDebug)
+            {
+                try
+                {
+                    // Draw only a limited recent window for performance.
+                    int max = 80;
+                    var formingCandle = _msTick900Aggregator != null ? _msTick900Aggregator.GetCurrentFormingCandle() : null;
+                    int closedMax = Math.Max(0, max - (formingCandle != null ? 1 : 0));
+                    int startIdx = Math.Max(0, _msTick900ClosedCandles.Count - closedMax);
+                    var col = System.Drawing.Color.FromArgb(170, System.Drawing.Color.Magenta);
+                    var penWick = new RenderPen(col, 1);
+                    var fillUp = System.Drawing.Color.FromArgb(70, System.Drawing.Color.Magenta);
+                    var fillDown = System.Drawing.Color.FromArgb(35, System.Drawing.Color.Magenta);
+
+                    // Thin rendering: only one synthetic candle per chart bar.
+                    // Iterate newest->oldest so we keep the *latest* synthetic candle for each chart bar.
+                    var seenBars = new HashSet<int>();
+
+                    if (formingCandle != null)
+                    {
+                        DateTime ptA0 = NormalizeToChartTime(formingCandle.Time);
+                        DateTime ptB0 = NormalizeToChartTime(formingCandle.LastTime != default ? formingCandle.LastTime : formingCandle.Time);
+                        int barA0 = FindChartBarByTime(ptA0);
+                        int barB0 = FindChartBarByTime(ptB0);
+
+                        int candA0 = barA0 >= 0 ? FindBestChartBarMatchForSyntheticTickCandle(barA0, formingCandle) : -1;
+                        int candB0 = barB0 >= 0 ? FindBestChartBarMatchForSyntheticTickCandle(barB0, formingCandle) : -1;
+
+                        int bar0 = candA0 >= 0 ? candA0 : candB0;
+                        if (candA0 >= 0 && candB0 >= 0)
+                        {
+                            var ca = GetCandle(candA0);
+                            var cb = GetCandle(candB0);
+                            decimal ts0 = _tickSize > 0m ? _tickSize : 0.25m;
+                            var sa = ScoreChartCandleVsSyntheticOHLC(ca, formingCandle, ts0);
+                            var sb = ScoreChartCandleVsSyntheticOHLC(cb, formingCandle, ts0);
+                            bar0 = sa <= sb ? candA0 : candB0;
+                        }
+
+                        bar0 = FindBestChartBarMatchForSyntheticTickCandleWide(bar0, formingCandle, 60);
+
+                        if (bar0 >= 0 && seenBars.Add(bar0))
+                        {
+                            int x0 = GetXByBarSafe(bar0);
+                            int yHigh0 = (int)ChartInfo.GetYByPrice(formingCandle.High, false);
+                            int yLow0 = (int)ChartInfo.GetYByPrice(formingCandle.Low, false);
+                            int yOpen0 = (int)ChartInfo.GetYByPrice(formingCandle.Open, false);
+                            int yClose0 = (int)ChartInfo.GetYByPrice(formingCandle.Close, false);
+
+                            context.DrawLine(penWick, x0, yHigh0, x0, yLow0);
+
+                            int top0 = Math.Min(yOpen0, yClose0);
+                            int bottom0 = Math.Max(yOpen0, yClose0);
+                            if (bottom0 == top0) bottom0 = top0 + 1;
+                            int bodyW0 = 4;
+                            var rect0 = new System.Drawing.Rectangle(x0 - bodyW0 / 2, top0, bodyW0, bottom0 - top0);
+                            context.FillRectangle(formingCandle.Close >= formingCandle.Open ? fillUp : fillDown, rect0);
+                            context.DrawRectangle(penWick, rect0);
+                        }
+                    }
+
+                    for (int i = _msTick900ClosedCandles.Count - 1; i >= startIdx; i--)
+                    {
+                        var c = _msTick900ClosedCandles[i];
+                        if (c == null)
+                            continue;
+
+                        // Map by candle start time to align with ATAS Tick(900) bar timestamping.
+                        DateTime ptA = NormalizeToChartTime(c.Time);
+                        DateTime ptB = NormalizeToChartTime(c.LastTime != default ? c.LastTime : c.Time);
+                        int barA = FindChartBarByTime(ptA);
+                        int barB = FindChartBarByTime(ptB);
+
+                        int candA = barA >= 0 ? FindBestChartBarMatchForSyntheticTickCandle(barA, c) : -1;
+                        int candB = barB >= 0 ? FindBestChartBarMatchForSyntheticTickCandle(barB, c) : -1;
+
+                        int bar = candA >= 0 ? candA : candB;
+                        if (candA >= 0 && candB >= 0)
+                        {
+                            var ca = GetCandle(candA);
+                            var cb = GetCandle(candB);
+                            decimal ts = _tickSize > 0m ? _tickSize : 0.25m;
+                            var sa = ScoreChartCandleVsSyntheticOHLC(ca, c, ts);
+                            var sb = ScoreChartCandleVsSyntheticOHLC(cb, c, ts);
+                            bar = sa <= sb ? candA : candB;
+                        }
+
+                        bar = FindBestChartBarMatchForSyntheticTickCandleWide(bar, c, 60);
+                        if (bar < 0)
+                            continue;
+
+                        // Skip if we already drew a candle for this chart bar.
+                        if (!seenBars.Add(bar))
+                            continue;
+
+                        int x = GetXByBarSafe(bar);
+                        int yHigh = (int)ChartInfo.GetYByPrice(c.High, false);
+                        int yLow = (int)ChartInfo.GetYByPrice(c.Low, false);
+                        int yOpen = (int)ChartInfo.GetYByPrice(c.Open, false);
+                        int yClose = (int)ChartInfo.GetYByPrice(c.Close, false);
+
+                        // Wick
+                        context.DrawLine(penWick, x, yHigh, x, yLow);
+
+                        // Body as small rectangle (much easier to read than a vertical line)
+                        int top = Math.Min(yOpen, yClose);
+                        int bottom = Math.Max(yOpen, yClose);
+                        if (bottom == top) bottom = top + 1;
+                        int bodyW = 4;
+                        var rect = new System.Drawing.Rectangle(x - bodyW / 2, top, bodyW, bottom - top);
+                        context.FillRectangle(c.Close >= c.Open ? fillUp : fillDown, rect);
+                        context.DrawRectangle(penWick, rect);
+                    }
+                }
+                catch { }
+            }
         }
-
-
 
         // Ende OnRender Methode
 
@@ -11366,13 +15810,13 @@ namespace MyNamespace.Strategies
                 return;
             }
 
-                     
+
 
             var market = new Order
             {
                 Portfolio = Portfolio,
                 Security = Security,
-                Direction = direction, 
+                Direction = direction,
                 Type = OrderTypes.Market,         // Zum aktuellen Marktpreis schlie?en
                 QuantityToFill = HandelsMenge
             };
@@ -11380,7 +15824,7 @@ namespace MyNamespace.Strategies
             _marketOrder = market;
 
             OpenOrder(market);
-            this.LogInfo($"[PlaceMarketEntry] Platziere Market Order: Dir={direction}, Qty={HandelsMenge}."); 
+            this.LogInfo($"[PlaceMarketEntry] Platziere Market Order: Dir={direction}, Qty={HandelsMenge}.");
 
             // Die Initialisierung der Manager (TP/SL) erfolgt, sobald die Order gef?llt ist,
             // da OnOrderChanged den _entryFillPrice aktualisiert und dann InitializeManagersAfterEntry aufruft.
@@ -11403,7 +15847,7 @@ namespace MyNamespace.Strategies
                 return;
             }
 
-            
+
 
             // ggf. alte Exit-Orders verwerfen (falls diese Methode aus irgendeinem Grund erneut aufgerufen w?rde,
             // obwohl noch Exit-Orders aus alten Trades ausstehen, was nicht passieren sollte)
@@ -11423,7 +15867,7 @@ namespace MyNamespace.Strategies
 
         } // Ende PlaceEntry Methode
 
-        private void ArmIntrabarEntry(int bar,bool isLong,int bandIdx,decimal bandLevel,decimal signalBarHigh,decimal signalBarLow,decimal targetLevel,string marketSpeed,decimal volZ, decimal? longTriggerOverride = null, decimal? shortTriggerOverride = null,int? reclaimTicksOverride = null,int? nearTicksOverride = null)
+        private void ArmIntrabarEntry(int bar, bool isLong, int bandIdx, decimal bandLevel, decimal signalBarHigh, decimal signalBarLow, decimal targetLevel, string marketSpeed, decimal volZ, decimal? longTriggerOverride = null, decimal? shortTriggerOverride = null, int? reclaimTicksOverride = null, int? nearTicksOverride = null)
         {
             // Nur aus Idle/Cancelled arming ? vermeidet Doppel-Arms
             if (_entryState != EntryState.Idle && _entryState != EntryState.Cancelled)
@@ -11546,22 +15990,20 @@ namespace MyNamespace.Strategies
         {
             foreach (var o in new[] { _pullbackOrder, _entryOrder, _tpOrder, _slOrder })
             {
-                if (o == null) continue;
+                if (o == null)
+                    continue;
+
                 try
                 {
                     if (o.State == OrderStates.Active)
                         CancelOrder(o);
                 }
-                catch { /* ignore */ }
+                catch (Exception ex)
+                {
+                    this.LogWarn($"[CancelAllOpenOrdersIfAny] CancelOrder failed: {ex.Message}");
+                }
             }
-            _pullbackOrder = null;
-            _entryOrder = null;
-            _tpOrder = null;
-            _slOrder = null;
         }
-
-
-
 
         private void CleanupInactiveOrders()
         {
@@ -11580,456 +16022,7 @@ namespace MyNamespace.Strategies
                 this.LogInfo($"[Cleanup] Pullback Order: {_pullbackOrder.Direction} {_pullbackOrder.State}");
                 _pullbackOrder = null;
             }
-            
-        }
-        private void Research_TryAddCandidateForSetup(
-            int bar,
-            string setupId,
-            MarketRegimeDetails marketRegimeDetails,// KEIN NULLABLE, da es immer berechnet wird
-            MyNamespace.Strategies.TradeManagement.ResearchDirection? forceDir = null,
-            // ... bestehende S6-Parameter ...
-            decimal? s6_MinSignalsRequired = null,
-            decimal? s6_ThVolBurstZ = null,
-            decimal? s6_ThCvdImpulseLong = null,
-            decimal? s6_ThCvdImpulseShort = null,
-            bool? s6_LongSetupValid = null,
-            string s6_LongFailedReasons = null, // Kann nicht direkt in ExtraFeatures<decimal>
-            bool? s6_ShortSetupValid = null,
-            string s6_ShortFailedReasons = null, // Kann nicht direkt in ExtraFeatures<decimal>
-            decimal? s6_GateMode = null,
-            decimal? s6_Regime = null, // Das ist bereits das Enum als Dezimal
-            int? s6_DistToPocTicks = null,
-            bool? s6_PocDistanceOk = null,
-            bool? s6_CanProceedLong = null,
-            bool? s6_CanProceedShort = null
-        )
-        {
-            this.LogInfo($"[TryAdd] TryAdd for {setupId}: researchEnabled={_researchEnabled}, snapshot null?={_currentLevelsSnapshot == null}");
 
-            if (!_researchEnabled || _research == null || _currentLevelsSnapshot == null) return;
-
-            var c = GetCandle(bar);
-            decimal entry = (decimal)c.Close;
-
-            bool isVwapSetup = setupId.StartsWith("S3-") || setupId.StartsWith("S5-");  // S3/S5: VWAP-Bounces
-            bool isVahValSetup = setupId.StartsWith("S4-");  // S4: VAH/VAL-Pullback
-
-            // Du hast diese Werte bereits:
-            var atr = _currentAtrValue;
-            var vwapSnapshot = _currentVwapSnapshot;
-            decimal? vwap = _currentVwapSnapshot?.Current;
-            decimal? vwapUpper1 = vwapSnapshot?.UpperBand1;
-            decimal? vwapLower1 = vwapSnapshot?.LowerBand1;
-            decimal? vwapUpper2 = vwapSnapshot?.UpperBand2;
-            decimal? vwapLower2 = vwapSnapshot?.LowerBand2;
-            decimal? vwapUpper3 = vwapSnapshot?.UpperBand3;
-            decimal? vwapLower3 = vwapSnapshot?.LowerBand3;
-
-            int? distToVwapTicks = (vwap.HasValue && vwap.Value != 0m)
-               ? TicksBetween(entry, vwap.Value)
-               : (int?)null;
-
-            int? distToVwapUpper1Ticks = (vwapUpper1.HasValue && vwapUpper1.Value > 0m)
-               ? TicksBetween(entry, vwapUpper1.Value)
-               : (int?)null;
-
-            int? distToVwapLower1Ticks = (vwapLower1.HasValue && vwapLower1.Value > 0m)
-               ? TicksBetween(entry, vwapLower1.Value)
-               : (int?)null;
-
-            int? distToVwapUpper2Ticks = (vwapUpper2.HasValue && vwapUpper2.Value > 0m)
-               ? TicksBetween(entry, vwapUpper2.Value)
-               : (int?)null;
-
-            int? distToVwapLower2Ticks = (vwapLower2.HasValue && vwapLower2.Value > 0m)
-               ? TicksBetween(entry, vwapLower2.Value)
-               : (int?)null;
-
-            int? distToVwapUpper3Ticks = (vwapUpper3.HasValue && vwapUpper3.Value > 0m)
-               ? TicksBetween(entry, vwapUpper3.Value)
-               : (int?)null;
-
-            int? distToVwapLower3Ticks = (vwapLower3.HasValue && vwapLower3.Value > 0m)
-               ? TicksBetween(entry, vwapLower3.Value)
-               : (int?)null;
-
-            
-            // Snapshot-Logik: CurrentVAH/VAL sind decimal (default 0m), g?ltig nur wenn > 0m gesetzt (aus BuildLevelsSnapshot)
-            var snap = _currentLevelsSnapshot;  // F?r bessere Lesbarkeit
-            bool isNearVAH = snap.CurrentVAH > 0m && Math.Abs(DistIfSet(entry, snap.CurrentVAH)) <= _researchProximityTicks;
-            bool isNearVAL = snap.CurrentVAL > 0m && Math.Abs(DistIfSet(entry, snap.CurrentVAL)) <= _researchProximityTicks;
-
-            // Optional: Debug-Log f?r Snapshot-Werte (entferne nach Test)
-            this.LogInfo($"[TryAdd] Snapshot Debug: CurrentVAH={snap.CurrentVAH} (valid? {snap.CurrentVAH > 0m}), CurrentVAL={snap.CurrentVAL} (valid? {snap.CurrentVAL > 0m}), isNearVAH={isNearVAH}, isNearVAL={isNearVAL}");
-
-            // Setup-spezifische Level-Bestimmung (ersetzt den einfachen FindNearestRelevantLevel-Aufruf)
-            string lvlKey = "NA";
-            decimal lvlPrice = 0m;
-            int distTicks = int.MaxValue;
-
-            if (isVwapSetup)
-            {
-                // Erweiterte VWAP-Band-Priorisierung (neu: Schleife f?r alle Bands)
-                var vwapBands = new (decimal? price, string key, int? dist)[]
-                {
-                    (vwap, "VWAP", distToVwapTicks),
-                    (vwapUpper1, "VWAP-Upper1", distToVwapUpper1Ticks),
-                    (vwapLower1, "VWAP-Lower1", distToVwapLower1Ticks),
-                    (vwapUpper2, "VWAP-Upper2", distToVwapUpper2Ticks),
-                    (vwapLower2, "VWAP-Lower2", distToVwapLower2Ticks),
-                    (vwapUpper3, "VWAP-Upper3", distToVwapUpper3Ticks),
-                    (vwapLower3, "VWAP-Lower3", distToVwapLower3Ticks)
-                };
-                distTicks = int.MaxValue;
-                foreach (var band in vwapBands)
-                {
-                    if (band.dist.HasValue && band.price.HasValue && band.price.Value > 0m && Math.Abs(band.dist.Value) < distTicks)
-                    {
-                        distTicks = Math.Abs(band.dist.Value);
-                        lvlKey = band.key;
-                        lvlPrice = band.price.Value;
-                    }
-                }
-            }
-            else if (isVahValSetup)
-            {
-                // F?r S4: Priorisiere VAH/VAL aus Snapshot (KORRIGIERT: > 0m statt HasValue und .Value)
-                // Snapshot-Logik: Nur wenn > 0m (aus BuildLevelsSnapshot-Mapping, z. B. "VAH aktuell")
-                if (isNearVAH && snap.CurrentVAH > 0m)
-                {
-                    lvlPrice = snap.CurrentVAH;  // Direkter Zugriff, kein .Value (da decimal)
-                    distTicks = DistIfSet(entry, snap.CurrentVAH);
-                    lvlKey = "CurrentVAH";
-                }
-                else if (isNearVAL && snap.CurrentVAL > 0m)
-                {
-                    lvlPrice = snap.CurrentVAL;  // Direkter Zugriff, kein .Value (da decimal)
-                    distTicks = DistIfSet(entry, snap.CurrentVAL);
-                    lvlKey = "CurrentVAL";
-                }
-                else
-                {
-                    // Fallback zu Snapshot (z. B. andere Levels wie PP, R1 etc.)
-                    var (fallbackKey, fallbackPrice, fallbackDist) = FindNearestRelevantLevel(entry, _currentLevelsSnapshot);
-                    if (fallbackDist < distTicks)
-                    {
-                        lvlKey = fallbackKey;
-                        lvlPrice = fallbackPrice;
-                        distTicks = fallbackDist;
-                    }
-                }
-            }
-            else
-            {
-                // F?r S1/S2: Standard Snapshot-Check (z. B. POC, Pivots aus BuildLevelsSnapshot)
-                var (fallbackKey, fallbackPrice, fallbackDist) = FindNearestRelevantLevel(entry, _currentLevelsSnapshot);
-                lvlKey = fallbackKey;
-                lvlPrice = fallbackPrice;
-                distTicks = fallbackDist;
-            }
-
-            // Setup-spezifischer Proximity-Check (locker f?r VWAP-Setups)
-            // DistIfSet handhabt 0m-Werte korrekt (aus Snapshot-Logik)
-            int maxProximity = isVwapSetup || isVahValSetup ? _researchProximityTicks * 2 : _researchProximityTicks;  // z. B. doppelt so weit f?r VWAP
-            this.LogInfo($"[TryAdd] TryAdd {setupId}: Nearest Level={lvlKey} @ {lvlPrice}, distTicks={distTicks}, proximityThreshold={maxProximity}");
-            if (distTicks < 0 || distTicks > maxProximity)
-            {
-                this.LogInfo($"[TryAdd] SKIPPED {setupId}: distTicks={distTicks} > {maxProximity}");  // Debug (angepasst zu LogInfo)
-                return;
-            }
-            this.LogInfo($"[TryAdd] TryAdd {setupId} SUCCESS: Adding candidate with lvl={lvlKey}, dist={distTicks}");  // Erweitert um neue Infos
-
-            // Richtung: forceDir priorisieren, dann Level-Crossover, Fallback VWAP (unver?ndert, kompatibel mit neuer lvlPrice)
-            var dir = forceDir ?? (
-                (lvlPrice != 0m && c.Low <= lvlPrice && c.Close > lvlPrice) ? MyNamespace.Strategies.TradeManagement.ResearchDirection.Long :
-                (lvlPrice != 0m && c.High >= lvlPrice && c.Close < lvlPrice) ? MyNamespace.Strategies.TradeManagement.ResearchDirection.Short :
-                (vwap != 0m && c.Close < vwap ? MyNamespace.Strategies.TradeManagement.ResearchDirection.Short : MyNamespace.Strategies.TradeManagement.ResearchDirection.Long)
-            );
-            this.LogInfo($"[TryAdd] TryAdd {setupId} dir={dir}");  // Optional: Extra Log f?r Richtung
-
-            // OV direkt aus deinen Dictionaries (unver?ndert)
-            var volBurstZ = SafeGet(_volBurstZ, bar);
-            var cvdImpulse = SafeGet(_cvdImpulse, bar);
-            var cvdCoherence = SafeGet(_cvdCoherence, bar);
-            var aggPressure = SafeGet(_aggPressure, bar);
-            var tradeRateZ = SafeGet(_tradeRateZ, bar);
-            var efficiency = SafeGet(_efficiency, bar);
-            var maxBull = SafeGet(_maxCounterShareBull, bar);
-            var maxBear = SafeGet(_maxCounterShareBear, bar);
-
-            // IttZ (Tempo) & Sweep (Richtung)
-            var ittZ_raw = SafeGet(_ittZ_raw, bar);
-            var ittZ_bull = SafeGet(_ittZ_bull, bar);
-            var ittZ_bear = SafeGet(_ittZ_bear, bar);
-
-            int sweepDir = SafeGet(_sweepDir, bar, 0);
-            bool sweepUp = SafeGet(_sweepUp, bar, false);
-            bool sweepDn = SafeGet(_sweepDn, bar, false);
-
-            // Optional: Streak-L?nge der aktuellen Richtung
-            int sweepStreak = SweepStreak(_sweepDir, bar);
-
-            // MicroComposite: direkt aus _currentMC (unver?ndert)
-            var mc = _currentMC;
-            decimal? vpPOC = (mc != null && mc.POC > 0m) ? mc.POC : (decimal?)null;
-            decimal? vpVAH = (mc != null && mc.VAH > 0m) ? mc.VAH : (decimal?)null;
-            decimal? vpVAL = (mc != null && mc.VAL > 0m) ? mc.VAL : (decimal?)null;
-
-            int dPOC = vpPOC.HasValue ? Math.Abs(TicksBetween(entry, vpPOC.Value)) : 0;
-            int dVAH = vpVAH.HasValue ? Math.Abs(TicksBetween(entry, vpVAH.Value)) : 0;
-            int dVAL = vpVAL.HasValue ? Math.Abs(TicksBetween(entry, vpVAL.Value)) : 0;
-
-            decimal? hvn1 = (mc != null && mc.HVNs != null && mc.HVNs.Count > 0) ? mc.HVNs[0] : (decimal?)null;
-            decimal? lvn1 = (mc != null && mc.LVNs != null && mc.LVNs.Count > 0) ? mc.LVNs[0] : (decimal?)null;
-            int hvn1Dist = hvn1.HasValue ? Math.Abs(TicksBetween(entry, hvn1.Value)) : 0;
-            int lvn1Dist = lvn1.HasValue ? Math.Abs(TicksBetween(entry, lvn1.Value)) : 0;
-
-            // ?Weg frei? ? du hast bereits IsNoResistanceInPath / IsNoSupportInPath (unver?ndert)
-            int isWegFrei = 1, firstObstacleTicks = 0; // falls du FirstObstacle nicht brauchst, 0 lassen
-            if (mc != null)
-            {
-                int riskTicksResearch = GetRiskTicks();
-                bool frei = (dir == MyNamespace.Strategies.TradeManagement.ResearchDirection.Long)
-                    ? IsPathFreeLongEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig(), out _)
-                    : IsPathFreeShortEnhanced(entry, _researchPathCheckTicks, riskTicksResearch, mc, null, _tickSize, GetPathConfig(), out _);
-
-                isWegFrei = frei ? 1 : 0;
-            }
-
-
-            // Distanzen zu Kern-Levels aus deinem Snapshot (unver?ndert)
-            // Snapshot-Logik: DistIfSet pr?ft implizit > 0m f?r decimal-Felder
-            int dPDH = DistIfSet(entry, snap.PreviousDayHigh);
-            int dPDL = DistIfSet(entry, snap.PreviousDayLow);
-            int dPDPOC = DistIfSet(entry, snap.PreviousDayPOC);
-
-            int dCurPOC = DistIfSet(entry, snap.CurrentPOC);
-            int dCurVAH = DistIfSet(entry, snap.CurrentVAH);
-            int dCurVAL = DistIfSet(entry, snap.CurrentVAL);
-
-            // RoundLevels sind decimal? (aus BuildLevelsSnapshot), daher HasValue/Value
-            int dRoundBelow = snap.RoundLevelBelow.HasValue ? Math.Abs(TicksBetween(entry, snap.RoundLevelBelow.Value)) : 0;
-            int dRoundAbove = snap.RoundLevelAbove.HasValue ? Math.Abs(TicksBetween(entry, snap.RoundLevelAbove.Value)) : 0;
-
-            // BlockLevels sind wahrscheinlich decimal? (??= Operator), daher HasValue/Value
-            int dBlockRes = snap.LastBlockResistance.HasValue ? Math.Abs(TicksBetween(entry, snap.LastBlockResistance.Value)) : 0;
-            int dBlockSup = snap.LastBlockSupport.HasValue ? Math.Abs(TicksBetween(entry, snap.LastBlockSupport.Value)) : 0;
-
-            // >>> NEU: Extraktion der tats?chlichen VAH/VAL/POC-Preise (aktuell und previous, >0m f?r G?ltigkeit)
-            decimal? currentPOC = snap.CurrentPOC > 0m ? snap.CurrentPOC : (decimal?)null;
-            decimal? currentVAH = snap.CurrentVAH > 0m ? snap.CurrentVAH : (decimal?)null;
-            decimal? currentVAL = snap.CurrentVAL > 0m ? snap.CurrentVAL : (decimal?)null;
-            decimal? previousPOC = snap.PreviousDayPOC > 0m ? snap.PreviousDayPOC : (decimal?)null;  // PreviousDayPOC als POC vom Vortag
-            decimal? previousVAH = snap.PreviousDayVAH > 0m ? snap.PreviousDayVAH : (decimal?)null;  // Annahme: Existiert im Snapshot
-            decimal? previousVAL = snap.PreviousDayVAL > 0m ? snap.PreviousDayVAL : (decimal?)null;  // Annahme: Existiert im Snapshot
-                                                                                               // <<< NEU
-
-            // Input erstellen (unver?ndert, aber mit neuen lvlKey/lvlPrice/distTicks)
-            var input = new MyNamespace.Strategies.TradeManagement.ResearchCandidateInput
-            {
-                StartBarIndex = bar,
-                Time = c.Time,
-                Symbol = InstrumentInfo?.Instrument ?? InstrumentInfo?.ToString() ?? "",
-                Timeframe = _researchTimeframeLabel,
-                SetupId = setupId,
-                Direction = dir,
-
-                LevelKey = string.IsNullOrEmpty(lvlKey) ? "NA" : lvlKey,  // Setup-spezifisch
-                LevelPrice = lvlPrice,  // Setup-spezifisch
-                EntryPrice = entry,
-
-                ATR = atr,
-                VWAP = vwap,
-                DistToVWAPTicks = distToVwapTicks,
-                VWAP_UpperBand1 = vwapUpper1,
-                DistToVWAPUpper1Ticks = distToVwapUpper1Ticks,
-                VWAP_LowerBand1 = vwapLower1,
-                DistToVWAPLower1Ticks = distToVwapLower1Ticks,
-
-                VWAP_UpperBand2 = vwapUpper2,
-                DistToVWAPUpper2Ticks = distToVwapUpper2Ticks,
-                VWAP_LowerBand2 = vwapLower2,
-                DistToVWAPLower2Ticks = distToVwapLower2Ticks,
-
-                VWAP_UpperBand3 = vwapUpper3,
-                DistToVWAPUpper3Ticks = distToVwapUpper3Ticks,
-                VWAP_LowerBand3 = vwapLower3,
-                DistToVWAPLower3Ticks = distToVwapLower3Ticks,
-
-                DistToLevelTicks = (distTicks == int.MaxValue) ? -1 : distTicks,  // Oder -1, oder was auch immer "ung?ltig" bedeutet
-
-
-                // OV (unver?ndert)
-                VolBurstZ = volBurstZ,
-                CvdImpulse = cvdImpulse,
-                CvdCoherence = cvdCoherence,
-                AggPressure = aggPressure,
-                TradeRateZ = tradeRateZ,
-                Efficiency = efficiency,
-                MaxCounterDeltaShare = null, // nicht separat vorhanden
-                MaxCounterShareBull = maxBull,
-                MaxCounterShareBear = maxBear,
-                IttZ_Raw = ittZ_raw,
-                IttZ_Bull = ittZ_bull,
-                IttZ_Bear = ittZ_bear,
-
-                SweepDir = sweepDir,
-                SweepUp = sweepUp ? 1 : 0,
-                SweepDn = sweepDn ? 1 : 0,
-                SweepStreak = sweepStreak,
-
-
-                // VP30 / MicroComposite (unver?ndert)
-                VP30_POC = vpPOC,
-                VP30_VAH = vpVAH,
-                VP30_VAL = vpVAL,
-                VP30_DistToPOCTicks = dPOC,
-                VP30_DistToVAHTicks = dVAH,
-                VP30_DistToVALTicks = dVAL,
-                VP30_IsWegFrei = isWegFrei,
-                VP30_FirstObstacleTicks = firstObstacleTicks,
-                VP30_HVN1Price = hvn1,
-                VP30_HVN1DistTicks = hvn1Dist,
-                VP30_LVN1Price = lvn1,
-                VP30_LVN1DistTicks = lvn1Dist,
-
-                // Day-/Pivot-/Block-/Round (unver?ndert)
-                DistToPDHTicks = dPDH,
-                DistToPDLTicks = dPDL,
-                DistToPDPOCTicks = dPDPOC,
-                DistToPOCTicks = dCurPOC,
-                DistToVAHTicks = dCurVAH,
-                DistToVALTicks = dCurVAL,
-                DistToRoundBelowTicks = dRoundBelow,
-                DistToRoundAboveTicks = dRoundAbove,
-                DistToBlockResTicks = dBlockRes,
-                DistToBlockSupTicks = dBlockSup,
-
-                // >>> NEU: VAH/VAL/POC-Preise hinzuf?gen (nach Distanzen)
-                CurrentPOC = currentPOC,
-                CurrentVAH = currentVAH,
-                CurrentVAL = currentVAL,
-                PreviousPOC = previousPOC,
-                PreviousVAH = previousVAH,
-                PreviousVAL = previousVAL,
-                // <<< NEU
-
-                HorizonBars = _researchHorizonBars,
-                ExtraFeatures = new Dictionary<string, decimal>()
-            };
-
-            // Zusatzflags aus Snapshot (optional) (unver?ndert)
-            // Snapshot-Logik: IsBlockedLong/Short aus BuildLevelsSnapshot (Blocker-Erkennung)
-            if (snap.IsBlockedLong) input.ExtraFeatures["IS_BLOCKED_LONG"] = 1m;
-            if (snap.IsBlockedShort) input.ExtraFeatures["IS_BLOCKED_SHORT"] = 1m;
-            if (snap.SessionHighs.Count > 0) input.ExtraFeatures["SESSION_HIGH_LAST"] = snap.SessionHighs[0].Value;
-            if (snap.SessionLows.Count > 0) input.ExtraFeatures["SESSION_LOW_LAST"] = snap.SessionLows[0].Value;
-
-            // Alle Extra-Level ?bernehmen (ohne vorhandene zu ?berschreiben) (unver?ndert)
-            // Snapshot-Logik: Extra aus Fallbacks und PutExtraIfPositive (z. B. POC, VAH, R1 etc.)
-            if (snap.Extra != null)
-            {
-                foreach (var kv in snap.Extra)
-                {
-                    if (kv.Value <= 0m) continue;
-                    if (!input.ExtraFeatures.ContainsKey(kv.Key))
-                        input.ExtraFeatures[kv.Key] = kv.Value;
-                }
-            }
-
-            // >>> NEU: Kompakte Labels f?r einfache Klassifizierung
-            // Tempo-Label: -1 = FAST, 0 = NEUTRAL, +1 = SLOW
-            int tempoLabel = (ittZ_raw <= -1m) ? -1 : (ittZ_raw >= 1m ? 1 : 0);
-            input.ExtraFeatures["ITTZ_TEMPO_LABEL"] = (decimal)tempoLabel;
-
-            // Sweep-Labels (0m/1m)
-            input.ExtraFeatures["SWEEP_ACTIVE"] = (sweepDir != 0 || sweepUp || sweepDn) ? 1m : 0m;
-            input.ExtraFeatures["SWEEP_CONSISTENT_STREAK_GE2"] = (sweepStreak >= 2) ? 1m : 0m;
-            // <<< NEU
-            // --- NEU: GENERISCHE REGIME DETAILS ZU EXTRAFEATURES HINZUF?GEN ---
-            // Pr?fen Sie auf null-Werte der Eigenschaften, falls diese nullable sind,
-            // oder auf Standardwerte wie 0m, wenn sie nur >0m g?ltig sind.
-            if (marketRegimeDetails.Regime != null) input.ExtraFeatures["REGIME_FINAL_ENUM"] = (decimal)marketRegimeDetails.Regime;
-            input.ExtraFeatures["REGIME_FAST_VOTES"] = marketRegimeDetails.FastVotes;
-            input.ExtraFeatures["REGIME_SLOW_VOTES"] = marketRegimeDetails.SlowVotes;
-            input.ExtraFeatures["REGIME_IS_HIGH_VOL"] = marketRegimeDetails.IsHighVol ? 1m : 0m;
-            input.ExtraFeatures["REGIME_VPS"] = marketRegimeDetails.Vps;
-            input.ExtraFeatures["REGIME_VPS_EMA"] = marketRegimeDetails.VpsEma;
-            input.ExtraFeatures["REGIME_VPS_STD"] = marketRegimeDetails.VpsStd;
-            input.ExtraFeatures["REGIME_Z_SCORE"] = marketRegimeDetails.ZScore;
-            input.ExtraFeatures["REGIME_TRADES_PER_SEC_Z"] = marketRegimeDetails.TradesPerSecZ;
-            input.ExtraFeatures["REGIME_SECONDS_PER_BAR"] = marketRegimeDetails.SecondsPerBar;
-            // --- ENDE NEU: GENERISCHE REGIME DETAILS ---
-            // --- NEU: S6 Spezifische adaptive Schwellenwerte & Parameter hinzuf?gen ---
-            if (setupId == "S6-VARejection") // Nur f?r S6 hinzuf?gen
-            {
-                if (s6_MinSignalsRequired.HasValue) input.ExtraFeatures["S6_MIN_SIGNALS_REQUIRED"] = s6_MinSignalsRequired.Value;
-                if (s6_ThVolBurstZ.HasValue) input.ExtraFeatures["S6_TH_VOL_BURST_Z"] = s6_ThVolBurstZ.Value;
-                if (s6_ThCvdImpulseLong.HasValue) input.ExtraFeatures["S6_TH_CVD_IMPULSE_LONG"] = s6_ThCvdImpulseLong.Value;
-                if (s6_ThCvdImpulseShort.HasValue) input.ExtraFeatures["S6_TH_CVD_IMPULSE_SHORT"] = s6_ThCvdImpulseShort.Value;
-
-                if (s6_LongSetupValid.HasValue) input.ExtraFeatures["S6_LONG_SETUP_VALID"] = s6_LongSetupValid.Value ? 1m : 0m;
-                // Hinweis: s6_LongFailedReasons kann hier nicht direkt gespeichert werden, da ExtraFeatures decimal-Werte erwartet.
-                // F?r die Speicherung von String-basierten Gr?nden m?sste ResearchCandidateInput um ein Dictionary<string, string>
-                // oder dedizierte String-Felder erweitert werden.
-                if (s6_ShortSetupValid.HasValue) input.ExtraFeatures["S6_SHORT_SETUP_VALID"] = s6_ShortSetupValid.Value ? 1m : 0m;
-                // Hinweis: s6_ShortFailedReasons kann hier nicht direkt gespeichert werden, siehe oben.
-
-                if (s6_GateMode.HasValue) input.ExtraFeatures["S6_GATE_MODE"] = s6_GateMode.Value;
-                if (s6_Regime.HasValue) input.ExtraFeatures["S6_REGIME"] = s6_Regime.Value;
-                if (s6_DistToPocTicks.HasValue) input.ExtraFeatures["S6_DIST_TO_POC_TICKS"] = s6_DistToPocTicks.Value;
-                if (s6_PocDistanceOk.HasValue) input.ExtraFeatures["S6_POC_DISTANCE_OK"] = s6_PocDistanceOk.Value ? 1m : 0m;
-                if (s6_CanProceedLong.HasValue) input.ExtraFeatures["S6_CAN_PROCEED_LONG"] = s6_CanProceedLong.Value ? 1m : 0m;
-                if (s6_CanProceedShort.HasValue) input.ExtraFeatures["S6_CAN_PROCEED_SHORT"] = s6_CanProceedShort.Value ? 1m : 0m;
-            }
-            // --- ENDE NEU: S6 Spezifische adaptive Schwellenwerte & Parameter hinzuf?gen ---
-
-            this.LogInfo($"[AddCandidate] ADDED {setupId}: lvl={lvlKey}, dist={distTicks}, dir={dir}");
-
-            _research.AddCandidate(input);
-        }
-
-        private ResearchBarInput GetLastBarInput()
-        {
-            if (CurrentBar <= 0)
-            {
-                this.LogInfo("GetLastBarInput: Keine Bars verf?gbar (CurrentBar <= 0).");
-                return null;  // Fallback: FinalizePending nutzt 0-Werte
-            }
-
-            int lastBarIndex = CurrentBar - 1;  // Letzter vollst?ndiger Bar-Index
-
-            try
-            {
-                // ATAS: Hole Candle f?r den letzten Index (genau wie in OnCalculate)
-                var lastCandle = GetCandle(lastBarIndex);
-                if (lastCandle == null)
-                {
-                    this.LogInfo($"[GetLastBarInput] Fehler: GetCandle({lastBarIndex}) returned null.");
-                    return null;
-                }
-
-                // Erstelle ResearchBarInput EXAKT wie in OnCalculate (kein Open/Volume, da nicht ben?tigt)
-                var input = new ResearchBarInput
-                {
-                    BarIndex = lastBarIndex,  // F?ge den Index hinzu (wie in OnCalculate)
-                    Time = lastCandle.Time,   // DateTime
-                    High = (decimal)lastCandle.High,  // Cast zu decimal (f?r Research-Ticks)
-                    Low = (decimal)lastCandle.Low,
-                    Close = (decimal)lastCandle.Close
-                    // Kein Open oder Volume ? passt zu deinem OnCalculate-Code
-                };
-
-                // Optional: Debug-Log (wie in OnCalculate, aber f?r letzten Bar)
-                this.LogInfo($"[GetLastBarInput] LastBarInput erstellt: BarIndex={lastBarIndex}, Time={input.Time}, Close={input.Close}.");
-
-                return input;
-            }
-            catch (Exception ex)
-            {
-                this.LogInfo($"[GetLastBarInput] Fehler beim Erstellen von LastBarInput (Index {lastBarIndex}): {ex.Message}.");
-                return null;  // Fallback ? verhindert Crash
-            }
         }
         // Wird aufgerufen, wenn die Strategie manuell oder durch die Plattform gestoppt wird (Beibehalten)
         protected override void OnStopping()
@@ -12040,42 +16033,6 @@ namespace MyNamespace.Strategies
 
             this.LogInfo($"[OnStopping] Strategie wird gestoppt. Bar={CurrentBar - 1}.");
 
-            if (_research != null)
-            {
-                try
-                {
-                    // 1. Finalisiere unvollst?ndige Pending-Samples (mit letztem Bar f?r Genauigkeit)
-                    ResearchBarInput lastBarInput = null;
-                    if (CurrentBar > 0)  // Stelle sicher, dass Bars verarbeitet wurden
-                    {
-                        lastBarInput = GetLastBarInput();  // ATAS-spezifische Hilfsmethode (siehe unten)
-                        this.LogInfo($"[OnStopping] Finalisiere pending Samples mit letztem Bar: {lastBarInput?.Time}.");
-                    }
-                    else
-                    {
-                        this.LogInfo("Keine Bars verarbeitet ? kein finaler Bar f?r Pending.");
-                    }
-
-                    _research.FinalizePending(lastBarInput);
-
-                    // Optional: Status loggen (f?ge LogStatus-Methode in ResearchCollector hinzu, falls nicht da)
-                    // _research.LogStatus("OnStopping: ");
-
-                    // 2. Flush alle Buffers in CSVs
-                    _research.Flush();
-
-                    this.LogInfo("[OnStopping] Research finalisiert und CSVs geschrieben.");
-                }
-                catch (Exception ex)
-                {
-                    this.LogInfo($"[OnStopping] Fehler beim Finalisieren/Flush von Research: {ex.Message}. Stack: {ex.StackTrace}");
-                }
-                finally
-                {
-                    _research = null;  // Cleanup ? verhindert Memory-Leaks
-                }
-            }
-           
             CancelAllOpenOrdersIfAny();
 
             if (_csvWriter != null)
@@ -12101,26 +16058,12 @@ namespace MyNamespace.Strategies
             _lastTimeoutCheckBarIndex = -1;
             this.LogInfo("[OnStopping] Strategie OnStopping abgeschlossen. Offene Orders sollten gecancelt sein.");
 
-            if (_marketStateEngine != null)
-            {
-                if (_marketStateUpdatedHandler != null)
-                {
-                    try
-                    {
-                        _marketStateEngine.MarketStateUpdated -= _marketStateUpdatedHandler;
-                    }
-                    catch (Exception ex)
-                    {
-                        this.LogWarn($"[OnStopping] Fehler beim Abmelden von MarketStateUpdated: {ex.Message}");
-                    }
-                    _marketStateUpdatedHandler = null;
-                }
-                _marketStateEngine = null;
-            }
+            _marketStateEngineV2 = null;
+            _currentMarketStateV2 = null;
 
-           
+
         } // Ende OnStopping Methode
-        
+
     }
 
 }

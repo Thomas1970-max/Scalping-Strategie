@@ -10,6 +10,8 @@ namespace MyNamespace.Strategies.Orderflow
     public class OvSnapshot
     {
         public int Bar;
+        public int ChartBarNumber;
+        public int SessionBarNumber;
         public DateTime Time;
         public decimal Open;
         public decimal High; 
@@ -20,6 +22,13 @@ namespace MyNamespace.Strategies.Orderflow
         public decimal Ask;
         public decimal Bid;
         public string MarketRegime { get; set; } = "None";
+
+        public decimal CandlePocPrice;
+        public decimal PocDelta;
+        public decimal BidAtLow;
+        public decimal AskAtLow;
+        public decimal BidAtHigh;
+        public decimal AskAtHigh;
 
         public decimal MaxCounterShareBull, MaxCounterShareBear;
         public decimal VolBurstZ, CvdImpulse, CvdCoherence;
@@ -48,6 +57,23 @@ namespace MyNamespace.Strategies.Orderflow
         public int StackedImbRangeMin;          // Mindestlänge Stack
         public decimal StackedImbMinVolPerLevel;// MinVol pro Level
         public int StackedImbMaxDepthTicks;     // Tiefe für anchored-Check
+        
+        // 🟢 NEU: SPATIAL-DELTA PROPERTIES
+        public decimal TopDeltaRatio;           // 0=100% rot, 0.5=neutral, 1=100% grün
+        public decimal BottomDeltaRatio;        // 0=100% rot, 0.5=neutral, 1=100% grün
+        public string TopDominance = "NEUTRAL";             // "GREEN"/"RED"/"NEUTRAL"
+        public string BottomDominance = "NEUTRAL";          // "GREEN"/"RED"/"NEUTRAL"
+        public decimal NetDeltaTotal;           // Ask-gesamt - Bid-gesamt
+        public bool IsPerfectLongSetup;         // Automatische Erkennung
+        public bool IsPerfectShortSetup;        // Automatische Erkennung
+        public string PerfectSetupReason = "";       // Begründung für Perfect Setup
+
+        public decimal UpperWickDeltaRatio;
+        public decimal LowerWickDeltaRatio;
+        public string UpperWickDominance = "NEUTRAL";
+        public string LowerWickDominance = "NEUTRAL";
+        public decimal UpperWickAbsDeltaTotal;
+        public decimal LowerWickAbsDeltaTotal;
     }
 }
 

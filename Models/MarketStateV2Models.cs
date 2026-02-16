@@ -1,0 +1,89 @@
+using System;
+
+namespace MyNamespace.Strategies.Models
+{
+    public enum MarketPhaseV2
+    {
+        Trend_Impulse,
+        Healthy_Pullback,
+        Range_Balanced,
+        Exhaustion,
+        Volatile_Breakout,
+        Maturing_Trend
+    }
+
+    public enum MarketBiasV2
+    {
+        Neutral,
+        Long,
+        Short
+    }
+
+    public sealed class MarketStateV2
+    {
+        public MarketPhaseV2 Phase { get; set; } = MarketPhaseV2.Range_Balanced;
+        public MarketBiasV2 Bias { get; set; } = MarketBiasV2.Neutral;
+        public MarketRegime Dynamic { get; set; } = MarketRegime.None;
+        public decimal VolatilityMultiplier { get; set; } = 1.0m;
+        public bool IsTradeable { get; set; } = true;
+        public decimal ZSlope { get; set; } = 0m;
+        public int StaircaseIndex { get; set; } = 0;
+
+        // Kontextfelder: sollen Evaluatoren eine bessere Entscheidungsgrundlage geben,
+        // ohne Entry-Logik in die Engine zu verlagern.
+        public bool AnchorTrendConfirmed { get; set; } = false;
+        public decimal Sd1 { get; set; } = 0m;
+        public decimal SigmaFromVwap { get; set; } = 0m; // (Close - VWAP) / SD1
+        public bool InPullbackZone { get; set; } = false; // zwischen VWAP und 1σ in Trendrichtung
+    }
+
+    public readonly struct MarketStateInputV2
+    {
+        public MarketStateInputV2(
+            int bar,
+            decimal high,
+            decimal close,
+            decimal vwap,
+            decimal upperBand1,
+            decimal lowerBand1,
+            decimal upperBand2,
+            decimal lowerBand2,
+            decimal upperBand3,
+            decimal lowerBand3,
+            decimal currentVah,
+            decimal currentVal,
+            decimal candlePocPrice,
+            MarketRegime regime)
+        {
+            Bar = bar;
+            High = high;
+            Close = close;
+            Vwap = vwap;
+            UpperBand1 = upperBand1;
+            LowerBand1 = lowerBand1;
+            UpperBand2 = upperBand2;
+            LowerBand2 = lowerBand2;
+            UpperBand3 = upperBand3;
+            LowerBand3 = lowerBand3;
+            CurrentVAH = currentVah;
+            CurrentVAL = currentVal;
+            CandlePocPrice = candlePocPrice;
+            Regime = regime;
+        }
+
+        public int Bar { get; }
+        public decimal High { get; }
+        public decimal Close { get; }
+        public decimal Vwap { get; }
+        public decimal UpperBand1 { get; }
+        public decimal LowerBand1 { get; }
+        public decimal UpperBand2 { get; }
+        public decimal LowerBand2 { get; }
+        public decimal UpperBand3 { get; }
+        public decimal LowerBand3 { get; }
+        public decimal CurrentVAH { get; }
+        public decimal CurrentVAL { get; }
+        public decimal CandlePocPrice { get; }
+        public MarketRegime Regime { get; }
+    }
+}

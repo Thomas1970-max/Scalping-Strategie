@@ -42,9 +42,9 @@ public class ImbalanceScoreTests
         type!.GetField("SellCountMax")?.SetValue(instance, sellCountMax);
         type!.GetField("BuyCountTopAnchored")?.SetValue(instance, buyTopAnchored);
         type!.GetField("SellCountBottomAnchored")?.SetValue(instance, sellBottomAnchored);
-        type!.GetField("AvgBuyImbVol")?.SetValue(instance, avgBuyVol);
-        type!.GetField("AvgSellImbVol")?.SetValue(instance, avgSellVol);
-        type!.GetField("BaseVolMedian")?.SetValue(instance, baseVolMedian);
+        type!.GetField("AvgBuyImbVolQualified")?.SetValue(instance, avgBuyVol);
+        type!.GetField("AvgSellImbVolQualified")?.SetValue(instance, avgSellVol);
+        type!.GetField("BuyBaseVolMedian")?.SetValue(instance, baseVolMedian);
         return instance!;
     }
 

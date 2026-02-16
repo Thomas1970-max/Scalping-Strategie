@@ -516,7 +516,17 @@ namespace MyNamespace.Strategies.TradeManagement
                 {
                     var suggestedTp = setup.SuggestedTargetPrice;
                     var tpDistance = Math.Abs(suggestedTp - entryPrice) / ctx.Tick;
+                    var minDist = setup.MinDynamicTpDistanceTicks ?? 0m;
                     var maxDist = setup.MaxDynamicTpDistanceTicks ?? 20m;
+
+                    if (minDist > 0m && tpDistance < minDist)
+                    {
+                        var adjusted = TpSlHelpers.PriceFromTicks(ctx, entryPrice, minDist, ctx.Direction);
+                        debugMessages.Add("TP_SOURCE: VorgeschlagenAdjusted(MinDist)");
+                        debugMessages.Add($"DYNAMIC_TP_TOO_CLOSE: {tpDistance:F1} < {minDist} -> Adjust to {minDist} Ticks -> {adjusted:F5}");
+                        ctx.Logger?.Invoke($"[TpSlCalc] DYNAMIC_TP_TOO_CLOSE: {tpDistance:F1} < {minDist} -> Adjust to {minDist} Ticks -> {adjusted:F5}");
+                        return adjusted;
+                    }
 
                     if (tpDistance > maxDist)
                     {
@@ -642,6 +652,17 @@ namespace MyNamespace.Strategies.TradeManagement
                 plan.Trailing.TrailOffsetTicks = setup.TrailOffset ?? 0;
                 plan.Trailing.TrailActivateAfterTicks = setup.TrailActivateAfterTicks ?? 0;
                 debugMessages.Add($"TRAILING: Type={setup.TrailType}, Offset={plan.Trailing.TrailOffsetTicks}");
+            }
+
+            // NEU: BreakEvenLevelsTrendConfig auswerten
+            if (!string.IsNullOrWhiteSpace(setup.BreakEvenLevelsTrendConfig))
+            {
+                var stages = ParseBreakEvenConfigString(setup.BreakEvenLevelsTrendConfig);
+                foreach (var stage in stages)
+                {
+                    plan.BreakEvenStages.Add(stage);
+                }
+                debugMessages.Add($"BREAK_EVEN_CONFIG: {setup.BreakEvenLevelsTrendConfig} -> {stages.Count} stages");
             }
             
             if (!string.IsNullOrWhiteSpace(setup.EarlyExitLevels))

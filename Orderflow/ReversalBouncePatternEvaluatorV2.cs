@@ -578,7 +578,7 @@ namespace MyNamespace.Strategies.Orderflow
                 Items = items
             };
         }
-private void LogExplainMultilineOnce(int bar, int zoneId, string stage, IEnumerable<string> lines)
+        private void LogExplainMultilineOnce(int bar, int zoneId, string stage, IEnumerable<string> lines)
         {
             try
             {

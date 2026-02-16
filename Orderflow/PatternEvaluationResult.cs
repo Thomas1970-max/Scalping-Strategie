@@ -9,27 +9,27 @@ namespace MyNamespace.Strategies.Orderflow
 {
     /// <summary>
     /// Das Ergebnis der Bewertung eines spezifischen Orderflow-Musters.
-    /// Enthält Informationen darüber, ob das Muster erkannt wurde, wie stark es ist und warum.
+    /// EnthÃ¤lt Informationen darÃ¼ber, ob das Muster erkannt wurde, wie stark es ist und warum.
     /// </summary>
     public class PatternEvaluationResult
     {
         public OrderflowPatternType PatternType { get; }
         public bool IsDetected { get; }
         public decimal ConfidenceScore { get; } // Wert zwischen 0 und 1, der angibt, wie gut das Muster passt
-                                                // Gründe / erklärende Texte (kann mehrere Einträge enthalten)
+                                                // GrÃ¼nde / erklÃ¤rende Texte (kann mehrere EintrÃ¤ge enthalten)
         public List<string> Reasons { get; }
 
-        // Einzelne, strukturierte Informationen über erfüllte Bedingungen
-        public List<EvaluatedConditionDetail> MetHardConditions { get; }       // Liste der erfüllten Hard Conditions
-        public List<EvaluatedConditionDetail> MetRelevantConditions { get; }   // Liste der erfüllten Relevant Conditions
-        public List<EvaluatedConditionDetail> MetDiagnosticConditions { get; } // Diagnostische/zusätzliche Bedingungen
+        // Einzelne, strukturierte Informationen Ã¼ber erfÃ¼llte Bedingungen
+        public List<EvaluatedConditionDetail> MetHardConditions { get; }       // Liste der erfÃ¼llten Hard Conditions
+        public List<EvaluatedConditionDetail> MetRelevantConditions { get; }   // Liste der erfÃ¼llten Relevant Conditions
+        public List<EvaluatedConditionDetail> MetDiagnosticConditions { get; } // Diagnostische/zusÃ¤tzliche Bedingungen
 
         // Detaillierte Werte der einzelnen Kriterien (optional)
         public Dictionary<string, object> MatchedCriteriaValues { get; }
 
-        // Neu: Zähler und erklärender String
-        public int MetCriteriaCount { get; }           // Anzahl erfüllter Kriterien (wenn berechnet)
-        public int PossibleCriteriaCount { get; }      // Anzahl möglicher Kriterien (GetPossibleCriteriaCount)
+        // Neu: ZÃ¤hler und erklÃ¤render String
+        public int MetCriteriaCount { get; }           // Anzahl erfÃ¼llter Kriterien (wenn berechnet)
+        public int PossibleCriteriaCount { get; }      // Anzahl mÃ¶glicher Kriterien (GetPossibleCriteriaCount)
         public string DetectReason { get; }            // Kurztext mit zusammengefasster Reason (optional)
 
         public PatternEvaluationResult(
@@ -61,8 +61,8 @@ namespace MyNamespace.Strategies.Orderflow
         }
 
         /// <summary>
-        /// Erstellt ein Ergebnis für ein nicht erkanntes Muster (einfache Variante).
-        /// Beibehaltung der alten Signatur für Rückwärtskompatibilität.
+        /// Erstellt ein Ergebnis fÃ¼r ein nicht erkanntes Muster (einfache Variante).
+        /// Beibehaltung der alten Signatur fÃ¼r RÃ¼ckwÃ¤rtskompatibilitÃ¤t.
         /// </summary>
         public static PatternEvaluationResult NotDetected(OrderflowPatternType patternType, string reason = null)
         {
@@ -75,8 +75,8 @@ namespace MyNamespace.Strategies.Orderflow
         }
 
         /// <summary>
-        /// Erstellt ein Ergebnis für ein nicht erkanntes Muster (erweiterte Variante).
-        /// Erlaubt das Mitgeben bereits erfüllter Met-Listen und optionaler MatchedValues.
+        /// Erstellt ein Ergebnis fÃ¼r ein nicht erkanntes Muster (erweiterte Variante).
+        /// Erlaubt das Mitgeben bereits erfÃ¼llter Met-Listen und optionaler MatchedValues.
         /// </summary>
         public static PatternEvaluationResult NotDetected(
             OrderflowPatternType patternType,
@@ -110,7 +110,7 @@ namespace MyNamespace.Strategies.Orderflow
         }
 
         /// <summary>
-        /// Erstellt ein Ergebnis für ein erkanntes Muster.
+        /// Erstellt ein Ergebnis fÃ¼r ein erkanntes Muster.
         /// </summary>
         public static PatternEvaluationResult Detected(
             OrderflowPatternType patternType,

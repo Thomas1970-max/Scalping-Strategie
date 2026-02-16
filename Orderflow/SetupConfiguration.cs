@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
@@ -9,22 +9,22 @@ using static MyNamespace.Strategies.Goldfluss3_3;
 namespace MyNamespace.Strategies.Orderflow
 {
     /// <summary>
-    /// Repräsentiert die globale Konfiguration für eine Strategie.
-    /// Enthält globale Einstellungen, Handelszeiten, adaptive Parameter und eine Sammlung
+    /// ReprÃ¤sentiert die globale Konfiguration fÃ¼r eine Strategie.
+    /// EnthÃ¤lt globale Einstellungen, Handelszeiten, adaptive Parameter und eine Sammlung
     /// von muster-spezifischen Bedingungskonfigurationen.
     /// </summary>
     [TypeConverter(typeof(ExpandableObjectConverter))]
     public class SetupConfiguration
     {
+        [Browsable(false)]
+        public OrderflowThresholds UiThresholds { get; set; } = new OrderflowThresholds();
+
         // Collections / komplexe Strukturen ausgeblendet im PropertyGrid
         [Browsable(false)]
         public OrderflowThresholds ReversalOrderflowThresholds { get; set; } = new OrderflowThresholds();
 
         [Browsable(false)]
         public Dictionary<OrderflowPatternType, OrderflowThresholds> PatternDefaultThresholds { get; set; } = new Dictionary<OrderflowPatternType, OrderflowThresholds>();
-
-        [Browsable(false)]
-        public Dictionary<OrderflowPatternType, SetupConditionConfig> PatternConditionConfigs { get; set; } = new Dictionary<OrderflowPatternType, SetupConditionConfig>();
 
         [Browsable(false)]
         public List<TradingSession> TradingSessions { get; set; } = new List<TradingSession>();
@@ -64,7 +64,7 @@ namespace MyNamespace.Strategies.Orderflow
         public int MaxRangeBandWidth { get; set; } // In Ticks
 
         [Browsable(false)]
-        public decimal VolPerSecondHighActivityMultiplier { get; set; } // Für highVol Prüfung
+        public decimal VolPerSecondHighActivityMultiplier { get; set; } // FÃ¼r highVol PrÃ¼fung
 
         [Browsable(false)]
         public decimal RangeReversalTicks { get; set; } = 4m;
@@ -116,7 +116,7 @@ namespace MyNamespace.Strategies.Orderflow
 
         [Category("Trade-Profil")]
         [DisplayName("Aktives Trade-Profil")]
-        [Description("Wählt das TradeProfile (Conservative / Neutral / Aggressive). Beeinflusst die adaptive Schwellenwert-Skalierung.")]
+        [Description("WÃ¤hlt das TradeProfile (Conservative / Neutral / Aggressive). Beeinflusst die adaptive Schwellenwert-Skalierung.")]
         [DefaultValue(TradeProfile.Neutral)]
         [TypeConverter(typeof(Orderflow.EnumDescriptionTypeConverter))]
         public TradeProfile ActiveTradeProfile { get; set; } = TradeProfile.Neutral;
@@ -124,14 +124,10 @@ namespace MyNamespace.Strategies.Orderflow
         // Konstruktor zur Initialisierung mit Standard-Condition-Configs
         public SetupConfiguration()
         {
-            // Initialisiere Standard-Condition-Configs für jeden Mustertyp
-            foreach (OrderflowPatternType patternType in Enum.GetValues(typeof(OrderflowPatternType)))
-            {
-                // Aufruf von GetDefault ohne OvGateMode, da diese Referenz in SetupConditionConfig entfernt wurde.
-                PatternConditionConfigs[patternType] = SetupConditionConfig.GetDefault(patternType);
-            }
+            // no-op
         }
     }
 }
+
 
 

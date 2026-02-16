@@ -109,7 +109,7 @@ namespace MyNamespace.Strategies.Models
 
         // Min signals (intern)
         [Browsable(false)]
-        public int MinSignalsRequired { get; set; } = 1;
+        public int MinSignalsRequired { get; set; } = 2;
 
         // Stacked imbalance (intern)
         [Browsable(false)]
@@ -142,6 +142,224 @@ namespace MyNamespace.Strategies.Models
         // Diese sind double + DefaultValue(double.NaN) � editierbar im PropertyGrid.
         // Die alten nullable Properties bleiben als Browsable(false)-Wrapper erhalten.
         // ---------------------------------------------------------
+
+        [Category("Reversal")]
+        [DisplayName("Reversal: Min Signals Required")]
+        [Description("Mindestanzahl erfüllter Signale/Kriterien für Reversal-Patterns (z.B. ReversalBounce).")]
+        [DefaultValue(2)]
+        public int ReversalMinSignalsRequired_UI { get; set; } = 2;
+
+        [Category("Breakout")]
+        [DisplayName("Breakout: Min Signals Required")]
+        [Description("Mindestanzahl erfüllter Signale/Kriterien für Breakout-Patterns.")]
+        [DefaultValue(3)]
+        public int BreakoutMinSignalsRequired_UI { get; set; } = 2;
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: Min Signals Required")]
+        [Description("Mindestanzahl erfüllter Signale/Kriterien für Continuation-Patterns.")]
+        [DefaultValue(3)]
+        public int ContinuationMinSignalsRequired_UI { get; set; } = 2;
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: CVD Impulse Long")]
+        [Description("Spezielle CVD-Impulse-Schwelle für Continuation-Long-Matching.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(20.0)]
+        public double ContinuationThCvdImpulseLong_UI { get; set; } = 20.0;
+
+        [Browsable(false)]
+        public decimal? ContinuationThCvdImpulseLong
+        {
+            get => (decimal?)ContinuationThCvdImpulseLong_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThCvdImpulseLong_UI = (double)value.Value;
+                else
+                    ContinuationThCvdImpulseLong_UI = 20.0;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: CVD Impulse Short")]
+        [Description("Spezielle CVD-Impulse-Schwelle für Continuation-Short-Matching.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(-20.0)]
+        public double ContinuationThCvdImpulseShort_UI { get; set; } = -20.0;
+
+        [Browsable(false)]
+        public decimal? ContinuationThCvdImpulseShort
+        {
+            get => (decimal?)ContinuationThCvdImpulseShort_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThCvdImpulseShort_UI = (double)value.Value;
+                else
+                    ContinuationThCvdImpulseShort_UI = -20.0;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: AggPressure (Bull)")]
+        [Description("Aggression-Pressure Schwelle (Bull) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(0.10)]
+        public double ContinuationThAggPressureBull_UI { get; set; } = 0.10;
+
+        [Browsable(false)]
+        public decimal? ContinuationThAggPressureBull
+        {
+            get => (decimal?)ContinuationThAggPressureBull_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThAggPressureBull_UI = (double)value.Value;
+                else
+                    ContinuationThAggPressureBull_UI = 0.10;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: AggPressure (Bear)")]
+        [Description("Aggression-Pressure Schwelle (Bear) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(-0.10)]
+        public double ContinuationThAggPressureBear_UI { get; set; } = -0.10;
+
+        [Browsable(false)]
+        public decimal? ContinuationThAggPressureBear
+        {
+            get => (decimal?)ContinuationThAggPressureBear_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThAggPressureBear_UI = (double)value.Value;
+                else
+                    ContinuationThAggPressureBear_UI = -0.10;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: TradeRateZ")]
+        [Description("TradeRateZ Schwelle für Continuation-Checks (wird als |TradeRateZ| verglichen).")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(1.50)]
+        public double ContinuationThTradeRateZ_UI { get; set; } = 1.50;
+
+        [Browsable(false)]
+        public decimal? ContinuationThTradeRateZ
+        {
+            get => (decimal?)ContinuationThTradeRateZ_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThTradeRateZ_UI = (double)value.Value;
+                else
+                    ContinuationThTradeRateZ_UI = 1.50;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: InterTradeTimeZ (Bull)")]
+        [Description("InterTradeTimeZ Schwelle (Bull) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(0.30)]
+        public double ContinuationThInterTradeTimeZBull_UI { get; set; } = 0.30;
+
+        [Browsable(false)]
+        public decimal? ContinuationThInterTradeTimeZBull
+        {
+            get => (decimal?)ContinuationThInterTradeTimeZBull_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThInterTradeTimeZBull_UI = (double)value.Value;
+                else
+                    ContinuationThInterTradeTimeZBull_UI = 0.30;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: InterTradeTimeZ (Bear)")]
+        [Description("InterTradeTimeZ Schwelle (Bear) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(-0.30)]
+        public double ContinuationThInterTradeTimeZBear_UI { get; set; } = -0.30;
+
+        [Browsable(false)]
+        public decimal? ContinuationThInterTradeTimeZBear
+        {
+            get => (decimal?)ContinuationThInterTradeTimeZBear_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThInterTradeTimeZBear_UI = (double)value.Value;
+                else
+                    ContinuationThInterTradeTimeZBear_UI = -0.30;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: Efficiency")]
+        [Description("Effizienz-Schwelle, nur für Continuation-Matching.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(0.01)]
+        public double ContinuationThEfficiency_UI { get; set; } = 0.01;
+
+        [Browsable(false)]
+        public decimal? ContinuationThEfficiency
+        {
+            get => (decimal?)ContinuationThEfficiency_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationThEfficiency_UI = (double)value.Value;
+                else
+                    ContinuationThEfficiency_UI = 0.01;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: Max Counter Share (Bull)")]
+        [Description("Maximaler Counter-Share (Bull) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(0.40)]
+        public double ContinuationMaxCounterShareBull_UI { get; set; } = 0.40;
+
+        [Browsable(false)]
+        public decimal? ContinuationMaxCounterShareBull
+        {
+            get => (decimal?)ContinuationMaxCounterShareBull_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationMaxCounterShareBull_UI = (double)value.Value;
+                else
+                    ContinuationMaxCounterShareBull_UI = 0.40;
+            }
+        }
+
+        [Category("Continuation")]
+        [DisplayName("Continuation: Max Counter Share (Bear)")]
+        [Description("Maximaler Counter-Share (Bear) für Continuation-Checks.")]
+        [TypeConverter(typeof(DoubleConverter))]
+        [DefaultValue(0.40)]
+        public double ContinuationMaxCounterShareBear_UI { get; set; } = 0.40;
+
+        [Browsable(false)]
+        public decimal? ContinuationMaxCounterShareBear
+        {
+            get => (decimal?)ContinuationMaxCounterShareBear_UI;
+            set
+            {
+                if (value.HasValue)
+                    ContinuationMaxCounterShareBear_UI = (double)value.Value;
+                else
+                    ContinuationMaxCounterShareBear_UI = 0.40;
+            }
+        }
 
         // CVD Impulse Long (visible as double)
         [Category("Reversal")]
@@ -234,7 +452,7 @@ namespace MyNamespace.Strategies.Models
         [Description("Mindestwert für Imbalance-Score in Long-Entry-Fenster. Leerlassen zum Deaktivieren.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThImbalanceScoreMinLong_UI { get; set; } = double.NaN;
+        public double ReversalThImbalanceScoreMinLong_UI { get; set; } = 0.55;
 
         [Browsable(false)]
         public decimal? ReversalThImbalanceScoreMinLong
@@ -245,7 +463,7 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThImbalanceScoreMinLong_UI = (double)value.Value;
                 else
-                    ReversalThImbalanceScoreMinLong_UI = double.NaN;
+                    ReversalThImbalanceScoreMinLong_UI = 0.55;
             }
         }
 
@@ -255,7 +473,7 @@ namespace MyNamespace.Strategies.Models
         [Description("Maximalwert für Imbalance-Score in Short-Entry-Fenster. Leerlassen zum Deaktivieren.")]
         [TypeConverter(typeof(DoubleConverter))]
         [DefaultValue(double.NaN)]
-        public double ReversalThImbalanceScoreMaxShort_UI { get; set; } = double.NaN;
+        public double ReversalThImbalanceScoreMaxShort_UI { get; set; } = -0.55;
 
         [Browsable(false)]
         public decimal? ReversalThImbalanceScoreMaxShort
@@ -266,7 +484,7 @@ namespace MyNamespace.Strategies.Models
                 if (value.HasValue)
                     ReversalThImbalanceScoreMaxShort_UI = (double)value.Value;
                 else
-                    ReversalThImbalanceScoreMaxShort_UI = double.NaN;
+                    ReversalThImbalanceScoreMaxShort_UI = -0.55;
             }
         }
 
@@ -312,79 +530,58 @@ namespace MyNamespace.Strategies.Models
             }
         }
 
-        // NEU: Range-Bar-Filterung
         [Category("Reversal")]
-        [DisplayName("Range-Bar: Trend-Bar Size (Ticks)")]
-        [Description("Größe eines Trend-Bars in Ticks für Range-Markt-Erkennung.")]
-        [Range(1, 100)]
-        [DefaultValue(6)]
-        public int RangeBarTrendSizeTicks_UI { get; set; } = 5;
-
-        [Browsable(false)]
-        public int RangeBarTrendSizeTicks
-        {
-            get => RangeBarTrendSizeTicks_UI;
-            set => RangeBarTrendSizeTicks_UI = value;
-        }
+        [DisplayName("Range-Bar: Min Wick Abs Delta")]
+        [Description("Minimale absolute Delta-Aktivität in der relevanten Wick-Zone, bevor die Dominanz des gegenüberliegenden Wicks einen Eintrag hart blockieren kann (0 = deaktiviert).")]
+        public decimal RangeBarMinWickAbsDelta { get; set; } = 0m;
 
         [Category("Reversal")]
-        [DisplayName("Range-Bar: Reversal-Bar Size (Ticks)")]
-        [Description("Größe eines Reversal-Bars in Ticks für Range-Markt-Erkennung.")]
-        [Range(1, 100)]
-        [DefaultValue(9)]
-        public int RangeBarReversalSizeTicks_UI { get; set; } = 8;
-
-        [Browsable(false)]
-        public int RangeBarReversalSizeTicks
-        {
-            get => RangeBarReversalSizeTicks_UI;
-            set => RangeBarReversalSizeTicks_UI = value;
-        }
+        [DisplayName("Range-Bar: Adaptive Wick Abs Delta")]
+        [Description("Wenn aktiviert, wird RangeBarMinWickAbsDelta aus den letzten Momentaufnahmen berechnet (Median-Wick-Abs-Delta * Multiplikator).).")]
+        public bool RangeBarUseAdaptiveWickAbsDelta { get; set; } = true;
 
         [Category("Reversal")]
-        [DisplayName("Range-Bar: Min Consecutive Trend Bars")]
-        [Description("Mindestanzahl aufeinanderfolgender Trend-Bars vor einem Reversal.")]
-        [Range(1, 10)]
-        [DefaultValue(2)]
-        public int RangeBarMinConsecutiveTrendBars_UI { get; set; } = 2;
-
-        [Browsable(false)]
-        public int RangeBarMinConsecutiveTrendBars
-        {
-            get => RangeBarMinConsecutiveTrendBars_UI;
-            set => RangeBarMinConsecutiveTrendBars_UI = value;
-        }
+        [DisplayName("Range-Bar: Wick Abs Delta Lookback")]
+        [Description("Rückblickfenster für die Berechnung des adaptiven Wick-Abs-Delta-Schwellenwerts.")]
+        public int RangeBarWickAbsDeltaLookback { get; set; } = 30;
 
         [Category("Reversal")]
-        [DisplayName("Range-Bar: Max Alternating Pattern Length")]
-        [Description("Maximale Länge von alternierenden Bull/Bear-Bars, die als Range gelten.")]
-        [Range(2, 20)]
-        [DefaultValue(8)]
-        public int RangeBarMaxAlternatingLength_UI { get; set; } = 8;
+        [DisplayName("Range-Bar: Wick Abs Delta Multiplier")]
+        [Description("Multiplikator, der bei der Berechnung des adaptiven RangeBarMinWickAbsDelta auf den medianen Wick-Abs-Delta angewendet wird.Mehr blocken (strenger): Multiplier auf 1.2 bis 1.5).Weniger blocken (lockerer): Multiplier auf 0.8 bis 0.9")]
+        public decimal RangeBarWickAbsDeltaMultiplier { get; set; } = 1.0m;
 
-        [Browsable(false)]
-        public int RangeBarMaxAlternatingLength
-        {
-            get => RangeBarMaxAlternatingLength_UI;
-            set => RangeBarMaxAlternatingLength_UI = value;
-        }
-
-        // NEU: Entry-Fenster nach Reversal
         [Category("Reversal")]
-        [DisplayName("Range-Bar: Max Bars After Reversal")]
-        [Description("Maximale Anzahl von Bars nach einem Reversal, in denen ein Entry erlaubt ist.")]
-        [Range(1, 10)]
-        [DefaultValue(3)]
-        public int RangeBarMaxBarsAfterReversal_UI { get; set; } = 2;
+        [DisplayName("Reversal: Finished Auction Max Bid@Low")]
+        [Description("Maximal erlaubtes aggressives Sell-Volumen (Bid) am Kerzen-Low, damit die Down-Auction als 'finished' gilt (0 = streng).")]
+        public decimal FinishedAuctionMaxBidAtLow { get; set; } = 0m;
 
-        [Browsable(false)]
-        public int RangeBarMaxBarsAfterReversal
-        {
-            get => RangeBarMaxBarsAfterReversal_UI;
-            set => RangeBarMaxBarsAfterReversal_UI = value;
-        }
+        [Category("Reversal")]
+        [DisplayName("Reversal: Finished Auction Max Ask@High")]
+        [Description("Maximal erlaubtes aggressives Buy-Volumen (Ask) am Kerzen-High, damit die Up-Auction als 'finished' gilt (0 = streng).")]
+        public decimal FinishedAuctionMaxAskAtHigh { get; set; } = 0m;
 
-        
+        [Category("Reversal")]
+        [DisplayName("Reversal: Finished Auction Max Ask@Low")]
+        [Description("Maximal erlaubtes aggressives Buy-Volumen (Ask) am Kerzen-Low, damit die Down-Auction als 'finished' gilt (0 = streng).")]
+        public decimal FinishedAuctionMaxAskAtLow { get; set; } = 0m;
+
+        [Category("Reversal")]
+        [DisplayName("Reversal: Finished Auction Max Bid@High")]
+        [Description("Maximal erlaubtes aggressives Sell-Volumen (Bid) am Kerzen-High, damit die Up-Auction als 'finished' gilt (0 = streng).")]
+        public decimal FinishedAuctionMaxBidAtHigh { get; set; } = 0m;
+
+        [Category("Reversal")]
+        [DisplayName("Reversal: POC Shift Min (Ticks)")]
+        [Description("Mindestverschiebung des Candle-POC in Ticks für die Confirmation-Kerze.")]
+        [Range(0, 100)]
+        [DefaultValue(1)]
+        public int PocShiftMinTicks { get; set; } = 1;
+
+        [Category("Reversal")]
+        [DisplayName("Reversal: Delta Shift Min")]
+        [Description("Mindestveränderung des NetDeltaTotal zwischen Reversal-Kerze und Confirmation-Kerze. 0 = nur Richtung prüfen.")]
+        public decimal DeltaShiftMin { get; set; } = 0m;
+
         // Max CounterDelta Share (Bull)
         [Category("Reversal")]
         [DisplayName("Reversal: Max CounterDelta Share (Bull)")]
@@ -511,6 +708,140 @@ namespace MyNamespace.Strategies.Models
             }
         }
 
+        // =========================================================================
+        // NEUES 2-STUFIGES SYSTEM: Anchored Imbalance Ratio (SOFT-Kriterium)
+        // =========================================================================
+        // Prozentwert: Wie viel % des Imbalance-Stacks muss an der High/Low verankert sein?
+        // Beispiel: 50 = mindestens 50% des Stacks am Extrem (High für Long, Low für Short)
+        // 
+        // RELIEF-Rebounds haben typischerweise 0-20% (Stack in der Mitte der Bar)
+        // ECHTE KRAFT hat 60-100% (Stack am Extrem)
+        // =========================================================================
+
+        /// <summary>
+        /// Anchored Imbalance Ratio für LONG-Setups (Prozentwert)
+        /// Schwellenwert: >= 50% des Buy-Imbalance-Stacks muss an der High verankert sein
+        /// Wenn nicht erfüllt: Warnung ausgeben, aber nicht blocken (SOFT-Kriterium)
+        /// </summary>
+        public decimal? ReversalStackedImbAnchoredRatioMinLong { get; set; } = 50m;
+
+        /// <summary>
+        /// Anchored Imbalance Ratio für SHORT-Setups (Prozentwert)
+        /// Schwellenwert: >= 50% des Sell-Imbalance-Stacks muss an der Low verankert sein
+        /// Wenn nicht erfüllt: Warnung ausgeben, aber nicht blocken (SOFT-Kriterium)
+        /// </summary>
+        public decimal? ReversalStackedImbAnchoredRatioMinShort { get; set; } = 50m;
+
+        // NEU: CVD-Shift Kriterien (HART - ersetzen absolute CVD-Impulse)
+        /// <summary>
+        /// CVD-Shift für LONG-Setups (Mindestwert)
+        /// CVD_Shift = Delta_aktuell - Delta_vorherige (echte Momentum-Veränderung)
+        /// Delta[n] = CVD[n] - CVD[n-1] (Delta pro Kerze)
+        /// Shift[n] = Delta[n] - Delta[n-1] (Veränderung der Dynamik)
+        /// 
+        /// Wenn Shift < diesem Wert → Sofort blocken (keine Momentum-Umkehr)
+        /// Beispiel: Delta[-300] → Delta[-100] → Shift = +200 ✓ (Verkaufsdruck nachlassend)
+        /// </summary>
+        public decimal? ReversalCvdShiftMinLong { get; set; } = 0m;  // Shift muss > 0 sein
+
+        /// <summary>
+        /// CVD-Shift für SHORT-Setups (Mindestwert - negativ!)
+        /// CVD_Shift = Delta_aktuell - Delta_vorherige (echte Momentum-Veränderung)
+        /// Delta[n] = CVD[n] - CVD[n-1] (Delta pro Kerze)
+        /// Shift[n] = Delta[n] - Delta[n-1] (Veränderung der Dynamik)
+        /// 
+        /// Wenn Shift < diesem Wert → Sofort blocken (zu viel Verkaufsdruck)
+        /// Beispiel: Delta[+100] → Delta[+300] → Shift = +200 > -500 ✓ OK
+        /// Beispiel: Delta[+300] → Delta[+100] → Shift = -200 > -500 ✓ OK
+        /// Beispiel: Delta[+100] → Delta[-100] → Shift = -200 > -500 ✓ OK
+        /// Beispiel: Delta[+100] → Delta[-600] → Shift = -700 < -500 ✗ BLOCK
+        /// </summary>
+        public decimal? ReversalCvdShiftMinShort { get; set; } = -500m;  // Shift muss > -500 sein
+
+        // =========================================
+        // DYNAMIC IMBALANCE THRESHOLDS (Reversal)
+        // =========================================
+        
+        /// <summary>
+        /// Anchored-Ratio 100% - Dynamischer Threshold für ImbalanceScore
+        /// Bessere Struktur = flexiblere Score-Anforderung
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Anchored-Ratio 100% - Dynamischer Threshold für ImbalanceScore")]
+        [DefaultValue(0.15)]
+        public double DynamicThresholdFullyAnchoredUI { get; set; } = 0.15;
+
+        /// <summary>
+        /// Anchored-Ratio 85% - Dynamischer Threshold für ImbalanceScore
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Anchored-Ratio 85% - Dynamischer Threshold für ImbalanceScore")]
+        [DefaultValue(0.20)]
+        public double DynamicThresholdHighlyAnchoredUI { get; set; } = 0.20;
+
+        /// <summary>
+        /// Anchored-Ratio 70% - Dynamischer Threshold für ImbalanceScore
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Anchored-Ratio 70% - Dynamischer Threshold für ImbalanceScore")]
+        [DefaultValue(0.30)]
+        public double DynamicThresholdWellAnchoredUI { get; set; } = 0.30;
+
+        /// <summary>
+        /// Anchored-Ratio 50% - Dynamischer Threshold für ImbalanceScore
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Anchored-Ratio 50% - Dynamischer Threshold für ImbalanceScore")]
+        [DefaultValue(0.40)]
+        public double DynamicThresholdMediumAnchoredUI { get; set; } = 0.40;
+
+        /// <summary>
+        /// Anchored-Ratio 30% - Dynamischer Threshold für ImbalanceScore
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Anchored-Ratio 30% - Dynamischer Threshold für ImbalanceScore")]
+        [DefaultValue(0.48)]
+        public double DynamicThresholdLowAnchoredUI { get; set; } = 0.48;
+
+        /// <summary>
+        /// Notfall-Schwelle für sehr schwache ImbalanceScores in Bar 1 nach Reversal
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [DisplayName("ImbalanceScore: Notfall-Schwelle für 1. Bar (sehr schwach)")]
+        [Description("Definiert die absolute Mindestschwelle für den ImbalanceScore in der ersten Bar nach einem Reversal bei sehr schlechter Verankerung (<30%). Nur wenn der Score diese Schwelle erfüllt, wird ein Entry mit Warnung erlaubt. Empfohlener Wert: -0.50 für Short-Setups.")]
+        [DefaultValue(-0.50)]
+        public double DynamicThresholdReliefWarningUI { get; set; } = -0.50;
+
+        /// <summary>
+        /// Moderater Threshold für Bar 1 nach Reversal (zwischen Relief und Standard)
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [DisplayName("ImbalanceScore: Moderater Schwelle für 1. Bar nach Reversal")]
+        [Description("Definiert die minimale Stärke des ImbalanceScore für die erste Bar nach einem Reversal. Dies ist eine mittlere Stufe zwischen der Standard-Schwelle und der Notfall-Schwelle. Empfohlener Wert: -0.30 für Short-Setups.")]
+        [DefaultValue(-0.30)]
+        public double DynamicThresholdBar1ModerateUI { get; set; } = -0.30;
+
+        /// <summary>
+        /// Erste Bar nach Reversal mit guter Verankerung (>=70%) - Dynamischer Threshold
+        /// </summary>
+        [Category("Dynamic Imbalance Threshold (Reversal)")]
+        [Description("Erste Bar nach Reversal mit guter Verankerung (>=70%) - Dynamischer Threshold")]
+        [DefaultValue(0.25)]
+        public double DynamicThresholdFirstBarStrongUI { get; set; } = 0.25;
+
+        // OPTIONAL: Neue Hard-Kriterien für CVD (Stufe 1 des 2-stufigen Systems) - DEPRECATED
+        /// <summary>
+        /// Mindest-CVD-Impuls für Long-Reversal Bounce - DEPRECATED, nutze CVD-Shift
+        /// </summary>
+        [Obsolete("Use ReversalCvdShiftMinLong instead")]
+        public decimal? ReversalCvdImpulseMinForLongReversal { get; set; } = -1.0m;
+
+        /// <summary>
+        /// Mindest-CVD-Impuls für Short-Reversal Bounce (Max-Wert, da negativ) - DEPRECATED, nutze CVD-Shift
+        /// </summary>
+        [Obsolete("Use ReversalCvdShiftMaxShort instead")]
+        public decimal? ReversalCvdImpulseMinForShortReversal { get; set; } = 1.0m;
+
         public decimal? TickSizeDecimal { get; set; } = 0.25m;
 
         // -----------------------------------------
@@ -607,6 +938,8 @@ namespace MyNamespace.Strategies.Models
             }
         }
 
+
+
         // ---------------------------------------------------------
         // Clone / Kopieren
         // ---------------------------------------------------------
@@ -659,6 +992,17 @@ namespace MyNamespace.Strategies.Models
                 // Reversal-sichtbare Werte (kopiere Wrapper-Werte)
                 ReversalThCvdImpulseLong = this.ReversalThCvdImpulseLong,
                 ReversalThCvdImpulseShort = this.ReversalThCvdImpulseShort,
+
+                ContinuationThCvdImpulseLong = this.ContinuationThCvdImpulseLong,
+                ContinuationThCvdImpulseShort = this.ContinuationThCvdImpulseShort,
+                ContinuationThAggPressureBull = this.ContinuationThAggPressureBull,
+                ContinuationThAggPressureBear = this.ContinuationThAggPressureBear,
+                ContinuationThTradeRateZ = this.ContinuationThTradeRateZ,
+                ContinuationThInterTradeTimeZBull = this.ContinuationThInterTradeTimeZBull,
+                ContinuationThInterTradeTimeZBear = this.ContinuationThInterTradeTimeZBear,
+                ContinuationThEfficiency = this.ContinuationThEfficiency,
+                ContinuationMaxCounterShareBull = this.ContinuationMaxCounterShareBull,
+                ContinuationMaxCounterShareBear = this.ContinuationMaxCounterShareBear,
 
                 ReversalThCvdImpulseMinForLongReversal = this.ReversalThCvdImpulseMinForLongReversal,
                 ReversalThCvdImpulseMaxForShortReversal = this.ReversalThCvdImpulseMaxForShortReversal,

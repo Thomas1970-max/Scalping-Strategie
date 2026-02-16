@@ -21,7 +21,7 @@ namespace MyNamespace.Strategies.Orderflow
         // Optionaler, normalisierter Volatility-/Confidence-Score in [0,1]
         public decimal VolatilityScore { get; set; } = 0.5m;
 
-        // Anzahl Bars, die der aktuelle SqueezeState bereits andauert (für Hysterese checks)
+        // Anzahl Bars, die der aktuelle SqueezeState bereits andauert (fÃ¼r Hysterese checks)
         public int StateDurationBars { get; set; } = 0;
 
         public override string ToString()
@@ -32,7 +32,7 @@ namespace MyNamespace.Strategies.Orderflow
 
     public class OfFeatures
     {
-        // Referenz auf das zugrundeliegende Snapshot (optional, aber nützlich für Debug/Tracing)
+        // Referenz auf das zugrundeliegende Snapshot (optional, aber nÃ¼tzlich fÃ¼r Debug/Tracing)
         public OvSnapshot Snapshot { get; set; } = new OvSnapshot();
 
         public int Bar;
