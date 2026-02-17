@@ -501,11 +501,6 @@ namespace MyNamespace.Strategies.Orderflow
                 decimal softScore = 0m;
                 if (diagnosticSoftWhenBlocked)
                 {
-                    bool diagDeltaFlip = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
-                    decimal diagDeltaPts = diagDeltaFlip ? 2m : 0m;
-                    softScore += diagDeltaPts;
-                    blockedItems.Add(new ScoreItem { Key = "DeltaFlip", Points = diagDeltaPts, TextDe = $"Delta-Change: {(diagDeltaFlip ? "JA" : "NEIN")} ({(diagDeltaFlip ? "+2" : "+0")}) [Diagnose]" });
-
                     bool diagAbsorption = false;
                     if (prev != null)
                         diagAbsorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir, absNetDeltaMin);
@@ -520,26 +515,6 @@ namespace MyNamespace.Strategies.Orderflow
                             ? $"Absorption (Imbalance ohne Anschluss): JA, {diagProxEval.ReasonDe} (Faktor {diagProxEval.Factor:0.0}) -> +{diagAbsorptionPts:0.0} [Diagnose]"
                             : "Absorption (Imbalance ohne Anschluss): NEIN -> +0 [Diagnose]"
                     });
-
-                    decimal diagPocPts = 0m;
-                    if (prev != null)
-                    {
-                        decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
-                        bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
-                        int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
-                        bool pocMagOk = pocShiftTicks >= PocShiftMinTicks;
-                        const int AdaptivePocVolLookback = 30;
-                        const decimal PocVolumeMedianMultiplier = 0.8m;
-                        decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
-                        bool pocVolOk = curr.PocVolume >= pocVolMin;
-                        diagPocPts = (pocDirOk && pocMagOk && pocVolOk) ? 1m : 0m;
-                        softScore += diagPocPts;
-                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {((pocDirOk && pocMagOk && pocVolOk) ? "OK" : "nicht OK")} ({(diagPocPts > 0m ? "+1" : "+0")}) [Diagnose]" });
-                    }
-                    else
-                    {
-                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = 0m, TextDe = "POC-Shift: n/v (kein vorheriger Bar) -> +0 [Diagnose]" });
-                    }
 
                     var diagSweepEval = EvaluateSweepPenetration(curr, zone, tickSize, dir);
                     decimal diagReactionPts = diagSweepEval.Points;
@@ -570,6 +545,45 @@ namespace MyNamespace.Strategies.Orderflow
                         });
                     }
                     softScore += diagConfirmPts;
+
+                    bool responseEvidenceDiag = diagAbsorption || diagReactionPts > 0m || diagConfirmPts > 0m;
+
+                    decimal diagDeltaPts = 0m;
+                    if (!responseEvidenceDiag)
+                    {
+                        blockedItems.Add(new ScoreItem { Key = "DeltaFlip", Points = 0m, TextDe = "Delta-Flip: n/v (kein Turn-Beweis) -> +0 [Diagnose]" });
+                    }
+                    else
+                    {
+                        bool diagDeltaFlip = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
+                        diagDeltaPts = diagDeltaFlip ? 2m : 0m;
+                        softScore += diagDeltaPts;
+                        blockedItems.Add(new ScoreItem { Key = "DeltaFlip", Points = diagDeltaPts, TextDe = $"Delta-Change: {(diagDeltaFlip ? "JA" : "NEIN")} ({(diagDeltaFlip ? "+2" : "+0")}) [Diagnose]" });
+                    }
+
+                    decimal diagPocPts = 0m;
+                    if (!responseEvidenceDiag)
+                    {
+                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = 0m, TextDe = "POC-Shift: n/v (kein Turn-Beweis) -> +0 [Diagnose]" });
+                    }
+                    else if (prev != null)
+                    {
+                        decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
+                        bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
+                        int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
+                        bool pocMagOk = pocShiftTicks >= PocShiftMinTicks;
+                        const int AdaptivePocVolLookback = 30;
+                        const decimal PocVolumeMedianMultiplier = 0.8m;
+                        decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
+                        bool pocVolOk = curr.PocVolume >= pocVolMin;
+                        diagPocPts = (pocDirOk && pocMagOk && pocVolOk) ? 1m : 0m;
+                        softScore += diagPocPts;
+                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {((pocDirOk && pocMagOk && pocVolOk) ? "OK" : "nicht OK")} ({(diagPocPts > 0m ? "+1" : "+0")}) [Diagnose]" });
+                    }
+                    else
+                    {
+                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = 0m, TextDe = "POC-Shift: n/v (kein vorheriger Bar) -> +0 [Diagnose]" });
+                    }
 
                     blockedItems.Add(new ScoreItem { Key = "Total", Points = softScore, TextDe = $"Gesamt-Score (Diagnose, ohne harte Freigabe): {softScore:0.0} (Schwelle {EntryThreshold:0.0})" });
                 }
