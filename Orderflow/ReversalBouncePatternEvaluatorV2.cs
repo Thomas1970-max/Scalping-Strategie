@@ -2078,12 +2078,35 @@ namespace MyNamespace.Strategies.Orderflow
             if (absNetDeltaMin < 0m)
                 absNetDeltaMin = 0m;
 
+            const decimal MinDeltaPerVol = 0.15m;
+            const decimal MinExtremeDomRatio = 0.65m;
+            const decimal MinExtremeShare = 0.05m;
+
+            decimal vol = curr.Volume;
+            if (vol <= 0m)
+                vol = 1m;
+            decimal deltaPerVol = Math.Abs(curr.NetDeltaTotal) / vol;
+            if (deltaPerVol < MinDeltaPerVol)
+                return false;
+
             if (dir == OrderDirections.Buy)
             {
                 bool hasSellImb = curr.StackedSellImbBottomCount > 0 && curr.NetDeltaTotal < 0m;
                 if (!hasSellImb)
                     return false;
                 if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
+                    return false;
+
+                decimal exBid = curr.BidAtLow;
+                decimal exAsk = curr.AskAtLow;
+                decimal exTot = exBid + exAsk;
+                if (exTot <= 0m)
+                    return false;
+                decimal exShare = exTot / vol;
+                if (exShare < MinExtremeShare)
+                    return false;
+                decimal dom = exBid / exTot;
+                if (dom < MinExtremeDomRatio)
                     return false;
 
                 bool noFurtherDown = curr.Low >= prev.Low - oneTick;
@@ -2096,6 +2119,18 @@ namespace MyNamespace.Strategies.Orderflow
                 if (!hasBuyImb)
                     return false;
                 if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
+                    return false;
+
+                decimal exAsk = curr.AskAtHigh;
+                decimal exBid = curr.BidAtHigh;
+                decimal exTot = exBid + exAsk;
+                if (exTot <= 0m)
+                    return false;
+                decimal exShare = exTot / vol;
+                if (exShare < MinExtremeShare)
+                    return false;
+                decimal dom = exAsk / exTot;
+                if (dom < MinExtremeDomRatio)
                     return false;
 
                 bool noFurtherUp = curr.High <= prev.High + oneTick;
