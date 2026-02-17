@@ -25,6 +25,7 @@ namespace MyNamespace.Strategies.Orderflow
 
         public decimal CandlePocPrice;
         public decimal PocDelta;
+        public decimal PocVolume;
         public decimal BidAtLow;
         public decimal AskAtLow;
         public decimal BidAtHigh;

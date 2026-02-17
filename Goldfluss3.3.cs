@@ -10656,6 +10656,7 @@ namespace MyNamespace.Strategies
                     // POC über MaxVolumePriceInfo (Fallback: Close). POC-Delta = Ask - Bid am POC-Level.
                     decimal candlePocPrice = closedCandle.Close;
                     decimal pocDelta = 0m;
+                    decimal pocVolume = 0m;
                     try
                     {
                         var pocPvi = closedCandle.MaxVolumePriceInfo;
@@ -10663,6 +10664,7 @@ namespace MyNamespace.Strategies
                         {
                             candlePocPrice = (decimal)pocPvi.Price;
                             pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
+                            pocVolume = (decimal)pocPvi.Volume;
                         }
                     }
                     catch
@@ -10700,6 +10702,7 @@ namespace MyNamespace.Strategies
                         Bid = closedCandle.Bid,
                         CandlePocPrice = candlePocPrice,
                         PocDelta = pocDelta,
+                        PocVolume = pocVolume,
                         BidAtLow = bidAtLow,
                         AskAtLow = askAtLow,
                         BidAtHigh = bidAtHigh,

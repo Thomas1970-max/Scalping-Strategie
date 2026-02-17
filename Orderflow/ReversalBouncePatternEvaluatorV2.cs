@@ -186,6 +186,38 @@ namespace MyNamespace.Strategies.Orderflow
             return Math.Max(0m, median * multiplier);
         }
 
+        private static decimal GetAdaptivePocVolumeMin(OfFeaturesHistory history, OvSnapshot curr, int lookbackBars, decimal multiplier)
+        {
+            if (history == null || curr == null)
+                return 0m;
+
+            int maxBar = curr.Bar;
+            int minBar = Math.Max(0, maxBar - (lookbackBars - 1));
+            var vals = new List<decimal>(lookbackBars);
+            for (int b = minBar; b <= maxBar; b++)
+            {
+                OvSnapshot? s = null;
+                if (b == curr.Bar)
+                    s = curr;
+                else if (history.TryGetByBar(b, out var f) && f?.Snapshot != null)
+                    s = f.Snapshot;
+
+                if (s == null)
+                    continue;
+
+                if (s.PocVolume > 0m)
+                    vals.Add(s.PocVolume);
+            }
+
+            if (vals.Count == 0)
+                return 0m;
+
+            decimal median = ComputeMedian(vals);
+            if (median < 1m)
+                median = 1m;
+            return Math.Max(0m, median * multiplier);
+        }
+
         private static AllowPath DetermineAllowPath(
             OfFeaturesHistory history,
             OvSnapshot curr,
@@ -444,6 +476,7 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal EntryThreshold = 6m;
             const int AdaptiveLookback = 30;
             const decimal AbsNetDeltaMedianMultiplier = 1.0m;
+            const int PocShiftMinTicks = 1;
             decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, curr, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
 
             int touchesW;
@@ -492,10 +525,16 @@ namespace MyNamespace.Strategies.Orderflow
                     if (prev != null)
                     {
                         decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
-                        bool pocOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
-                        diagPocPts = pocOk ? 1m : 0m;
+                        bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
+                        int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
+                        bool pocMagOk = pocShiftTicks >= PocShiftMinTicks;
+                        const int AdaptivePocVolLookback = 30;
+                        const decimal PocVolumeMedianMultiplier = 0.8m;
+                        decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
+                        bool pocVolOk = curr.PocVolume >= pocVolMin;
+                        diagPocPts = (pocDirOk && pocMagOk && pocVolOk) ? 1m : 0m;
                         softScore += diagPocPts;
-                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {(pocOk ? "OK" : "nicht OK")} ({(pocOk ? "+1" : "+0")}) [Diagnose]" });
+                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {((pocDirOk && pocMagOk && pocVolOk) ? "OK" : "nicht OK")} ({(diagPocPts > 0m ? "+1" : "+0")}) [Diagnose]" });
                     }
                     else
                     {
@@ -564,7 +603,6 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal DeltaShiftMin = 20m;
             const decimal ProximityMinFactor = 0.5m;
             var deltaFlipProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
-            bool deltaFlipQualified = false;
             decimal deltaPts = 0m;
             string deltaFlipText = "Delta-Flip: NEIN";
             if (deltaFlipProxEval.Factor >= ProximityMinFactor)
@@ -575,7 +613,6 @@ namespace MyNamespace.Strategies.Orderflow
                     decimal shift = Math.Abs(curr.PocDelta - prev.PocDelta);
                     if (shift >= DeltaShiftMin)
                     {
-                        deltaFlipQualified = true;
                         deltaPts = 2m * deltaFlipProxEval.Factor;
                         deltaFlipText = $"Delta-Flip: JA (Shift={shift:0}, Prox={deltaFlipProxEval.Factor:0.0}) -> +{deltaPts:0.0}";
                     }
@@ -617,21 +654,25 @@ namespace MyNamespace.Strategies.Orderflow
                     : "Absorption (Imbalance ohne Anschluss): NEIN -> +0"
             });
 
-            const int PocShiftMinTicks = 1;
             decimal pocPts = 0m;
             if (prev != null)
             {
                 decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
                 int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
+
                 bool dirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
                 bool magnitudeOk = pocShiftTicks >= PocShiftMinTicks;
+                const int AdaptivePocVolLookback = 30;
+                const decimal PocVolumeMedianMultiplier = 0.8m;
+                decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
+                bool volumeOk = curr.PocVolume >= pocVolMin;
                 var pocProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
                 bool proximityOk = pocProxEval.Factor >= 0.5m;
-                bool pocOk = dirOk && magnitudeOk && proximityOk;
+                bool pocOk = dirOk && magnitudeOk && volumeOk && proximityOk;
                 pocPts = pocOk ? 1m : 0m;
                 string reason = pocOk
                     ? $"POC-Shift: OK (Shift={pocShiftTicks} Ticks, Prox={pocProxEval.Factor:0.0}) -> +1"
-                    : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Prox={proximityOk}) -> +0";
+                    : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Vol={volumeOk}, Prox={proximityOk}) -> +0";
                 score += pocPts;
                 items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = reason });
             }
@@ -1541,32 +1582,37 @@ namespace MyNamespace.Strategies.Orderflow
                     if (faHere)
                         flags.Add("★FA");
 
-                    // Absorption proxy
+                    // Absorption (Chunk B): anchored imbalance + adaptive magnitude + zone-edge rejection
                     if (prevSnap != null)
                     {
-                        bool absorbBuy = s.PocDelta < 0m && s.Close > s.Open;
-                        bool absorbSell = s.PocDelta > 0m && s.Close < s.Open;
-                        if (_direction == OrderDirections.Buy && absorbBuy)
-                        {
-                            flags.Add("◆ABS");
-                            hasAbsorption = true;
-                        }
-                        if (_direction == OrderDirections.Sell && absorbSell)
+                        const int AdaptiveLookback = 30;
+                        const decimal AbsNetDeltaMedianMultiplier = 1.0m;
+                        decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, s, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
+                        if (ImbalanceNoFollowThrough(prevSnap, s, zone, tickSize, _direction, absNetDeltaMin))
                         {
                             flags.Add("◆ABS");
                             hasAbsorption = true;
                         }
                     }
 
+                    // DeltaFlip (Chunk C): proximity gate + flip-in-window + magnitude
                     if (prevSnap != null)
                     {
-                        bool pocFlip = _direction == OrderDirections.Buy
-                            ? (prevSnap.PocDelta < 0m && s.PocDelta > 0m)
-                            : (prevSnap.PocDelta > 0m && s.PocDelta < 0m);
-                        if (pocFlip)
+                        const decimal ProximityMinFactor = 0.5m;
+                        const decimal DeltaShiftMin = 20m;
+                        var dfProx = EvaluateAbsorptionProximity(s, zone, tickSize, _direction);
+                        if (dfProx.Factor >= ProximityMinFactor)
                         {
-                            flags.Add("↳ΔFLIP");
-                            hasDeltaFlip = true;
+                            bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, s, windowBars: 3, dir: _direction);
+                            if (deltaFlipRaw)
+                            {
+                                decimal shift = Math.Abs(s.PocDelta - prevSnap.PocDelta);
+                                if (shift >= DeltaShiftMin)
+                                {
+                                    flags.Add("↳ΔFLIP");
+                                    hasDeltaFlip = true;
+                                }
+                            }
                         }
                     }
 
