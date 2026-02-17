@@ -610,20 +610,44 @@ namespace MyNamespace.Strategies.Orderflow
                 bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
                 if (deltaFlipRaw && prev != null)
                 {
-                    decimal shift = Math.Abs(curr.PocDelta - prev.PocDelta);
-                    if (shift >= DeltaShiftMin)
+                    bool currSignOk = dir == OrderDirections.Buy ? curr.PocDelta > 0m : curr.PocDelta < 0m;
+                    bool prevSignOk = dir == OrderDirections.Buy ? prev.PocDelta > 0m : prev.PocDelta < 0m;
+                    bool persistenceOk = currSignOk && prevSignOk;
+
+                    var prevPrev = GetPreviousClosedSnapshot(history, prev.Bar, maxLookback: 20);
+                    OvSnapshot? flipFrom = prevPrev;
+                    if (flipFrom != null)
                     {
-                        deltaPts = 2m * deltaFlipProxEval.Factor;
-                        deltaFlipText = $"Delta-Flip: JA (Shift={shift:0}, Prox={deltaFlipProxEval.Factor:0.0}) -> +{deltaPts:0.0}";
+                        bool flipFromOpp = dir == OrderDirections.Buy ? flipFrom.PocDelta < 0m : flipFrom.PocDelta > 0m;
+                        if (!flipFromOpp)
+                            flipFrom = null;
+                    }
+
+                    if (!persistenceOk)
+                    {
+                        deltaFlipText = "Delta-Flip: NEIN (Persistenz < 2 Bars)";
+                    }
+                    else if (flipFrom == null)
+                    {
+                        deltaFlipText = "Delta-Flip: NEIN (kein Flip-Ursprung für Magnitude/Persistenz)";
                     }
                     else
                     {
-                        deltaFlipText = $"Delta-Flip: NEIN (Magnitude {shift:0} < {DeltaShiftMin:0})";
+                        decimal shift = Math.Abs(curr.PocDelta - flipFrom.PocDelta);
+                        if (shift >= DeltaShiftMin)
+                        {
+                            deltaPts = 2m * deltaFlipProxEval.Factor;
+                            deltaFlipText = $"Delta-Flip: JA (Shift={shift:0}, Persistenz=2, Prox={deltaFlipProxEval.Factor:0.0}) -> +{deltaPts:0.0}";
+                        }
+                        else
+                        {
+                            deltaFlipText = $"Delta-Flip: NEIN (Magnitude {shift:0} < {DeltaShiftMin:0})";
+                        }
                     }
                 }
                 else if (deltaFlipRaw)
                 {
-                    deltaFlipText = "Delta-Flip: NEIN (kein prev für Magnitude-Check)";
+                    deltaFlipText = "Delta-Flip: NEIN (kein prev für Persistenz/Magnitude)";
                 }
                 else
                 {
@@ -634,6 +658,7 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 deltaFlipText = $"Delta-Flip: NEIN (Zonennähe {deltaFlipProxEval.Factor:0.0} < {ProximityMinFactor:0.0})";
             }
+
             score += deltaPts;
             items.Add(new ScoreItem { Key = "DeltaFlip", Points = deltaPts, TextDe = deltaFlipText });
 
@@ -1511,6 +1536,7 @@ namespace MyNamespace.Strategies.Orderflow
                 int startBar = tracker.SessionStartBar;
                 int endBar = currentSnapshot.Bar;
                 OvSnapshot? prevSnap = null;
+                OvSnapshot? prevPrevSnap = null;
                 int barNumber = 0;
 
                 int green = 0;
@@ -1606,8 +1632,20 @@ namespace MyNamespace.Strategies.Orderflow
                             bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, s, windowBars: 3, dir: _direction);
                             if (deltaFlipRaw)
                             {
-                                decimal shift = Math.Abs(s.PocDelta - prevSnap.PocDelta);
-                                if (shift >= DeltaShiftMin)
+                                bool currSignOk = _direction == OrderDirections.Buy ? s.PocDelta > 0m : s.PocDelta < 0m;
+                                bool prevSignOk = _direction == OrderDirections.Buy ? prevSnap.PocDelta > 0m : prevSnap.PocDelta < 0m;
+                                bool persistenceOk = currSignOk && prevSignOk;
+
+                                OvSnapshot? flipFrom = prevPrevSnap;
+                                if (flipFrom != null)
+                                {
+                                    bool flipFromOpp = _direction == OrderDirections.Buy ? flipFrom.PocDelta < 0m : flipFrom.PocDelta > 0m;
+                                    if (!flipFromOpp)
+                                        flipFrom = null;
+                                }
+
+                                decimal shift = flipFrom != null ? Math.Abs(s.PocDelta - flipFrom.PocDelta) : 0m;
+                                if (persistenceOk && flipFrom != null && shift >= DeltaShiftMin)
                                 {
                                     flags.Add("↳ΔFLIP");
                                     hasDeltaFlip = true;
@@ -1621,6 +1659,7 @@ namespace MyNamespace.Strategies.Orderflow
                     int k = s.ChartBarNumber > 0 ? s.ChartBarNumber : barNumber;
                     lines.Add($"K{k}: {color} Δ{pocDeltaSign}{Math.Abs(s.PocDelta):0} | {closeSimple} | {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
 
+                    prevPrevSnap = prevSnap;
                     prevSnap = s;
                 }
 
