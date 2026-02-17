@@ -186,6 +186,38 @@ namespace MyNamespace.Strategies.Orderflow
             return Math.Max(0m, median * multiplier);
         }
 
+        private static decimal GetAdaptiveVolumeMin(OfFeaturesHistory history, OvSnapshot curr, int lookbackBars, decimal multiplier)
+        {
+            if (history == null || curr == null)
+                return 0m;
+
+            int maxBar = curr.Bar;
+            int minBar = Math.Max(0, maxBar - (lookbackBars - 1));
+            var vals = new List<decimal>(lookbackBars);
+            for (int b = minBar; b <= maxBar; b++)
+            {
+                OvSnapshot? s = null;
+                if (b == curr.Bar)
+                    s = curr;
+                else if (history.TryGetByBar(b, out var f) && f?.Snapshot != null)
+                    s = f.Snapshot;
+
+                if (s == null)
+                    continue;
+
+                if (s.Volume > 0m)
+                    vals.Add(s.Volume);
+            }
+
+            if (vals.Count == 0)
+                return 0m;
+
+            decimal median = ComputeMedian(vals);
+            if (median < 1m)
+                median = 1m;
+            return Math.Max(0m, median * multiplier);
+        }
+
         private static decimal GetAdaptivePocVolumeMin(OfFeaturesHistory history, OvSnapshot curr, int lookbackBars, decimal multiplier)
         {
             if (history == null || curr == null)
@@ -392,6 +424,7 @@ namespace MyNamespace.Strategies.Orderflow
         }
 
         private static SweepEval EvaluateSweepPenetration(
+            OfFeaturesHistory history,
             OvSnapshot curr,
             MarketStructureContext.Zone zone,
             decimal tickSize,
@@ -399,6 +432,11 @@ namespace MyNamespace.Strategies.Orderflow
         {
             if (tickSize <= 0m)
                 tickSize = 0.25m;
+
+            const int AdaptiveVolLookback = 30;
+            const decimal VolMedianMultiplier = 0.8m;
+            decimal volMin = GetAdaptiveVolumeMin(history, curr, AdaptiveVolLookback, VolMedianMultiplier);
+            bool volumeOk = curr.Volume >= volMin;
 
             int zoneHeightTicks = Math.Max(1, RoundTicks(Math.Abs(zone.High - zone.Low), tickSize));
 
@@ -425,7 +463,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             bool inCorridor = ratio >= MinRatio && ratio <= MaxRatio;
             bool reclaimed = reclaimTicks >= 1;
-            bool isSweep = penetrationTicks > 0 && inCorridor && reclaimed;
+            bool isSweep = penetrationTicks > 0 && inCorridor && reclaimed && volumeOk;
 
             decimal points = 0m;
             if (isSweep)
@@ -446,6 +484,10 @@ namespace MyNamespace.Strategies.Orderflow
             else if (!reclaimed)
             {
                 text = $"Stop-Run: kein Stop-Run (Durchstich ok, aber keine Rückholung; Rückholung={reclaimTicks} Ticks) -> +0";
+            }
+            else if (!volumeOk)
+            {
+                text = $"Stop-Run: kein Stop-Run (Volumen zu niedrig; Vol={curr.Volume:0}, Min~{volMin:0}) -> +0";
             }
             else
             {
@@ -516,7 +558,7 @@ namespace MyNamespace.Strategies.Orderflow
                             : "Absorption (Imbalance ohne Anschluss): NEIN -> +0 [Diagnose]"
                     });
 
-                    var diagSweepEval = EvaluateSweepPenetration(curr, zone, tickSize, dir);
+                    var diagSweepEval = EvaluateSweepPenetration(history, curr, zone, tickSize, dir);
                     decimal diagReactionPts = diagSweepEval.Points;
                     softScore += diagReactionPts;
                     blockedItems.Add(new ScoreItem { Key = "Reaktion", Points = diagReactionPts, TextDe = diagSweepEval.TextDe + " [Diagnose]" });
@@ -631,7 +673,7 @@ namespace MyNamespace.Strategies.Orderflow
                     : "Absorption (Imbalance ohne Anschluss): NEIN -> +0"
             });
 
-            var sweepEval = EvaluateSweepPenetration(curr, zone, tickSize, dir);
+            var sweepEval = EvaluateSweepPenetration(history, curr, zone, tickSize, dir);
             decimal reactionPts = sweepEval.Points;
             score += reactionPts;
             items.Add(new ScoreItem { Key = "Reaktion", Points = reactionPts, TextDe = sweepEval.TextDe });
