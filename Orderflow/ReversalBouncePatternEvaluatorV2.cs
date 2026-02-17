@@ -568,29 +568,38 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         int awayTicks = RoundTicks(Math.Max(0m, (curr.Close - zone.High)), tickSize);
                         diagConfirmPts = awayTicks >= 2 ? 2m : (awayTicks >= 1 ? 1m : 0m);
+                        bool intentOk = awayTicks <= 0 || curr.PocDelta >= 0m;
+                        if (!intentOk)
+                            diagConfirmPts = 0m;
                         blockedItems.Add(new ScoreItem
                         {
                             Key = "Bestätigung",
                             Points = diagConfirmPts,
-                            TextDe = $"Bestätigung (Long): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks über der Zonen-Oberkante {zone.High:F2} -> +{diagConfirmPts:0.0} [Diagnose]"
+                            TextDe = intentOk
+                                ? $"Bestätigung (Long): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks über der Zonen-Oberkante {zone.High:F2} -> +{diagConfirmPts:0.0} [Diagnose]"
+                                : $"Bestätigung (Long): Close über Zone, aber Verkaufsdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0 (Fake-Out Penalty) [Diagnose]"
                         });
                     }
                     else
                     {
                         int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - curr.Close)), tickSize);
                         diagConfirmPts = awayTicks >= 2 ? 2m : (awayTicks >= 1 ? 1m : 0m);
+                        bool intentOk = awayTicks <= 0 || curr.PocDelta <= 0m;
+                        if (!intentOk)
+                            diagConfirmPts = 0m;
                         blockedItems.Add(new ScoreItem
                         {
                             Key = "Bestätigung",
                             Points = diagConfirmPts,
-                            TextDe = $"Bestätigung (Short): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks unter der Zonen-Unterkante {zone.Low:F2} -> +{diagConfirmPts:0.0} [Diagnose]"
+                            TextDe = intentOk
+                                ? $"Bestätigung (Short): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks unter der Zonen-Unterkante {zone.Low:F2} -> +{diagConfirmPts:0.0} [Diagnose]"
+                                : $"Bestätigung (Short): Close unter Zone, aber Kaufdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0 (Fake-Out Penalty) [Diagnose]"
                         });
                     }
                     softScore += diagConfirmPts;
 
                     bool responseEvidenceDiag = diagAbsorption || diagReactionPts > 0m || diagConfirmPts > 0m;
 
-                    decimal diagDeltaPts = 0m;
                     if (!responseEvidenceDiag)
                     {
                         blockedItems.Add(new ScoreItem { Key = "DeltaFlip", Points = 0m, TextDe = "Delta-Flip: n/v (kein Turn-Beweis) -> +0 [Diagnose]" });
@@ -598,7 +607,7 @@ namespace MyNamespace.Strategies.Orderflow
                     else
                     {
                         bool diagDeltaFlip = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
-                        diagDeltaPts = diagDeltaFlip ? 2m : 0m;
+                        decimal diagDeltaPts = diagDeltaFlip ? 2m : 0m;
                         softScore += diagDeltaPts;
                         blockedItems.Add(new ScoreItem { Key = "DeltaFlip", Points = diagDeltaPts, TextDe = $"Delta-Change: {(diagDeltaFlip ? "JA" : "NEIN")} ({(diagDeltaFlip ? "+2" : "+0")}) [Diagnose]" });
                     }
@@ -683,22 +692,32 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 int awayTicks = RoundTicks(Math.Max(0m, (curr.Close - zone.High)), tickSize);
                 confirmPts = awayTicks >= 2 ? 2m : (awayTicks >= 1 ? 1m : 0m);
+                bool intentOk = awayTicks <= 0 || curr.PocDelta >= 0m;
+                if (!intentOk)
+                    confirmPts = 0m;
                 items.Add(new ScoreItem
                 {
                     Key = "Bestätigung",
                     Points = confirmPts,
-                    TextDe = $"Bestätigung (Long): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks über der Zonen-Oberkante {zone.High:F2} -> +{confirmPts:0.0}"
+                    TextDe = intentOk
+                        ? $"Bestätigung (Long): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks über der Zonen-Oberkante {zone.High:F2} -> +{confirmPts:0.0}"
+                        : $"Bestätigung (Long): Close über Zone, aber Verkaufsdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0 (Fake-Out Penalty)"
                 });
             }
             else
             {
                 int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - curr.Close)), tickSize);
                 confirmPts = awayTicks >= 2 ? 2m : (awayTicks >= 1 ? 1m : 0m);
+                bool intentOk = awayTicks <= 0 || curr.PocDelta <= 0m;
+                if (!intentOk)
+                    confirmPts = 0m;
                 items.Add(new ScoreItem
                 {
                     Key = "Bestätigung",
                     Points = confirmPts,
-                    TextDe = $"Bestätigung (Short): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks unter der Zonen-Unterkante {zone.Low:F2} -> +{confirmPts:0.0}"
+                    TextDe = intentOk
+                        ? $"Bestätigung (Short): Schlusskurs {curr.Close:F2} liegt {awayTicks} Ticks unter der Zonen-Unterkante {zone.Low:F2} -> +{confirmPts:0.0}"
+                        : $"Bestätigung (Short): Close unter Zone, aber Kaufdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0 (Fake-Out Penalty)"
                 });
             }
             score += confirmPts;
@@ -1363,6 +1382,17 @@ namespace MyNamespace.Strategies.Orderflow
             // Bestätigte Zone, aber kein Touch → warten + Swing-Invalidierung
             if (!TouchesZone(currentSnapshot, candidateZone))
             {
+                LogExplainOnce(
+                    currentSnapshot.Bar,
+                    candidateZone.Id,
+                    stage: "Retest.WaitingNoTouch",
+                    lines: new[]
+                    {
+                        $"Zone={candidateZone.Id} CONFIRMED, aber kein Touch in dieser Bar.",
+                        $"Snap BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
+                        $"Snap High/Low=({currentSnapshot.High:F2}/{currentSnapshot.Low:F2}) Zone=[{candidateZone.Low:F2}..{candidateZone.High:F2}]"
+                    });
+
                 if (tracker.MaxFavorableExcursionPrice == 0m)
                     tracker.MaxFavorableExcursionPrice = _direction == OrderDirections.Buy ? currentSnapshot.High : currentSnapshot.Low;
                 else if (_direction == OrderDirections.Buy)
@@ -1398,11 +1428,33 @@ namespace MyNamespace.Strategies.Orderflow
 
             // Retest-Touch erkannt → Gating-Checks
             if (currentSnapshot.Bar - tracker.FirstTouchBar < MinBarsBetweenFirstTouchAndRetest)
+            {
+                LogExplainOnce(
+                    currentSnapshot.Bar,
+                    candidateZone.Id,
+                    stage: "Retest.BlockedTooEarly",
+                    lines: new[]
+                    {
+                        $"Retest-Touch erkannt, aber zu früh nach FirstTouch.",
+                        $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber}",
+                        $"firstTouchBar={tracker.FirstTouchBar} -> barsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar} (min={MinBarsBetweenFirstTouchAndRetest})"
+                    });
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest too early");
+            }
 
             if (!TryCountAwayClosesSinceFirstTouch(history, tracker.FirstTouchBar, currentSnapshot.Bar, candidateZone, _direction, out var awayCloses)
                 || awayCloses < RetestMinAwayCloses)
             {
+                LogExplainOnce(
+                    currentSnapshot.Bar,
+                    candidateZone.Id,
+                    stage: "Retest.BlockedAwayCloses",
+                    lines: new[]
+                    {
+                        $"Retest-Touch erkannt, aber Wegbewegung (AwayCloses) zu schwach.",
+                        $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber}",
+                        $"awayClosesInRow={awayCloses} (min={RetestMinAwayCloses})"
+                    });
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest ignored (awayClosesInRow={awayCloses} < {RetestMinAwayCloses})");
             }
 
@@ -1410,6 +1462,15 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.RetestAttempted = true;
             tracker.RetestBar = currentSnapshot.Bar;
             tracker.RetestAttemptTime = currentSnapshot.Time;
+            LogExplainOnce(
+                currentSnapshot.Bar,
+                candidateZone.Id,
+                stage: "Retest.SessionStart",
+                lines: new[]
+                {
+                    $"Retest valide → Retest-Session wird gestartet.",
+                    $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}"
+                });
             StartSession(tracker, SessionType.Retest, currentSnapshot);
 
             // Erste Evaluation sofort auf der Touch-Bar
@@ -1497,7 +1558,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionLastEvalBar == currentSnapshot.Bar)
                 return SessionEvalOutcome.Continue;
 
-            int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar;
+            int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar + 1;
 
             // --- Invalidierung: Session-Dauer ---
             if (sessionBarNr > maxSessionBars)
@@ -1544,21 +1605,22 @@ namespace MyNamespace.Strategies.Orderflow
             // --- Scoring ---
             tracker.SessionLastEvalBar = currentSnapshot.Bar;
             var prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
-            decision = EvaluateDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, diagnosticSoftWhenBlocked: true);
+            DecisionResult dec = EvaluateDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, diagnosticSoftWhenBlocked: true);
+            decision = dec;
 
             tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-            tracker.SessionDecisionHistory.Add(decision);
+            tracker.SessionDecisionHistory.Add(dec);
 
             tracker.SessionDecisionBars ??= new List<int>();
             tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
 
-            if (decision.TotalScore > tracker.SessionBestScore)
+            if (dec.TotalScore > tracker.SessionBestScore)
             {
-                tracker.SessionBestScore = decision.TotalScore;
-                tracker.SessionBestScoreItems = decision.Items != null ? new List<ScoreItem>(decision.Items) : null;
+                tracker.SessionBestScore = dec.TotalScore;
+                tracker.SessionBestScoreItems = dec.Items != null ? new List<ScoreItem>(dec.Items) : null;
             }
 
-            if (decision.Entry)
+            if (dec.Entry)
             {
                 tracker.SessionActive = false;
                 tracker.SessionEndReason = $"GO – Entry ausgelöst bei Session-Bar {sessionBarNr}.";
@@ -1594,7 +1656,7 @@ namespace MyNamespace.Strategies.Orderflow
                 string zoneStateDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"MULTI-BAR REVERSAL | {dirDe} Zone #{zone.Id} | {sessionBars} Bars | Status: {zoneStateDe} | Szenario {szenario}");
+                lines.Add($"MULTI-BAR REVERSAL | {dirDe} Zone #{zone.Id} [{zone.Low:F2}..{zone.High:F2}] | {sessionBars} Bars | Status: {zoneStateDe} | Szenario {szenario}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
@@ -1862,6 +1924,29 @@ namespace MyNamespace.Strategies.Orderflow
                             else
                                 lines.Add("  • ⊘ Range/Consolidation: Close IN Zone aber ohne klare Dominanz");
                         }
+                    }
+                }
+
+                // Bestätigung (Penalty gespiegelt wie im Scoring): nur zählen, wenn Close weg von Zone UND PocΔ-Intent passt
+                if (lastBarSnap != null)
+                {
+                    if (isLong)
+                    {
+                        int awayTicks = RoundTicks(Math.Max(0m, (lastBarSnap.Close - zone.High)), tickSize);
+                        bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta >= 0m;
+                        if (awayTicks >= 1 && intentOk)
+                            lines.Add("  • ✓ Bestätigung: Close weg von der Zone (Intent passt) → Reversal bestätigt");
+                        else if (awayTicks >= 1 && !intentOk)
+                            lines.Add($"  • ⚠ Bestätigung: Close weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0}) → nicht gezählt (Fake-Out Penalty)");
+                    }
+                    else
+                    {
+                        int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - lastBarSnap.Close)), tickSize);
+                        bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta <= 0m;
+                        if (awayTicks >= 1 && intentOk)
+                            lines.Add("  • ✓ Bestätigung: Close weg von der Zone (Intent passt) → Reversal bestätigt");
+                        else if (awayTicks >= 1 && !intentOk)
+                            lines.Add($"  • ⚠ Bestätigung: Close weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0}) → nicht gezählt (Fake-Out Penalty)");
                     }
                 }
 
