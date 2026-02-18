@@ -6,6 +6,7 @@ namespace MyNamespace.Strategies.Models
     {
         Trend_Impulse,
         Healthy_Pullback,
+        Momentum_Refuel,
         Range_Balanced,
         Exhaustion,
         Volatile_Breakout,

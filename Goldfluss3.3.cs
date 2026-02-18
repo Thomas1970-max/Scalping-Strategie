@@ -11365,6 +11365,7 @@ namespace MyNamespace.Strategies
                                     {
                                         case MyNamespace.Strategies.Models.MarketPhaseV2.Trend_Impulse: return "Starker Trend-Schub";
                                         case MyNamespace.Strategies.Models.MarketPhaseV2.Healthy_Pullback: return "Gesunder Rücksetzer";
+                                        case MyNamespace.Strategies.Models.MarketPhaseV2.Momentum_Refuel: return "Trend-Luftholen";
                                         case MyNamespace.Strategies.Models.MarketPhaseV2.Range_Balanced: return "Seitwärts-Gleichgewicht";
                                         case MyNamespace.Strategies.Models.MarketPhaseV2.Exhaustion: return "Markt-Erschöpfung";
                                         case MyNamespace.Strategies.Models.MarketPhaseV2.Volatile_Breakout: return "Dynamischer Ausbruch";

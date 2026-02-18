@@ -27,6 +27,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private MarketRegime? _prevRegime;
         private int _rangeCandidateCount;
 
+        private decimal? _prevSignedSigma;
+        private int? _prevStaircase;
+
         public MarketStateEngineV2(decimal tickSize, int slopeLookbackK = 5, int zWindowN = 100, decimal overextendedMultiplier = 2.5m, int rangeConfirmBars = 3)
         {
             _tickSize = tickSize > 0m ? tickSize : 0.25m;
@@ -87,6 +90,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
             bool isOverextended = IsOverextended(input.Close, state.Bias, upperSdX, lowerSdX);
             state.IsOverextended = isOverextended;
 
+            decimal signedSigma = (effectiveBias == MarketBiasV2.Long) ? sigma : (effectiveBias == MarketBiasV2.Short ? -sigma : 0m);
+
             bool regimeCooling = IsRegimeCooling(_prevRegime, input.Regime);
 
             // ---- Core hierarchical rules (per spec) ----
@@ -98,6 +103,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -108,7 +115,20 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                    ((state.Bias == MarketBiasV2.Long && sigma >= 0m && sigma <= 1.0m) ||
                                     (state.Bias == MarketBiasV2.Short && sigma <= 0m && sigma >= -1.0m));
 
-            decimal signedSigma = (effectiveBias == MarketBiasV2.Long) ? sigma : (effectiveBias == MarketBiasV2.Short ? -sigma : 0m);
+            // Momentum_Refuel (scalping refuel above Band1): cool-down after breakout into a confirmed HTF zone.
+            if (IsMomentumRefuel(input, effectiveBias, signedSigma, staircase, zSlope))
+            {
+                state.Bias = effectiveBias;
+                state.Phase = MarketPhaseV2.Momentum_Refuel;
+                state.VolatilityMultiplier = 1.0m;
+                state.IsTradeable = true;
+                _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
+                _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
+                return state;
+            }
 
             // Trend_Impulse:
             // StaircaseIndex == 5 AND ZSlope > 2.0 AND price < SD2.5
@@ -124,6 +144,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -150,6 +172,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -163,6 +187,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -188,6 +214,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -203,6 +231,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -221,6 +251,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _prevPhase = state.Phase;
                 _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
+                _prevSignedSigma = signedSigma;
+                _prevStaircase = staircase;
                 return state;
             }
 
@@ -233,7 +265,75 @@ namespace MyNamespace.Strategies.MarketAnalysis
             _prevPhase = state.Phase;
             _prevBias = effectiveBias;
             _prevRegime = input.Regime;
+            _prevSignedSigma = signedSigma;
+            _prevStaircase = staircase;
             return state;
+        }
+
+        private bool IsMomentumRefuel(MarketStateInputV2 input, MarketBiasV2 bias, decimal signedSigma, int staircase, decimal zSlope)
+        {
+            if (bias == MarketBiasV2.Neutral)
+                return false;
+
+            if (!input.IsInHtfZone)
+                return false;
+
+            if (!_prevPhase.HasValue || _prevPhase.Value != MarketPhaseV2.Volatile_Breakout)
+                return false;
+
+            if (!_prevSignedSigma.HasValue)
+                return false;
+
+            // "Cooling" in trend direction: signed sigma must decrease.
+            decimal cooling = _prevSignedSigma.Value - signedSigma;
+            if (cooling < 0.4m)
+                return false;
+
+            // Refuel region above Band1 but not fully collapsed back to VWAP.
+            if (!(signedSigma > 1.0m && signedSigma < 1.6m))
+                return false;
+
+            if (SignedZ(zSlope, bias) <= 0.2m)
+                return false;
+
+            const int HtfHoldBufferTicks = 2;
+            decimal buffer = Math.Max(0, HtfHoldBufferTicks) * _tickSize;
+
+            if (bias == MarketBiasV2.Long)
+            {
+                if (!input.HtfSwingLow.HasValue)
+                    return false;
+                if (input.Close <= (input.HtfSwingLow.Value - buffer))
+                    return false;
+            }
+
+            if (bias == MarketBiasV2.Short)
+            {
+                if (!input.HtfSwingHigh.HasValue)
+                    return false;
+                if (input.Close >= (input.HtfSwingHigh.Value + buffer))
+                    return false;
+            }
+
+            // Require a "turn" / improvement in staircase: moving back toward trend direction.
+            if (!_prevStaircase.HasValue)
+                return false;
+
+            bool turned = bias == MarketBiasV2.Long
+                ? (_prevStaircase.Value < 0 && staircase >= 0)
+                : (_prevStaircase.Value > 0 && staircase <= 0);
+
+            // If flip is too strict, allow a strong improvement as a fallback.
+            if (!turned)
+            {
+                int improvement = bias == MarketBiasV2.Long
+                    ? (staircase - _prevStaircase.Value)
+                    : (_prevStaircase.Value - staircase);
+                if (improvement < 2)
+                    return false;
+            }
+
+            return true;
         }
 
         private MarketBiasV2 DetermineEffectiveBias(MarketBiasV2 currentBias, decimal zSlope)
@@ -244,7 +344,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (_prevBias == MarketBiasV2.Neutral)
                 return MarketBiasV2.Neutral;
 
-            bool contextOk = _prevPhase == MarketPhaseV2.Trend_Impulse || _prevPhase == MarketPhaseV2.Healthy_Pullback || _prevPhase == MarketPhaseV2.Maturing_Trend;
+            bool contextOk = _prevPhase == MarketPhaseV2.Trend_Impulse || _prevPhase == MarketPhaseV2.Healthy_Pullback || _prevPhase == MarketPhaseV2.Momentum_Refuel || _prevPhase == MarketPhaseV2.Maturing_Trend;
             if (!contextOk)
                 return MarketBiasV2.Neutral;
 
