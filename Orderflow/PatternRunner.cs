@@ -19,6 +19,8 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly IPatternEvaluator _continuationLong;
         private readonly IPatternEvaluator _continuationShort;
 
+        private int? _lastPullbackLikePhaseBar;
+
         public IReadOnlyList<IPatternEvaluator> Evaluators { get; }
 
         public PatternRunner(
@@ -70,6 +72,13 @@ namespace MyNamespace.Strategies.Orderflow
             var thresholds = _uiThresholds;
             thresholds.TickSizeDecimal = _tickSize;
 
+            var state = currentMarketState ?? new MarketStateV2();
+
+            if (state.Phase == MarketPhaseV2.Healthy_Pullback || state.Phase == MarketPhaseV2.Momentum_Refuel)
+            {
+                _lastPullbackLikePhaseBar = bar;
+            }
+
             var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(4);
 
             PatternEvaluationResult? TryEval(IPatternEvaluator ev)
@@ -83,7 +92,7 @@ namespace MyNamespace.Strategies.Orderflow
                         thresholds,
                         currentRegime,
                         currentDirectionalBias,
-                        currentMarketState,
+                        state,
                         currentMarketStructureContext);
                 }
                 catch (Exception ex)
@@ -109,8 +118,30 @@ namespace MyNamespace.Strategies.Orderflow
 
             var detected = evals
                 .Where(x => x.res != null && x.res.IsDetected)
-                .OrderByDescending(x => x.res.ConfidenceScore)
                 .ToList();
+
+            if (detected.Count > 0)
+            {
+                int phaseLookbackBars = thresholds.ContinuationPhaseLookbackBars ?? 6;
+                phaseLookbackBars = Math.Max(0, phaseLookbackBars);
+                bool preferContinuation = (state.Phase == MarketPhaseV2.Healthy_Pullback || state.Phase == MarketPhaseV2.Momentum_Refuel)
+                                          || (_lastPullbackLikePhaseBar.HasValue && (bar - _lastPullbackLikePhaseBar.Value) <= phaseLookbackBars);
+
+                if (preferContinuation)
+                {
+                    var contDetected = detected
+                        .Where(x => x.res.PatternType.GetCategory() == PatternCategory.Continuation)
+                        .OrderByDescending(x => x.res.ConfidenceScore)
+                        .ToList();
+
+                    if (contDetected.Count > 0)
+                        detected = contDetected;
+                }
+
+                detected = detected
+                    .OrderByDescending(x => x.res.ConfidenceScore)
+                    .ToList();
+            }
 
             if (detected.Count == 0)
             {
