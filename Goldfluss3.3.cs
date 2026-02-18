@@ -4004,6 +4004,20 @@ namespace MyNamespace.Strategies
         [TypeConverter(typeof(ExpandableObjectConverter))]
         public OrderflowThresholds ReversalThresholds { get; set; } = new OrderflowThresholds();
 
+        [Category("Continuation Settings")]
+        [DisplayName("Continuation: Phase Lookback Bars")]
+        [Description("Wie viele Bars rückwirkend Healthy_Pullback oder Momentum_Refuel gewesen sein darf, damit ContinuationPullback-Einstiege weiterhin erlaubt sind.")]
+        [DefaultValue(6)]
+        public int ContinuationPhaseLookbackBars
+        {
+            get => ReversalThresholds?.ContinuationPhaseLookbackBars_UI ?? 6;
+            set
+            {
+                if (ReversalThresholds != null)
+                    ReversalThresholds.ContinuationPhaseLookbackBars_UI = Math.Max(0, value);
+            }
+        }
+
 
         [Display(Name = "Noisy Orderflow-Logs unterdrücken",
                  GroupName = "Orderflow - Logging",
@@ -5880,6 +5894,7 @@ namespace MyNamespace.Strategies
                 reversalEvaluatorShort,
                 continuationEvaluatorLong,
                 continuationEvaluatorShort,
+                ReversalThresholds,
                 _loggerSource,
                 _tickSize);
 

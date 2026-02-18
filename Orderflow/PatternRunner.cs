@@ -13,6 +13,7 @@ namespace MyNamespace.Strategies.Orderflow
     {
         private readonly ILoggerSource? _loggerSource;
         private readonly decimal _tickSize;
+        private readonly OrderflowThresholds _uiThresholds;
         private readonly IPatternEvaluator _reversalLong;
         private readonly IPatternEvaluator _reversalShort;
         private readonly IPatternEvaluator _continuationLong;
@@ -25,6 +26,7 @@ namespace MyNamespace.Strategies.Orderflow
             IPatternEvaluator reversalShort,
             IPatternEvaluator continuationLong,
             IPatternEvaluator continuationShort,
+            OrderflowThresholds uiThresholds,
             ILoggerSource? loggerSource,
             decimal tickSize)
         {
@@ -32,6 +34,7 @@ namespace MyNamespace.Strategies.Orderflow
             _reversalShort = reversalShort ?? throw new ArgumentNullException(nameof(reversalShort));
             _continuationLong = continuationLong ?? throw new ArgumentNullException(nameof(continuationLong));
             _continuationShort = continuationShort ?? throw new ArgumentNullException(nameof(continuationShort));
+            _uiThresholds = uiThresholds ?? throw new ArgumentNullException(nameof(uiThresholds));
             _loggerSource = loggerSource;
             _tickSize = tickSize > 0m ? tickSize : 0.25m;
 
@@ -64,12 +67,8 @@ namespace MyNamespace.Strategies.Orderflow
                     0m);
             }
 
-            var thresholds = new OrderflowThresholds
-            {
-                TickSizeDecimal = _tickSize,
-                FinishedAuctionMaxAskAtLow = 0m,
-                FinishedAuctionMaxBidAtHigh = 0m
-            };
+            var thresholds = _uiThresholds;
+            thresholds.TickSizeDecimal = _tickSize;
 
             var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(4);
 
