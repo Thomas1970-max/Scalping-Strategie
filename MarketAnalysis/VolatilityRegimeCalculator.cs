@@ -28,17 +28,12 @@ namespace MyNamespace.Strategies.MarketAnalysis
             updatedRegimeConsecutiveCount = regimeConsecutiveCount;
 
             decimal vps = clusterStatistic.VolPerSecond[bar];
-            decimal ema = clusterStatistic.EmaVolPerSecond[bar];
-            decimal std = (clusterStatistic.EmaVolPerSecondStd != null && clusterStatistic.EmaVolPerSecondStd.Count > bar)
-                ? clusterStatistic.EmaVolPerSecondStd[bar]
-                : 0m;
-
-            decimal zEma = (std > 0m) ? (vps - ema) / std : 0m;
-
             decimal tradesPerSec = currentSnapshot.TradeRateZ;
 
             decimal secondsPerBar;
-            if (currentBarTime > prevBarTime)
+            if (clusterStatistic.CandleDurations != null && clusterStatistic.CandleDurations.Count > bar)
+                secondsPerBar = clusterStatistic.CandleDurations[bar];
+            else if (currentBarTime > prevBarTime)
                 secondsPerBar = (decimal)(currentBarTime - prevBarTime).TotalSeconds;
             else
                 secondsPerBar = 0m;
@@ -47,20 +42,35 @@ namespace MyNamespace.Strategies.MarketAnalysis
             const decimal VOL_SLOW_Z = -1.0m;
             const decimal TR_FAST_MIN = 1.0m;
             const decimal TR_SLOW_MAX = -1.0m;
-            const decimal BARSEC_FAST_MAX = 5.0m;
-            const decimal BARSEC_SLOW_MIN = 45.0m;
+            const decimal BARSEC_FAST_MULT = 0.6m;
+            const decimal BARSEC_SLOW_MULT = 1.8m;
 
             int w = Math.Max(1, volPhaseWindow);
-            int startIdx = Math.Max(0, bar - w + 1);
-            int count = bar - startIdx + 1;
+            int endIdx = bar > 0 ? bar - 1 : 0;
+            int startIdx = Math.Max(0, endIdx - w + 1);
+            int count = endIdx - startIdx + 1;
+            if (count < 1)
+                count = 1;
 
             var values = new List<decimal>(count);
-            for (int i = startIdx; i <= bar; i++)
+            for (int i = startIdx; i <= endIdx; i++)
             {
                 if (clusterStatistic.VolPerSecond.Count > i)
                     values.Add(clusterStatistic.VolPerSecond[i]);
                 else
                     values.Add(0m);
+            }
+
+            var secValues = new List<decimal>(count);
+            if (clusterStatistic.CandleDurations != null)
+            {
+                for (int i = startIdx; i <= endIdx; i++)
+                {
+                    if (clusterStatistic.CandleDurations.Count > i)
+                        secValues.Add(clusterStatistic.CandleDurations[i]);
+                    else
+                        secValues.Add(0m);
+                }
             }
 
             decimal phaseMu = 0m;
@@ -84,12 +94,30 @@ namespace MyNamespace.Strategies.MarketAnalysis
             decimal highBandPhase = phaseMu * highEnterMult;
             decimal highBandExit = phaseMu * highExitMult;
 
+            decimal avgSeconds = 0m;
+            if (secValues.Count > 0)
+            {
+                decimal sumSec = 0m;
+                int nSec = 0;
+                foreach (var ss in secValues)
+                {
+                    if (ss > 0m)
+                    {
+                        sumSec += ss;
+                        nSec++;
+                    }
+                }
+
+                if (nSec > 0)
+                    avgSeconds = sumSec / nSec;
+            }
+
             int fastVotesLocal = 0, slowVotesLocal = 0;
             if (vpsCurrent >= highBandPhase) fastVotesLocal++; else if (vpsCurrent < lowBandPhase) slowVotesLocal++;
             if (phaseSigma > 0m && zPhase >= VOL_FAST_Z) fastVotesLocal++; else if (phaseSigma > 0m && zPhase <= VOL_SLOW_Z) slowVotesLocal++;
-            if (std > 0m && zEma >= VOL_FAST_Z) fastVotesLocal++; else if (std > 0m && zEma <= VOL_SLOW_Z) slowVotesLocal++;
             if (tradesPerSec >= TR_FAST_MIN) fastVotesLocal++; else if (tradesPerSec <= TR_SLOW_MAX) slowVotesLocal++;
-            if (secondsPerBar > 0m && secondsPerBar <= BARSEC_FAST_MAX) fastVotesLocal++; else if (secondsPerBar >= BARSEC_SLOW_MIN) slowVotesLocal++;
+            if (avgSeconds > 0m && secondsPerBar > 0m && secondsPerBar <= avgSeconds * BARSEC_FAST_MULT) fastVotesLocal++;
+            else if (avgSeconds > 0m && secondsPerBar > 0m && secondsPerBar >= avgSeconds * BARSEC_SLOW_MULT) slowVotesLocal++;
 
             string candidateSpeed = (fastVotesLocal >= 2 && slowVotesLocal < 2) ? "Fast"
                                  : (slowVotesLocal >= 2 && fastVotesLocal < 2) ? "Slow"
@@ -108,35 +136,40 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 updatedRegimeConsecutiveCount = 1;
 
             bool acceptSwitch;
-            int minCons = Math.Max(1, minConsecutiveForSwitch);
+            int minConsSlow = Math.Max(1, minConsecutiveForSwitch);
+            int minConsFast = Math.Min(minConsSlow, 2);
+            if (minConsFast < 1)
+                minConsFast = 1;
+            int minConsNormal = minConsSlow;
+            const decimal FAST_SPIKE_MULT = 1.5m;
             switch (candidateRegime)
             {
                 case MarketRegime.Fast:
                     if (lastRegime == MarketRegime.Fast)
                     {
-                        acceptSwitch = (vpsCurrent >= highBandExit) || (updatedRegimeConsecutiveCount >= minCons);
+                        acceptSwitch = (vpsCurrent >= highBandExit) || (updatedRegimeConsecutiveCount >= minConsFast);
                     }
                     else
                     {
-                        acceptSwitch = (vpsCurrent >= highBandPhase && updatedRegimeConsecutiveCount >= minCons)
-                                       || (vpsCurrent >= highBandPhase * 1.2m);
+                        acceptSwitch = (vpsCurrent >= highBandPhase && updatedRegimeConsecutiveCount >= minConsFast)
+                                       || (vpsCurrent >= highBandPhase * FAST_SPIKE_MULT);
                     }
                     break;
 
                 case MarketRegime.Slow:
                     if (lastRegime == MarketRegime.Slow)
                     {
-                        acceptSwitch = (vpsCurrent <= lowBandExit) || (updatedRegimeConsecutiveCount >= minCons);
+                        acceptSwitch = (vpsCurrent <= lowBandExit) || (updatedRegimeConsecutiveCount >= minConsSlow);
                     }
                     else
                     {
-                        acceptSwitch = (vpsCurrent <= lowBandPhase && updatedRegimeConsecutiveCount >= minCons)
+                        acceptSwitch = (vpsCurrent <= lowBandPhase && updatedRegimeConsecutiveCount >= minConsSlow)
                                        || (vpsCurrent <= lowBandPhase * 0.8m);
                     }
                     break;
 
                 default:
-                    acceptSwitch = (updatedRegimeConsecutiveCount >= minCons) || (lastRegime == MarketRegime.Normal);
+                    acceptSwitch = (updatedRegimeConsecutiveCount >= minConsNormal) || (lastRegime == MarketRegime.Normal);
                     break;
             }
 
@@ -174,11 +207,11 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private int _regimeConsecutiveCount = 0;
 
         public MarketRegimeEvaluator(
-            int volPhaseWindow = 14,
-            int minConsecutiveForSwitch = 3,
-            decimal highEnterMult = 1.2m,
+            int volPhaseWindow = 30,
+            int minConsecutiveForSwitch = 2,
+            decimal highEnterMult = 1.15m,
             decimal highExitMult = 1.05m,
-            decimal lowEnterMult = 0.8m,
+            decimal lowEnterMult = 0.85m,
             decimal lowExitMult = 0.95m)
         {
             _volPhaseWindow = Math.Max(1, volPhaseWindow);
