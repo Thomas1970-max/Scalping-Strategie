@@ -46,6 +46,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 Dynamic = input.Regime
             };
 
+            state.HtfZoneType = input.HtfZoneType;
+
             const decimal RangeSigmaAbsThreshold = 0.5m;
             const decimal ImpulseSigmaThreshold = 1.1m;
             const decimal BreakoutSigmaAbsThreshold = 1.7m;

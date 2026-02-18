@@ -2,6 +2,13 @@ using System;
 
 namespace MyNamespace.Strategies.Models
 {
+    public enum HtfZoneType
+    {
+        None,
+        Resistance,
+        Support
+    }
+
     public enum MarketPhaseV2
     {
         Trend_Impulse,
@@ -30,6 +37,8 @@ namespace MyNamespace.Strategies.Models
         public bool IsOverextended { get; set; } = false;
         public decimal ZSlope { get; set; } = 0m;
         public int StaircaseIndex { get; set; } = 0;
+
+        public HtfZoneType HtfZoneType { get; set; } = HtfZoneType.None;
 
         // Kontextfelder: sollen Evaluatoren eine bessere Entscheidungsgrundlage geben,
         // ohne Entry-Logik in die Engine zu verlagern.
@@ -73,7 +82,8 @@ namespace MyNamespace.Strategies.Models
                 regime: regime,
                 htfSwingHigh: null,
                 htfSwingLow: null,
-                isInHtfZone: false)
+                isInHtfZone: false,
+                htfZoneType: HtfZoneType.None)
         {
         }
 
@@ -94,7 +104,8 @@ namespace MyNamespace.Strategies.Models
             MarketRegime regime,
             decimal? htfSwingHigh,
             decimal? htfSwingLow,
-            bool isInHtfZone)
+            bool isInHtfZone,
+            HtfZoneType htfZoneType)
         {
             Bar = bar;
             High = high;
@@ -113,6 +124,7 @@ namespace MyNamespace.Strategies.Models
             HtfSwingHigh = htfSwingHigh;
             HtfSwingLow = htfSwingLow;
             IsInHtfZone = isInHtfZone;
+            HtfZoneType = htfZoneType;
         }
 
         public int Bar { get; }
@@ -133,5 +145,6 @@ namespace MyNamespace.Strategies.Models
         public decimal? HtfSwingHigh { get; }
         public decimal? HtfSwingLow { get; }
         public bool IsInHtfZone { get; }
+        public HtfZoneType HtfZoneType { get; }
     }
 }

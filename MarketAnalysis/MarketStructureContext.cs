@@ -142,6 +142,28 @@ namespace MyNamespace.Strategies.MarketAnalysis
             return false;
         }
 
+        public HtfZoneType GetHtfZoneType(decimal price, decimal tickSize, int bufferTicks = 0)
+        {
+            if (ActiveZones == null || ActiveZones.Count == 0)
+                return HtfZoneType.None;
+
+            if (tickSize <= 0m)
+                tickSize = 0.25m;
+
+            var buffer = Math.Max(0, bufferTicks) * tickSize;
+            for (int i = 0; i < ActiveZones.Count; i++)
+            {
+                var z = ActiveZones[i];
+                if (z == null)
+                    continue;
+
+                if (price >= (z.Low - buffer) && price <= (z.High + buffer))
+                    return z.Type == ZoneType.Support ? HtfZoneType.Support : HtfZoneType.Resistance;
+            }
+
+            return HtfZoneType.None;
+        }
+
         public void Reset()
         {
             ActiveZones.Clear();

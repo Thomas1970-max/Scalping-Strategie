@@ -11011,6 +11011,9 @@ namespace MyNamespace.Strategies
                                 var htfSwingHigh = _marketStructureContext?.LastConfirmedSwingHigh;
                                 var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
                                 bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovSnapshot.Close, _tickSize, bufferTicks: 2);
+                                var htfZoneType = _marketStructureContext != null
+                                    ? _marketStructureContext.GetHtfZoneType(ovSnapshot.Close, _tickSize, bufferTicks: 2)
+                                    : MyNamespace.Strategies.Models.HtfZoneType.None;
 
                                 var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
                                     bar: feat?.Bar ?? ovSnapshot.Bar,
@@ -11029,7 +11032,8 @@ namespace MyNamespace.Strategies
                                     regime: localCurrentRegime,
                                     htfSwingHigh: htfSwingHigh,
                                     htfSwingLow: htfSwingLow,
-                                    isInHtfZone: isInHtfZone);
+                                    isInHtfZone: isInHtfZone,
+                                    htfZoneType: htfZoneType);
 
                                 _currentMarketStateV2 = _marketStateEngineV2.Update(v2Input);
                             }
@@ -11332,6 +11336,10 @@ namespace MyNamespace.Strategies
                                 var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
                                 bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovSnapshot.Close, _tickSize, bufferTicks: 2);
 
+                                var htfZoneType = _marketStructureContext != null
+                                    ? _marketStructureContext.GetHtfZoneType(ovSnapshot.Close, _tickSize, bufferTicks: 2)
+                                    : MyNamespace.Strategies.Models.HtfZoneType.None;
+
                                 var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
                                     bar: feat?.Bar ?? ovSnapshot.Bar,
                                     high: ovSnapshot.High,
@@ -11349,7 +11357,8 @@ namespace MyNamespace.Strategies
                                     regime: localCurrentRegime,
                                     htfSwingHigh: htfSwingHigh,
                                     htfSwingLow: htfSwingLow,
-                                    isInHtfZone: isInHtfZone);
+                                    isInHtfZone: isInHtfZone,
+                                    htfZoneType: htfZoneType);
 
                                 _currentMarketStateV2 = _marketStateEngineV2.Update(v2Input);
 
