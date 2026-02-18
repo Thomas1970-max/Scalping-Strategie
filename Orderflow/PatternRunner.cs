@@ -15,21 +15,27 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly decimal _tickSize;
         private readonly IPatternEvaluator _reversalLong;
         private readonly IPatternEvaluator _reversalShort;
+        private readonly IPatternEvaluator _continuationLong;
+        private readonly IPatternEvaluator _continuationShort;
 
         public IReadOnlyList<IPatternEvaluator> Evaluators { get; }
 
         public PatternRunner(
             IPatternEvaluator reversalLong,
             IPatternEvaluator reversalShort,
+            IPatternEvaluator continuationLong,
+            IPatternEvaluator continuationShort,
             ILoggerSource? loggerSource,
             decimal tickSize)
         {
             _reversalLong = reversalLong ?? throw new ArgumentNullException(nameof(reversalLong));
             _reversalShort = reversalShort ?? throw new ArgumentNullException(nameof(reversalShort));
+            _continuationLong = continuationLong ?? throw new ArgumentNullException(nameof(continuationLong));
+            _continuationShort = continuationShort ?? throw new ArgumentNullException(nameof(continuationShort));
             _loggerSource = loggerSource;
             _tickSize = tickSize > 0m ? tickSize : 0.25m;
 
-            Evaluators = new List<IPatternEvaluator> { _reversalLong, _reversalShort };
+            Evaluators = new List<IPatternEvaluator> { _reversalLong, _reversalShort, _continuationLong, _continuationShort };
         }
 
         public DetectedOrderflowPattern DetectDominantOrderflowPattern(
@@ -65,7 +71,7 @@ namespace MyNamespace.Strategies.Orderflow
                 FinishedAuctionMaxBidAtHigh = 0m
             };
 
-            var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(2);
+            var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(4);
 
             PatternEvaluationResult? TryEval(IPatternEvaluator ev)
             {
@@ -96,6 +102,11 @@ namespace MyNamespace.Strategies.Orderflow
             if (r1 != null) evals.Add((_reversalLong, r1));
             var r2 = TryEval(_reversalShort);
             if (r2 != null) evals.Add((_reversalShort, r2));
+
+            var c1 = TryEval(_continuationLong);
+            if (c1 != null) evals.Add((_continuationLong, c1));
+            var c2 = TryEval(_continuationShort);
+            if (c2 != null) evals.Add((_continuationShort, c2));
 
             var detected = evals
                 .Where(x => x.res != null && x.res.IsDetected)

@@ -5873,9 +5873,13 @@ namespace MyNamespace.Strategies
 
             var reversalEvaluatorLong = new ReversalBouncePatternEvaluatorV2(OrderDirections.Buy, this, ReversalCompressionGapTicks);
             var reversalEvaluatorShort = new ReversalBouncePatternEvaluatorV2(OrderDirections.Sell, this, ReversalCompressionGapTicks);
+            var continuationEvaluatorLong = new ContinuationPullbackEvaluatorV2(OrderDirections.Buy, this);
+            var continuationEvaluatorShort = new ContinuationPullbackEvaluatorV2(OrderDirections.Sell, this);
             _patternRunner = new PatternRunner(
                 reversalEvaluatorLong,
                 reversalEvaluatorShort,
+                continuationEvaluatorLong,
+                continuationEvaluatorShort,
                 _loggerSource,
                 _tickSize);
 
@@ -13089,6 +13093,23 @@ namespace MyNamespace.Strategies
                         };
                         break;
 
+                    case OrderflowPatternType.PotentialLongTrendContinuation:
+                        longEntryPrice = c.Close;
+                        entryTriggerLevelName = "CLOSE";
+                        entryTriggerLevel = c.Close;
+
+                        int slTicksLongCont = (int)Math.Round(((c.Close - (c.Low - tickSize)) / tickSize), MidpointRounding.AwayFromZero);
+                        if (slTicksLongCont < 1) slTicksLongCont = 1;
+
+                        setup = new SetupParams
+                        {
+                            TpTicks = 10,
+                            SlTicks = slTicksLongCont,
+                            TrailType = "CANDLE_HL",
+                            TrailActivateAfterTicks = 4,
+                        };
+                        break;
+
                     default:
                         this.LogWarn($"[ORDER-LONG] Unbekannter OrderflowPatternType f?r Long-Setup: {detectedPattern.Type}. Kein Einstieg.");
                         return;
@@ -13160,6 +13181,23 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
+                            TrailType = "CANDLE_HL",
+                            TrailActivateAfterTicks = 4,
+                        };
+                        break;
+
+                    case OrderflowPatternType.PotentialShortTrendContinuation:
+                        shortEntryPrice = c.Close;
+                        entryTriggerLevelName = "CLOSE";
+                        entryTriggerLevel = c.Close;
+
+                        int slTicksShortCont = (int)Math.Round((((c.High + tickSize) - c.Close) / tickSize), MidpointRounding.AwayFromZero);
+                        if (slTicksShortCont < 1) slTicksShortCont = 1;
+
+                        setup = new SetupParams
+                        {
+                            TpTicks = 10,
+                            SlTicks = slTicksShortCont,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
                         };

@@ -162,6 +162,19 @@ namespace MyNamespace.Strategies.Models
         public int ContinuationMinSignalsRequired_UI { get; set; } = 2;
 
         [Category("Continuation")]
+        [DisplayName("Continuation: Phase Lookback Bars")]
+        [Description("Wie viele Bars rückwirkend Healthy_Pullback oder Momentum_Refuel gewesen sein darf, damit ContinuationPullback-Einstiege weiterhin erlaubt sind.")]
+        [DefaultValue(6)]
+        public int ContinuationPhaseLookbackBars_UI { get; set; } = 6;
+
+        [Browsable(false)]
+        public int? ContinuationPhaseLookbackBars
+        {
+            get => ContinuationPhaseLookbackBars_UI;
+            set => ContinuationPhaseLookbackBars_UI = Math.Max(0, value ?? 6);
+        }
+
+        [Category("Continuation")]
         [DisplayName("Continuation: CVD Impulse Long")]
         [Description("Spezielle CVD-Impulse-Schwelle für Continuation-Long-Matching.")]
         [TypeConverter(typeof(DoubleConverter))]
