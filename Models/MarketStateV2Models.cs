@@ -26,6 +26,7 @@ namespace MyNamespace.Strategies.Models
         public MarketRegime Dynamic { get; set; } = MarketRegime.None;
         public decimal VolatilityMultiplier { get; set; } = 1.0m;
         public bool IsTradeable { get; set; } = true;
+        public bool IsOverextended { get; set; } = false;
         public decimal ZSlope { get; set; } = 0m;
         public int StaircaseIndex { get; set; } = 0;
 
@@ -54,6 +55,45 @@ namespace MyNamespace.Strategies.Models
             decimal currentVal,
             decimal candlePocPrice,
             MarketRegime regime)
+            : this(
+                bar: bar,
+                high: high,
+                close: close,
+                vwap: vwap,
+                upperBand1: upperBand1,
+                lowerBand1: lowerBand1,
+                upperBand2: upperBand2,
+                lowerBand2: lowerBand2,
+                upperBand3: upperBand3,
+                lowerBand3: lowerBand3,
+                currentVah: currentVah,
+                currentVal: currentVal,
+                candlePocPrice: candlePocPrice,
+                regime: regime,
+                htfSwingHigh: null,
+                htfSwingLow: null,
+                isInHtfZone: false)
+        {
+        }
+
+        public MarketStateInputV2(
+            int bar,
+            decimal high,
+            decimal close,
+            decimal vwap,
+            decimal upperBand1,
+            decimal lowerBand1,
+            decimal upperBand2,
+            decimal lowerBand2,
+            decimal upperBand3,
+            decimal lowerBand3,
+            decimal currentVah,
+            decimal currentVal,
+            decimal candlePocPrice,
+            MarketRegime regime,
+            decimal? htfSwingHigh,
+            decimal? htfSwingLow,
+            bool isInHtfZone)
         {
             Bar = bar;
             High = high;
@@ -69,6 +109,9 @@ namespace MyNamespace.Strategies.Models
             CurrentVAL = currentVal;
             CandlePocPrice = candlePocPrice;
             Regime = regime;
+            HtfSwingHigh = htfSwingHigh;
+            HtfSwingLow = htfSwingLow;
+            IsInHtfZone = isInHtfZone;
         }
 
         public int Bar { get; }
@@ -85,5 +128,9 @@ namespace MyNamespace.Strategies.Models
         public decimal CurrentVAL { get; }
         public decimal CandlePocPrice { get; }
         public MarketRegime Regime { get; }
+
+        public decimal? HtfSwingHigh { get; }
+        public decimal? HtfSwingLow { get; }
+        public bool IsInHtfZone { get; }
     }
 }

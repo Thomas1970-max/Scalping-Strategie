@@ -23,6 +23,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private readonly Queue<(decimal high, decimal close, decimal vwap, decimal upper1, decimal lower1, decimal upper2, decimal lower2)> _priceWindow = new Queue<(decimal high, decimal close, decimal vwap, decimal upper1, decimal lower1, decimal upper2, decimal lower2)>();
 
         private MarketPhaseV2? _prevPhase;
+        private MarketBiasV2 _prevBias = MarketBiasV2.Neutral;
         private MarketRegime? _prevRegime;
         private int _rangeCandidateCount;
 
@@ -72,6 +73,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
             else if (anchorBear) state.Bias = MarketBiasV2.Short;
             else state.Bias = MarketBiasV2.Neutral;
 
+            var effectiveBias = DetermineEffectiveBias(state.Bias, zSlope);
+
             // ---- POC staircase index (6 bars => 5 steps) ----
             int staircase = UpdateStaircase(input.CandlePocPrice, input.CurrentVAH, input.CurrentVAL);
             state.StaircaseIndex = staircase;
@@ -82,16 +85,18 @@ namespace MyNamespace.Strategies.MarketAnalysis
             decimal lowerSdX = (sd1 > 0m) ? (input.Vwap - sd1 * _overextendedMultiplier) : 0m;
 
             bool isOverextended = IsOverextended(input.Close, state.Bias, upperSdX, lowerSdX);
+            state.IsOverextended = isOverextended;
 
             bool regimeCooling = IsRegimeCooling(_prevRegime, input.Regime);
 
             // ---- Core hierarchical rules (per spec) ----
-            if (isOverextended)
+            if (isOverextended && input.IsInHtfZone)
             {
                 state.Phase = MarketPhaseV2.Exhaustion;
                 state.VolatilityMultiplier = 1.0m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -103,20 +108,21 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                    ((state.Bias == MarketBiasV2.Long && sigma >= 0m && sigma <= 1.0m) ||
                                     (state.Bias == MarketBiasV2.Short && sigma <= 0m && sigma >= -1.0m));
 
-            decimal signedSigma = (state.Bias == MarketBiasV2.Long) ? sigma : (state.Bias == MarketBiasV2.Short ? -sigma : 0m);
+            decimal signedSigma = (effectiveBias == MarketBiasV2.Long) ? sigma : (effectiveBias == MarketBiasV2.Short ? -sigma : 0m);
 
             // Trend_Impulse:
             // StaircaseIndex == 5 AND ZSlope > 2.0 AND price < SD2.5
             if (state.AnchorTrendConfirmed &&
                 input.Regime != MarketRegime.Slow &&
                 Math.Abs(staircase) >= 4 &&
-                SignedZ(zSlope, state.Bias) > 1.5m &&
+                SignedZ(zSlope, effectiveBias) > 1.5m &&
                 signedSigma >= ImpulseSigmaThreshold)
             {
                 state.Phase = MarketPhaseV2.Trend_Impulse;
                 state.VolatilityMultiplier = (input.Regime == MarketRegime.Fast) ? 1.15m : 1.0m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -142,6 +148,20 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 state.VolatilityMultiplier = 1.0m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
+                _prevRegime = input.Regime;
+                return state;
+            }
+
+            // HTF-Healthy_Pullback (900-tick structure intact, may cross VWAP briefly)
+            if (IsHtfHealthyPullback(input, effectiveBias, sigma, staircase, zSlope))
+            {
+                state.Bias = effectiveBias;
+                state.Phase = MarketPhaseV2.Healthy_Pullback;
+                state.VolatilityMultiplier = 1.0m;
+                state.IsTradeable = true;
+                _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -166,6 +186,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 state.VolatilityMultiplier = 1.0m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -180,6 +201,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 state.VolatilityMultiplier = 1.5m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -187,7 +209,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             // Maturing_Trend heuristic:
             // Trend bias but slope not significant anymore
             if (state.AnchorTrendConfirmed &&
-                state.Bias != MarketBiasV2.Neutral &&
+                effectiveBias != MarketBiasV2.Neutral &&
                 input.Regime != MarketRegime.Fast &&
                 Math.Abs(sigma) > RangeSigmaAbsThreshold &&
                 Math.Abs(zSlope) <= 1.0m &&
@@ -197,6 +219,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 state.VolatilityMultiplier = 0.9m;
                 state.IsTradeable = true;
                 _prevPhase = state.Phase;
+                _prevBias = effectiveBias;
                 _prevRegime = input.Regime;
                 return state;
             }
@@ -208,8 +231,67 @@ namespace MyNamespace.Strategies.MarketAnalysis
             state.VolatilityMultiplier = 1.0m;
             state.IsTradeable = true;
             _prevPhase = state.Phase;
+            _prevBias = effectiveBias;
             _prevRegime = input.Regime;
             return state;
+        }
+
+        private MarketBiasV2 DetermineEffectiveBias(MarketBiasV2 currentBias, decimal zSlope)
+        {
+            if (currentBias != MarketBiasV2.Neutral)
+                return currentBias;
+
+            if (_prevBias == MarketBiasV2.Neutral)
+                return MarketBiasV2.Neutral;
+
+            bool contextOk = _prevPhase == MarketPhaseV2.Trend_Impulse || _prevPhase == MarketPhaseV2.Healthy_Pullback || _prevPhase == MarketPhaseV2.Maturing_Trend;
+            if (!contextOk)
+                return MarketBiasV2.Neutral;
+
+            if (SignedZ(zSlope, _prevBias) <= 0.2m)
+                return MarketBiasV2.Neutral;
+
+            return _prevBias;
+        }
+
+        private bool IsHtfHealthyPullback(MarketStateInputV2 input, MarketBiasV2 bias, decimal sigma, int staircase, decimal zSlope)
+        {
+            if (bias == MarketBiasV2.Neutral)
+                return false;
+
+            if (input.IsInHtfZone)
+                return false;
+
+            if (SignedZ(zSlope, bias) <= 0.2m)
+                return false;
+
+            const int HtfHoldBufferTicks = 2;
+            decimal buffer = Math.Max(0, HtfHoldBufferTicks) * _tickSize;
+
+            // Keep it permissive: allow a brief VWAP cross, but avoid deep counter-move.
+            bool notExtremeAgainstTrend = sigma > -1.8m && sigma < 1.8m;
+            if (!notExtremeAgainstTrend)
+                return false;
+
+            if (bias == MarketBiasV2.Long)
+            {
+                if (!input.HtfSwingLow.HasValue)
+                    return false;
+                bool holdsSwing = input.Close > (input.HtfSwingLow.Value - buffer);
+                bool noStrongOppositeStructure = staircase > -4;
+                return holdsSwing && noStrongOppositeStructure;
+            }
+
+            if (bias == MarketBiasV2.Short)
+            {
+                if (!input.HtfSwingHigh.HasValue)
+                    return false;
+                bool holdsSwing = input.Close < (input.HtfSwingHigh.Value + buffer);
+                bool noStrongOppositeStructure = staircase < 4;
+                return holdsSwing && noStrongOppositeStructure;
+            }
+
+            return false;
         }
 
         private bool IsHealthyPullback2Bar(MarketStateInputV2 input, MarketBiasV2 bias, int staircase)

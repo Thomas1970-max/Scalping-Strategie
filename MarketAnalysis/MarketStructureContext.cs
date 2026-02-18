@@ -95,6 +95,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private decimal? _lastConfirmedSwingLow;
         private ZigZagDir _lastConfirmedSwingDir = ZigZagDir.Unknown;
 
+        public decimal? LastConfirmedSwingHigh => _lastConfirmedSwingHigh;
+        public decimal? LastConfirmedSwingLow => _lastConfirmedSwingLow;
+
         private readonly List<ArchivedZone> _archivedZones = new();
         public int ZoneArchiveLookbackBars { get; set; } = 400;
         public int ZoneArchiveMatchDistanceTicks { get; set; } = 8;
@@ -116,6 +119,28 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public int ZoneMergeDistanceTicks { get; set; } = 2;
         public int MomentumProtectionBars { get; set; } = 3;
         public int MomentumProtectionBodyTicksMin { get; set; } = 6;
+
+        public bool IsInAnyActiveZone(decimal price, decimal tickSize, int bufferTicks = 0)
+        {
+            if (ActiveZones == null || ActiveZones.Count == 0)
+                return false;
+
+            if (tickSize <= 0m)
+                tickSize = 0.25m;
+
+            var buffer = Math.Max(0, bufferTicks) * tickSize;
+            for (int i = 0; i < ActiveZones.Count; i++)
+            {
+                var z = ActiveZones[i];
+                if (z == null)
+                    continue;
+
+                if (price >= (z.Low - buffer) && price <= (z.High + buffer))
+                    return true;
+            }
+
+            return false;
+        }
 
         public void Reset()
         {
