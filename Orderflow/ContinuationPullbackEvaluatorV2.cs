@@ -914,7 +914,6 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     EndSession(tracker, dec.BlockReasonDe);
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Touch ungültig", dec);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, dec.BlockReasonDe);
                 }
@@ -1021,7 +1020,6 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     EndSession(tracker, "Confirm-Bar verpasst." );
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Confirm verpasst", null);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: confirm missed");
                 }
@@ -1047,7 +1045,6 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     EndSession(tracker, dec.BlockReasonDe);
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – keine Bestätigung", dec);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, dec.BlockReasonDe);
                 }
@@ -1056,7 +1053,6 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     EndSession(tracker, $"Score zu niedrig: SessionBestScore {tracker.SessionBestScore:0.0} < {MinSessionBestScoreForEntry:0.0}");
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Score zu niedrig", dec);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by score");
                 }
