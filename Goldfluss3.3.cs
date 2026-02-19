@@ -5065,7 +5065,7 @@ namespace MyNamespace.Strategies
 
 
 
-        [Display(Name = "B?nder anzeigen",
+        [Display(Name = "Bänder anzeigen",
             GroupName = "VWAP Einstellungen",
             Order = 1)]
         public bool ShowVWAPBands { get; set; } = false; // Standardm??ig auf true setzen, um B?nder anzuzeigen
@@ -5074,7 +5074,7 @@ namespace MyNamespace.Strategies
                  GroupName = "VWAP Einstellungen",
                  Description = "Blockiert Einstiege bei Annäherung an VWAP aus Richtung",
                  Order = 2)]
-        public bool EnableVwapProximityBlocker { get; set; } = true;
+        public bool EnableVwapProximityBlocker { get; set; } = false;
 
         [Display(Name = "VWAP Abstand (Ticks)",
                  GroupName = "VWAP Einstellungen",

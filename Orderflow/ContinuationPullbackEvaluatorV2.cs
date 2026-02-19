@@ -912,7 +912,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (touchFastConfirm)
                 {
-                    // Variant A: Immediate confirm/entry check on the SAME bar (important for range bars)
+                    // Variant A: Sofort-Confirm/Entry Check auf derselben Kerze (wichtig für Range-Bars)
                     tracker.SessionStage = Stage.Confirm;
                     tracker.ConfirmBar = currentSnapshot.Bar;
 
@@ -932,8 +932,8 @@ namespace MyNamespace.Strategies.Orderflow
                     const decimal MinSessionBestScoreForEntry = 5m;
                     if (decConfirmNow.Entry && tracker.SessionBestScore >= MinSessionBestScoreForEntry)
                     {
-                        EndSession(tracker, "GO (Immediate)");
-                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "GO – Immediate", decConfirmNow);
+                        EndSession(tracker, "GO (Sofort)");
+                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "GO – Sofort", decConfirmNow);
 
                         var reasons = new List<string>
                         {
@@ -941,7 +941,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"TouchPOC={tracker.TouchPocPrice:F2}",
                             $"Score={decConfirmNow.TotalScore:0.0}",
                             $"Confidence={decConfirmNow.Confidence:0.00}",
-                            "Immediate=1"
+                            "Sofort=1"
                         };
 
                         currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
@@ -949,13 +949,13 @@ namespace MyNamespace.Strategies.Orderflow
 
                         if (_loggerSource != null)
                             LoggerHelper.LogInfo(_loggerSource,
-                                $"[ContinuationPullbackV2] DETECTED(IMMEDIATE): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={decConfirmNow.TotalScore:0.0} conf={decConfirmNow.Confidence:0.00}");
+                                $"[ContinuationPullbackV2] DETECTED(SOFORT): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={decConfirmNow.TotalScore:0.0} conf={decConfirmNow.Confidence:0.00}");
 
                         return PatternEvaluationResult.Detected(Type, decConfirmNow.Confidence, reasons,
                             new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
                     }
 
-                    // Immediate confirm did not fire -> continue with the normal flow (next bar confirm)
+                    // Sofort-Confirm nicht ausgelöst -> normal weiter (Confirm auf nächster Kerze)
                     tracker.ConfirmBar = currentSnapshot.Bar + 1;
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: Touch ok, fast confirm bar {tracker.ConfirmBar}");
                 }
