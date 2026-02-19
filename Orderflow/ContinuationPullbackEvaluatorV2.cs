@@ -599,70 +599,43 @@ namespace MyNamespace.Strategies.Orderflow
         {
             try
             {
-                if (_loggerSource == null)
-                    return;
+                if (_loggerSource == null) return;
 
                 const decimal EntryThreshold = 5m;
                 var lines = new List<string>(96);
-                string dirDe = _direction == OrderDirections.Buy ? "Long" : "Short";
+                string dirDe = _direction == OrderDirections.Buy ? "LONG-Trend" : "SHORT-Trend";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
-                string zoneStateDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"MULTI-BAR CONTINUATION PULLBACK | {dirDe} Zone #{zone.Id} [{zone.Low:F2}..{zone.High:F2}] | {sessionBars} Bars | Status: {zoneStateDe} | Outcome: {outcome}");
+                lines.Add($"PULLBACK-CHECK | {dirDe} | Zone #{zone.Id} | {sessionBars} Bars");
+                lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Ergebnis: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
-                lines.Add("KERZEN-ÜBERSICHT:");
+                lines.Add("ABLAUF DER KORREKTUR (KERZEN-LOG):");
 
                 int startBar = tracker.SessionStartBar;
                 int endBar = currentSnapshot.Bar;
 
-                int green = 0;
-                int red = 0;
-                int posDeltaBars = 0;
-                int negDeltaBars = 0;
+                bool seenLowVol = false;
+                bool seenExhaustion = false;
+                bool seenAggression = false;
+                bool seenPocShift = false;
+                bool seenFA = false;
+                bool seenAbs = false;
 
                 for (int b = startBar; b <= endBar; b++)
                 {
-                    OvSnapshot? s = null;
-                    if (b == currentSnapshot.Bar)
-                        s = currentSnapshot;
-                    else if (history.TryGetByBar(b, out var f) && f?.Snapshot != null)
-                        s = f.Snapshot;
+                    OvSnapshot? s = (b == currentSnapshot.Bar)
+                        ? currentSnapshot
+                        : (history.TryGetByBar(b, out var f) ? f?.Snapshot : null);
+                    if (s == null) continue;
 
-                    if (s == null)
-                        continue;
-
-                    string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     string color = s.Close >= s.Open ? "↑" : "↓";
+                    string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
 
-                    if (s.Close >= s.Open) green++; else red++;
-                    if (s.PocDelta > 0m) posDeltaBars++;
-                    else if (s.PocDelta < 0m) negDeltaBars++;
-
-                    bool faHere = IsFinishedAuction(s, thresholds, _direction) && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
-                    bool pocRetest = TouchesPrice(s, tracker.TouchPocPrice, tickSize);
-
-                    bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
-                    string closeSimple;
-                    if (closeInZone)
-                    {
-                        closeSimple = "IN Zone";
-                    }
-                    else
-                    {
-                        if (_direction == OrderDirections.Buy)
-                            closeSimple = s.Close > zone.High ? "ÜBER Zone" : "UNTER Zone";
-                        else
-                            closeSimple = s.Close < zone.Low ? "UNTER Zone" : "ÜBER Zone";
-                    }
-
-                    var flags = new List<string>(6);
-                    if (TouchesZone(s, zone)) flags.Add("Z");
-                    if (faHere) flags.Add("★FA");
-                    if (pocRetest) flags.Add("POC");
-
+                    decimal barScore = 0m;
+                    DecisionResult? barDecision = null;
                     if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
                     {
                         for (int i = 0; i < Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count); i++)
@@ -670,70 +643,82 @@ namespace MyNamespace.Strategies.Orderflow
                             if (tracker.SessionDecisionBars[i] != b)
                                 continue;
 
-                            var d = tracker.SessionDecisionHistory[i];
-                            if (d?.Items != null)
-                            {
-                                if (d.Items.Any(x => x.Key == "LowVol" && x.Points > 0m)) flags.Add("LOWVOL");
-                                if (d.Items.Any(x => x.Key == "Exhaustion" && x.Points > 0m)) flags.Add("EXH");
-                                if (d.Items.Any(x => x.Key == "Aggression" && x.Points > 0m)) flags.Add("AGGR");
-                                if (d.Items.Any(x => x.Key == "PocShift" && x.Points > 0m)) flags.Add("POC↗");
-                            }
+                            barDecision = tracker.SessionDecisionHistory[i];
+                            barScore = barDecision?.TotalScore ?? 0m;
                             break;
                         }
                     }
 
-                    string eventStr = flags.Count > 0 ? ("| " + string.Join(" ", flags)) : string.Empty;
-                    decimal barScore = 0m;
-                    if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
+                    var events = new List<string>(8);
+                    if (barDecision?.Items != null)
                     {
-                        for (int i = 0; i < Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count); i++)
-                        {
-                            if (tracker.SessionDecisionBars[i] == b)
-                            {
-                                barScore = tracker.SessionDecisionHistory[i].TotalScore;
-                                break;
-                            }
-                        }
+                        if (barDecision.Items.Any(x => x.Key == "LowVol" && x.Points > 0m)) { events.Add("WenigVol"); seenLowVol = true; }
+                        if (barDecision.Items.Any(x => x.Key == "Exhaustion" && x.Points > 0m)) { events.Add("Erschöpft"); seenExhaustion = true; }
+                        if (barDecision.Items.Any(x => x.Key == "FA" && x.Points > 0m)) { events.Add("★FA"); seenFA = true; }
+                        if (barDecision.Items.Any(x => x.Key == "Abs" && x.Points > 0m)) { events.Add("Absorbiert"); seenAbs = true; }
+                        if (barDecision.Items.Any(x => x.Key == "Aggression" && x.Points > 0m)) { events.Add("ATTACKE"); seenAggression = true; }
+                        if (barDecision.Items.Any(x => x.Key == "PocShift" && x.Points > 0m)) { events.Add("POC-Shift"); seenPocShift = true; }
                     }
 
-                    string pocDeltaSign = s.PocDelta >= 0m ? "+" : string.Empty;
-                    lines.Add($"{barLabel}: {color} POCΔ{pocDeltaSign}{s.PocDelta:0} | {closeSimple} | POC={s.CandlePocPrice:F2} | {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
+                    string closePos = (s.Close >= zone.Low && s.Close <= zone.High)
+                        ? "IN Zone"
+                        : (_direction == OrderDirections.Buy
+                            ? (s.Close > zone.High ? "ÜBER Zone" : "UNTER Zone")
+                            : (s.Close < zone.Low ? "UNTER Zone" : "ÜBER Zone"));
+
+                    string eventStr = events.Count > 0 ? ("| " + string.Join(" ", events)) : string.Empty;
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {closePos} | Pkt:{barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
                 }
 
                 lines.Add(string.Empty);
-                string outcomeText;
-                if (finalDecision?.Entry == true)
-                    outcomeText = "GO — Pullback bestätigt (Trendfortsetzung)";
-                else if (outcome.Contains("VERFALL", StringComparison.OrdinalIgnoreCase) || outcome.Contains("verpasst", StringComparison.OrdinalIgnoreCase))
-                    outcomeText = "SESSION VERFALLEN";
+                lines.Add("SZENARIEN-ANALYSE (WARUM GO ODER NOGO?):");
+
+                bool isLong = _direction == OrderDirections.Buy;
+
+                if (seenLowVol)
+                    lines.Add("  • ✓ Trockenlauf: Das Volumen nahm im Pullback ab. Wenig Gegeninteresse.");
                 else
-                    outcomeText = "NOGO — keine Bestätigung";
+                    lines.Add("  • ⚠ Hoher Druck: Der Pullback kam mit viel Volumen rein. Gefährlich.");
 
-                lines.Add($"SCORE: {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0} → {outcomeText}");
-                if (!string.IsNullOrWhiteSpace(tracker.SessionEndReason))
-                    lines.Add($"Grund: {tracker.SessionEndReason}");
-                lines.Add($"Stats: Grün/Rot={green}/{red} | Δ+/Δ- Bars={posDeltaBars}/{negDeltaBars}");
+                if (seenExhaustion)
+                    lines.Add("  • ✓ Erschöpfung: Das Delta der Gegenseite ist verpufft (Exhaustion).");
 
-                if (finalDecision?.Items != null && finalDecision.Items.Count > 0)
+                if (seenFA || seenAbs)
                 {
-                    lines.Add(string.Empty);
-                    lines.Add("GO GRÜNDE:");
-                    int goCount = 0;
-                    foreach (var it in finalDecision.Items.Where(x => x.Points > 0m))
-                    {
-                        lines.Add($"- +{it.Points:0.0} {it.Key}: {it.TextDe}");
-                        goCount++;
-                    }
-
-                    if (goCount == 0)
-                        lines.Add("- (keine)");
-
-                    lines.Add(string.Empty);
-                    lines.Add("NOGO GRÜNDE:");
-                    if (!string.IsNullOrWhiteSpace(finalDecision.BlockReasonDe))
-                        lines.Add($"- {finalDecision.BlockReasonDe}");
+                    string fa = seenFA ? "sauber gestoppt (FA)" : string.Empty;
+                    string ab = seenAbs ? "aufgefangen (Absorption)" : string.Empty;
+                    string details;
+                    if (!string.IsNullOrWhiteSpace(fa) && !string.IsNullOrWhiteSpace(ab))
+                        details = fa + " + " + ab;
                     else
-                        lines.Add("- (keine)");
+                        details = !string.IsNullOrWhiteSpace(fa) ? fa : ab;
+                    lines.Add($"  • ✓ Zonen-Halt: Der Preis wurde an der Zone {details}.");
+                }
+
+                if (seenAggression)
+                    lines.Add(isLong ? "  • ✓ Käufer-Attacke: Die Käufer schlagen wieder aggressiv zu!" : "  • ✓ Verkäufer-Attacke: Die Verkäufer schlagen wieder aggressiv zu!");
+                else
+                    lines.Add("  • ✗ Fehlende Initiative: Es fehlt noch der aggressive Schlag in Trendrichtung.");
+
+                if (seenPocShift)
+                    lines.Add("  • ✓ Wert-Verschiebung: Der POC hat sich in Trendrichtung verlagert. Momentum ist da.");
+
+                if (tracker.ConsecutiveInvalidCloses > 0)
+                    lines.Add($"  • ⚠ Zone schwächelt: Der Preis schloss bereits {tracker.ConsecutiveInvalidCloses}x außerhalb der Zone.");
+
+                lines.Add(string.Empty);
+
+                string emoji = (finalDecision?.Entry == true) ? "🟢" : "🔴";
+                lines.Add($"ERGEBNIS: {emoji} {outcome.ToUpperInvariant()}");
+
+                if (finalDecision?.Entry == true)
+                {
+                    lines.Add("FAZIT: Pullback erfolgreich bestätigt. Trendaufnahme erkannt.");
+                }
+                else
+                {
+                    string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Kriterien nicht erreicht";
+                    lines.Add($"GRUND: {grund}");
                 }
 
                 lines.Add("═══════════════════════════════════════════════════════════");
