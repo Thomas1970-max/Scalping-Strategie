@@ -1652,10 +1652,12 @@ namespace MyNamespace.Strategies.Orderflow
                 var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
+                string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id}");
-                lines.Add($"Dauer: {sessionBars} Bars | Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
+                lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
+                lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
+                lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
@@ -1736,6 +1738,11 @@ namespace MyNamespace.Strategies.Orderflow
 
                     var events = new List<string>(6);
                     bool faHere = IsFinishedAuction(s, thresholds, _direction) && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
+                    bool uaToFaHere = prevSnap != null
+                        && IsUnfinishedAuction(prevSnap, thresholds, _direction)
+                        && faHere;
+                    if (uaToFaHere)
+                        events.Add("UA→FA");
                     if (faHere)
                     {
                         events.Add("★STOPP(FA)");
@@ -1864,6 +1871,10 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Zu wenig Bestätigung";
                     lines.Add($"GRUND FÜR ABLEHNUNG: {grund}");
+
+                    var allowItemText = finalDecision?.Items?.FirstOrDefault(x => x.Key == "Allow")?.TextDe;
+                    if (!string.IsNullOrWhiteSpace(allowItemText))
+                        lines.Add(allowItemText);
                 }
                 else
                 {

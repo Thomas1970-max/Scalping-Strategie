@@ -192,6 +192,13 @@ namespace MyNamespace.Strategies.Orderflow
             return s.BidAtHigh <= th.FinishedAuctionMaxBidAtHigh;
         }
 
+        private static bool IsUnfinishedAuction(OvSnapshot s, OrderflowThresholds th, OrderDirections dir)
+        {
+            if (dir == OrderDirections.Buy)
+                return s.AskAtLow > th.FinishedAuctionMaxAskAtLow;
+            return s.BidAtHigh > th.FinishedAuctionMaxBidAtHigh;
+        }
+
         private static bool IsFinishedAuctionAtZone(OvSnapshot s, MarketStructureContext.Zone z, decimal tickSize, OrderDirections dir)
         {
             decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
@@ -605,9 +612,10 @@ namespace MyNamespace.Strategies.Orderflow
                 var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "LONG-Trend" : "SHORT-Trend";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
+                string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"PULLBACK-CHECK | {dirDe} | Zone #{zone.Id} | {sessionBars} Bars");
+                lines.Add($"PULLBACK-CHECK | {dirDe} | Zone #{zone.Id} | {zoneStatusDe} | {sessionBars} Bars");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Ergebnis: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
@@ -652,6 +660,22 @@ namespace MyNamespace.Strategies.Orderflow
                     }
 
                     var events = new List<string>(8);
+                    bool uaToFaHere = false;
+                    if (b > startBar)
+                    {
+                        OvSnapshot? prevS = (b - 1 == currentSnapshot.Bar)
+                            ? currentSnapshot
+                            : (history.TryGetByBar(b - 1, out var pf) ? pf?.Snapshot : null);
+                        if (prevS != null)
+                        {
+                            bool prevUa = IsUnfinishedAuction(prevS, thresholds, _direction);
+                            bool currFa = IsFinishedAuction(s, thresholds, _direction)
+                                && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
+                            uaToFaHere = prevUa && currFa;
+                        }
+                    }
+                    if (uaToFaHere)
+                        events.Add("UA→FA");
                     if (barDecision?.Items != null)
                     {
                         if (barDecision.Items.Any(x => x.Key == "LowVol" && x.Points > 0m))
