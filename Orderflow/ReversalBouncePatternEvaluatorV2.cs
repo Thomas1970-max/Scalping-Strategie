@@ -1649,18 +1649,17 @@ namespace MyNamespace.Strategies.Orderflow
                     return;
 
                 const decimal EntryThreshold = 6m;
-                var lines = new List<string>(64);
-                string szenario = tracker.SessionKind == SessionType.Immediate ? "Immediate" : "Retest";
-                string dirDe = _direction == OrderDirections.Buy ? "Long" : "Short";
+                var lines = new List<string>(96);
+                string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
-                string zoneStateDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"MULTI-BAR REVERSAL | {dirDe} Zone #{zone.Id} [{zone.Low:F2}..{zone.High:F2}] | {sessionBars} Bars | Status: {zoneStateDe} | Szenario {szenario}");
+                lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id}");
+                lines.Add($"Dauer: {sessionBars} Bars | Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
-                // --- Kerzen-Übersicht ---
+                lines.Add("DER PREISVERLAUF:");
                 int startBar = tracker.SessionStartBar;
                 int endBar = currentSnapshot.Bar;
                 OvSnapshot? prevSnap = null;
@@ -1675,6 +1674,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasDeltaFlip = false;
                 OvSnapshot? firstBarSnap = null;
                 OvSnapshot? lastBarSnap = null;
+                bool hasFA = false;
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -1694,10 +1694,8 @@ namespace MyNamespace.Strategies.Orderflow
                         firstBarSnap = s;
                     lastBarSnap = s;
 
-                    string barLabel = FormatBarRef(history, b);
                     string color = s.Close >= s.Open ? "↑" : "↓";
-                    string pocDeltaSign = s.PocDelta >= 0m ? "+" : string.Empty;
-                    bool touches = s.High >= zone.Low && s.Low <= zone.High;
+                    string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
 
                     if (s.Close >= s.Open) green++; else red++;
@@ -1717,24 +1715,26 @@ namespace MyNamespace.Strategies.Orderflow
                         }
                     }
 
-                    string closeSimple;
+                    string pos;
                     if (closeInZone)
                     {
-                        closeSimple = "IN Zone";
+                        pos = "IN Zone";
                     }
                     else
                     {
                         if (_direction == OrderDirections.Buy)
-                            closeSimple = s.Close > zone.High ? "ÜBER Zone" : "UNTER Zone";
+                            pos = s.Close > zone.High ? "AUSBRUCH" : "UNTER Zone";
                         else
-                            closeSimple = s.Close < zone.Low ? "UNTER Zone" : "ÜBER Zone";
+                            pos = s.Close < zone.Low ? "AUSBRUCH" : "ÜBER Zone";
                     }
 
-                    var flags = new List<string>(4);
-                    bool faHere = IsFinishedAuction(s, thresholds, _direction)
-                        && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
+                    var events = new List<string>(6);
+                    bool faHere = IsFinishedAuction(s, thresholds, _direction) && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
                     if (faHere)
-                        flags.Add("★FA");
+                    {
+                        events.Add("★STOPP(FA)");
+                        hasFA = true;
+                    }
 
                     // Absorption (Chunk B): anchored imbalance + adaptive magnitude + zone-edge rejection
                     if (prevSnap != null)
@@ -1744,7 +1744,7 @@ namespace MyNamespace.Strategies.Orderflow
                         decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, s, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
                         if (ImbalanceNoFollowThrough(prevSnap, s, zone, tickSize, _direction, absNetDeltaMin))
                         {
-                            flags.Add("◆ABS");
+                            events.Add("🛡️ABS");
                             hasAbsorption = true;
                         }
                     }
@@ -1775,156 +1775,43 @@ namespace MyNamespace.Strategies.Orderflow
                                 decimal shift = flipFrom != null ? Math.Abs(s.PocDelta - flipFrom.PocDelta) : 0m;
                                 if (persistenceOk && flipFrom != null && shift >= DeltaShiftMin)
                                 {
-                                    flags.Add("↳ΔFLIP");
+                                    events.Add("🔄FLIP");
                                     hasDeltaFlip = true;
                                 }
                             }
                         }
                     }
 
-                    string eventStr = flags.Count > 0 ? ("| " + string.Join(" ", flags)) : string.Empty;
-
-                    int k = s.ChartBarNumber > 0 ? s.ChartBarNumber : barNumber;
-                    lines.Add($"K{k}: {color} Δ{pocDeltaSign}{Math.Abs(s.PocDelta):0} | {closeSimple} | {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
+                    string eventStr = events.Count > 0 ? ("| " + string.Join(" ", events)) : string.Empty;
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | Score: {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
                 }
 
                 lines.Add(string.Empty);
-
-                string outcomeEmoji;
-                string outcomeText;
-                if (finalDecision?.Entry == true)
-                {
-                    outcomeEmoji = "🟢";
-                    outcomeText = "GO — Reversal bestätigt";
-                }
-                else if (outcome.Contains("VERFALL", StringComparison.OrdinalIgnoreCase))
-                {
-                    outcomeEmoji = "⏰";
-                    outcomeText = "SESSION VERFALLEN";
-                }
-                else
-                {
-                    outcomeEmoji = "🔴";
-                    outcomeText = "NOGO — Keine Bestätigung";
-                }
-
-                lines.Add($"SCORE: {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0} → {outcomeEmoji} {outcomeText}");
-                if (tracker.SessionEndReason != null)
-                    lines.Add($"Grund: {tracker.SessionEndReason}");
-                lines.Add(string.Empty);
-
-                // --- Szenarien-Analyse (12 Szenarien) ---
-                lines.Add("SZENARIEN-ANALYSE:");
-
+                lines.Add("MARKT-ANALYSE:");
                 bool isLong = _direction == OrderDirections.Buy;
 
-                // 1) Starker Counterattack
-                bool strongCounterattack = false;
-                if (firstBarSnap != null)
-                {
-                    // Heuristik: Start-Bar zeigt starken Gegenschlag der Gegenseite (negatives Delta bei Long / positives bei Short)
-                    strongCounterattack = _direction == OrderDirections.Buy
-                        ? (firstBarSnap.PocDelta < -50m)
-                        : (firstBarSnap.PocDelta > 50m);
-                }
-                if (strongCounterattack)
-                    lines.Add(isLong
-                        ? "  • ✓ Starker Counterattack: Verkäufer griffen massiv an (Δ < -50)"
-                        : "  • ✓ Starker Counterattack: Käufer griffen massiv an (Δ > +50)");
+                if (isLong && firstBarSnap != null && firstBarSnap.PocDelta < -50m)
+                    lines.Add("  • ⚡ Aufprall: Verkäufer kamen mit Wucht rein, wurden aber gestoppt.");
+                else if (!isLong && firstBarSnap != null && firstBarSnap.PocDelta > 50m)
+                    lines.Add("  • ⚡ Aufprall: Käufer stürmten vor, prallten aber ab.");
 
-                // 2) Gegenwehr (Farbe + PocDelta kombiniert) – nur ausgeben, wenn zutreffend
-                float totalBars = Math.Max(1, green + red);
-                float greenRatio = green / totalBars;
-                float redRatio = red / totalBars;
-
-                bool strongResistance = isLong
-                    ? (greenRatio > 0.66f && posDeltaBars > negDeltaBars)
-                    : (redRatio > 0.66f && negDeltaBars > posDeltaBars);
-                bool moderateResistance = isLong
-                    ? (greenRatio > 0.50f && posDeltaBars >= negDeltaBars)
-                    : (redRatio > 0.50f && negDeltaBars >= posDeltaBars);
-                bool weakResistance = isLong
-                    ? (greenRatio > 0.33f || hasAbsorption)
-                    : (redRatio > 0.33f || hasAbsorption);
-
-                if (strongResistance)
-                    lines.Add(isLong
-                        ? "  • ✓ Starke Gegenwehr: Käufer dominiert (> 66% Grün + Δ+ > Δ-)"
-                        : "  • ✓ Starke Gegenwehr: Verkäufer dominiert (> 66% Rot + Δ- > Δ+)");
-                else if (moderateResistance)
-                    lines.Add(isLong
-                        ? "  • ✓ Moderate Gegenwehr: Käufer präsent (> 50% Grün)"
-                        : "  • ✓ Moderate Gegenwehr: Verkäufer präsent (> 50% Rot)");
-                else if (weakResistance)
-                    lines.Add(isLong
-                        ? "  • ⊘ Schwache Gegenwehr: Käufer boten kaum Widerstand"
-                        : "  • ⊘ Schwache Gegenwehr: Verkäufer boten kaum Widerstand");
-                else
-                    lines.Add(isLong
-                        ? "  • ✗ Keine Gegenwehr: Dominiert durch Rot (< 33% Grün)"
-                        : "  • ✗ Keine Gegenwehr: Dominiert durch Grün (< 33% Rot)");
-
-                // 9) Absorption (zeitlich früh, als Teil der Gegenwehr)
                 if (hasAbsorption)
-                    lines.Add(isLong
-                        ? "  • ✓ Absorption: Käufer absorbierten Verkaufsdruck (Gegenwehr erkannt)"
-                        : "  • ✓ Absorption: Verkäufer absorbierten Kaufsdruck (Gegenwehr erkannt)");
-
-                // 3) Delta-Flip
+                    lines.Add("  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen.");
                 if (hasDeltaFlip)
-                    lines.Add(isLong
-                        ? "  • ✓ Delta-Flip: Delta drehte konsistent nach oben (echte Käufer-Dominanz)"
-                        : "  • ✓ Delta-Flip: Delta drehte konsistent nach unten (echte Verkäufer-Dominanz)");
+                    lines.Add("  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt.");
+                if (hasFA)
+                    lines.Add("  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone.");
 
-                // 4) Delta-Pendel
-                bool deltaPendulum = posDeltaBars > 0 && negDeltaBars > 0 && !hasDeltaFlip;
-                if (deltaPendulum)
-                    lines.Add("  • ⊘ Delta-Pendel: Delta pendelte (ambivalente Marktmeinung)");
-
-                // 5-9) Close-Position Szenarien auf Basis der letzten Bar
                 if (lastBarSnap != null)
                 {
-                    bool closeInZone = lastBarSnap.Close >= zone.Low && lastBarSnap.Close <= zone.High;
-                    bool closeAboveZone = lastBarSnap.Close > zone.High;
-                    bool closeBelowZone = lastBarSnap.Close < zone.Low;
-
-                    if (isLong)
-                    {
-                        if (closeAboveZone && lastBarSnap.PocDelta > 0m)
-                            lines.Add("  • ✓ Breakout über Zone: Close ÜBER Zone mit Kaufdruck → Bullisher Breakout!");
-                        else if (closeAboveZone && lastBarSnap.PocDelta < 0m)
-                            lines.Add("  • ⚠ Fake-Out: Close ÜBER Zone mit Verkaufsdruck → Verdächtig (Falle?)");
-                        else if (closeBelowZone && lastBarSnap.PocDelta < 0m)
-                            lines.Add("  • ✗ Breakdown unter Zone: Close UNTER Zone mit Verkaufsdruck → Breakdown! Reversal gescheitert");
-
-                        if (closeInZone)
-                        {
-                            if (green > red)
-                                lines.Add("  • ⊘ Range/Consolidation: Close IN Zone (mit grüner Dominanz) → Käufer consolidieren");
-                            else
-                                lines.Add("  • ⊘ Range/Consolidation: Close IN Zone aber ohne klare Dominanz");
-                        }
-                    }
-                    else
-                    {
-                        if (closeBelowZone && lastBarSnap.PocDelta < 0m)
-                            lines.Add("  • ✓ Breakout über Zone: Close UNTER Zone mit Verkaufsdruck → Bärischer Breakout!");
-                        else if (closeBelowZone && lastBarSnap.PocDelta > 0m)
-                            lines.Add("  • ⚠ Fake-Out: Close UNTER Zone mit Kaufdruck → Verdächtig (Falle?)");
-                        else if (closeAboveZone && lastBarSnap.PocDelta > 0m)
-                            lines.Add("  • ✗ Breakdown unter Zone: Close ÜBER Zone mit Kaufdruck → Breakup! Reversal gescheitert");
-
-                        if (closeInZone)
-                        {
-                            if (red > green)
-                                lines.Add("  • ⊘ Range/Consolidation: Close IN Zone (mit roter Dominanz) → Verkäufer consolidieren");
-                            else
-                                lines.Add("  • ⊘ Range/Consolidation: Close IN Zone aber ohne klare Dominanz");
-                        }
-                    }
+                    bool breakout = isLong ? lastBarSnap.Close > zone.High : lastBarSnap.Close < zone.Low;
+                    if (breakout && ((isLong && lastBarSnap.PocDelta > 0m) || (!isLong && lastBarSnap.PocDelta < 0m)))
+                        lines.Add("  • ✅ Bestätigung: Aggressiver Ausbruch aus der Zone bestätigt das Reversal.");
+                    else if (breakout)
+                        lines.Add("  • ⚠ Warnung: Preis bricht aus, aber der Orderflow passt (noch) nicht sauber.");
                 }
 
                 // Bestätigung (Penalty gespiegelt wie im Scoring): nur zählen, wenn Close weg von Zone UND PocΔ-Intent passt
@@ -1935,64 +1822,35 @@ namespace MyNamespace.Strategies.Orderflow
                         int awayTicks = RoundTicks(Math.Max(0m, (lastBarSnap.Close - zone.High)), tickSize);
                         bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta >= 0m;
                         if (awayTicks >= 1 && intentOk)
-                            lines.Add("  • ✓ Bestätigung: Close weg von der Zone (Intent passt) → Reversal bestätigt");
+                            lines.Add("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Kaufdruck.");
                         else if (awayTicks >= 1 && !intentOk)
-                            lines.Add($"  • ⚠ Bestätigung: Close weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0}) → nicht gezählt (Fake-Out Penalty)");
+                            lines.Add($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})");
                     }
                     else
                     {
                         int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - lastBarSnap.Close)), tickSize);
                         bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta <= 0m;
                         if (awayTicks >= 1 && intentOk)
-                            lines.Add("  • ✓ Bestätigung: Close weg von der Zone (Intent passt) → Reversal bestätigt");
+                            lines.Add("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Verkaufsdruck.");
                         else if (awayTicks >= 1 && !intentOk)
-                            lines.Add($"  • ⚠ Bestätigung: Close weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0}) → nicht gezählt (Fake-Out Penalty)");
+                            lines.Add($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})");
                     }
                 }
 
-                // 10) Zu lange Session
-                if (sessionBars > maxSessionBars)
-                    lines.Add($"  • ⏰ Zu lange Session: Session zu lange ({sessionBars} > {maxSessionBars} Bars) → VERFALLEN");
-
-                // 11) Schwaches Setup
-                if (tracker.SessionBestScore < 2m)
-                    lines.Add("  • ✗ Schwaches Setup: Kaum Bewegung. Das war kein Reversal-Versuch");
-                // 12) Score zu niedrig (nur wenn NICHT schwaches Setup)
-                else if (tracker.SessionBestScore < EntryThreshold)
-                    lines.Add("  • ⊘ Score zu niedrig: Zu viel Ambivalenz für GO");
-
                 lines.Add(string.Empty);
 
-                lines.Add("GRÜNDE FÜR KEIN-GO:");
-                if (finalDecision?.Entry == true)
+                string emoji = (finalDecision?.Entry == true) ? "🟢 GO" : "🔴 NO-GO";
+                lines.Add($"FAZIT: {emoji} (Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0})");
+
+                if (finalDecision?.Entry != true)
                 {
-                    lines.Add("  (n/v – GO)");
+                    string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Zu wenig Bestätigung";
+                    lines.Add($"GRUND FÜR ABLEHNUNG: {grund}");
                 }
                 else
                 {
-                    if (sessionBars > maxSessionBars)
-                        lines.Add($"  ❌ Zeitlimit überschritten ({sessionBars} > {maxSessionBars} Bars)");
-
-                    if (finalDecision?.Allowed == false)
-                        lines.Add($"  ❌ Zulassung fehlt: {finalDecision.BlockReasonDe}");
-                    else if (tracker.SessionBestScore < EntryThreshold)
-                        lines.Add($"  ❌ Score zu niedrig ({tracker.SessionBestScore:0.0} < {EntryThreshold:0.0})");
+                    lines.Add("ENTSCHEIDUNG: Der Trend hat offiziell gedreht. Einstieg legitimiert.");
                 }
-
-                lines.Add(string.Empty);
-
-                // Fazit (kurz, laienverständlich)
-                string fazit;
-                if (finalDecision?.Entry == true)
-                    fazit = "Alle Kriterien erfüllt → REVERSAL BESTÄTIGT!";
-                else if (sessionBars > maxSessionBars)
-                    fazit = $"Gegenseite präsent, aber Session zu lange ({sessionBars} > {maxSessionBars} Bars) → VERFALLEN.";
-                else if (finalDecision?.Allowed == false)
-                    fazit = "Harte Freigabe fehlt → Setup war (noch) nicht zulässig.";
-                else
-                    fazit = $"Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0} → Zu ambivalent für GO.";
-
-                lines.Add($"FAZIT: {fazit}");
 
                 lines.Add("═══════════════════════════════════════════════════════════");
 
@@ -2049,13 +1907,14 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionDecisionHistory = null,
                 SessionEndReason = null
             };
-			_trackersByZoneId[zoneId] = tracker;
-			return tracker;
-		}
 
-		private static string FormatBarRef(OfFeaturesHistory history, int barIndex)
-		{
-			if (barIndex < 0)
+            _trackersByZoneId[zoneId] = tracker;
+            return tracker;
+        }
+
+        private static string FormatBarRef(OfFeaturesHistory history, int barIndex)
+        {
+            if (barIndex < 0)
                 return "n/v";
 
             int chart = barIndex + 1;
