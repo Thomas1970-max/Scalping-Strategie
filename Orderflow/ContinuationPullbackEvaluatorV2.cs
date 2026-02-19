@@ -614,15 +614,15 @@ namespace MyNamespace.Strategies.Orderflow
 
                 lines.Add("ABLAUF DER KORREKTUR (KERZEN-LOG):");
 
+                var barsLowVol = new List<int>();
+                var barsExh = new List<int>();
+                var barsAggr = new List<int>();
+                var barsPocShift = new List<int>();
+                var barsFA = new List<int>();
+                var barsAbs = new List<int>();
+
                 int startBar = tracker.SessionStartBar;
                 int endBar = currentSnapshot.Bar;
-
-                bool seenLowVol = false;
-                bool seenExhaustion = false;
-                bool seenAggression = false;
-                bool seenPocShift = false;
-                bool seenFA = false;
-                bool seenAbs = false;
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -633,6 +633,8 @@ namespace MyNamespace.Strategies.Orderflow
 
                     string color = s.Close >= s.Open ? "↑" : "↓";
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
+
+                    int chartBar = s.ChartBarNumber;
 
                     decimal barScore = 0m;
                     DecisionResult? barDecision = null;
@@ -652,12 +654,36 @@ namespace MyNamespace.Strategies.Orderflow
                     var events = new List<string>(8);
                     if (barDecision?.Items != null)
                     {
-                        if (barDecision.Items.Any(x => x.Key == "LowVol" && x.Points > 0m)) { events.Add("WenigVol"); seenLowVol = true; }
-                        if (barDecision.Items.Any(x => x.Key == "Exhaustion" && x.Points > 0m)) { events.Add("Erschöpft"); seenExhaustion = true; }
-                        if (barDecision.Items.Any(x => x.Key == "FA" && x.Points > 0m)) { events.Add("★FA"); seenFA = true; }
-                        if (barDecision.Items.Any(x => x.Key == "Abs" && x.Points > 0m)) { events.Add("Absorbiert"); seenAbs = true; }
-                        if (barDecision.Items.Any(x => x.Key == "Aggression" && x.Points > 0m)) { events.Add("ATTACKE"); seenAggression = true; }
-                        if (barDecision.Items.Any(x => x.Key == "PocShift" && x.Points > 0m)) { events.Add("POC-Shift"); seenPocShift = true; }
+                        if (barDecision.Items.Any(x => x.Key == "LowVol" && x.Points > 0m))
+                        {
+                            events.Add("Vol↓");
+                            if (chartBar > 0) barsLowVol.Add(chartBar);
+                        }
+                        if (barDecision.Items.Any(x => x.Key == "Exhaustion" && x.Points > 0m))
+                        {
+                            events.Add("Exh");
+                            if (chartBar > 0) barsExh.Add(chartBar);
+                        }
+                        if (barDecision.Items.Any(x => x.Key == "FA" && x.Points > 0m))
+                        {
+                            events.Add("★FA");
+                            if (chartBar > 0) barsFA.Add(chartBar);
+                        }
+                        if (barDecision.Items.Any(x => x.Key == "Abs" && x.Points > 0m))
+                        {
+                            events.Add("Abs");
+                            if (chartBar > 0) barsAbs.Add(chartBar);
+                        }
+                        if (barDecision.Items.Any(x => x.Key == "Aggression" && x.Points > 0m))
+                        {
+                            events.Add("AGGR");
+                            if (chartBar > 0) barsAggr.Add(chartBar);
+                        }
+                        if (barDecision.Items.Any(x => x.Key == "PocShift" && x.Points > 0m))
+                        {
+                            events.Add("POC-Shift");
+                            if (chartBar > 0) barsPocShift.Add(chartBar);
+                        }
                     }
 
                     string closePos = (s.Close >= zone.Low && s.Close <= zone.High)
@@ -673,35 +699,36 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add(string.Empty);
                 lines.Add("SZENARIEN-ANALYSE (WARUM GO ODER NOGO?):");
 
-                bool isLong = _direction == OrderDirections.Buy;
-
-                if (seenLowVol)
-                    lines.Add("  • ✓ Trockenlauf: Das Volumen nahm im Pullback ab. Wenig Gegeninteresse.");
-                else
-                    lines.Add("  • ⚠ Hoher Druck: Der Pullback kam mit viel Volumen rein. Gefährlich.");
-
-                if (seenExhaustion)
-                    lines.Add("  • ✓ Erschöpfung: Das Delta der Gegenseite ist verpufft (Exhaustion).");
-
-                if (seenFA || seenAbs)
+                string FormatBars(List<int> bars)
                 {
-                    string fa = seenFA ? "sauber gestoppt (FA)" : string.Empty;
-                    string ab = seenAbs ? "aufgefangen (Absorption)" : string.Empty;
-                    string details;
-                    if (!string.IsNullOrWhiteSpace(fa) && !string.IsNullOrWhiteSpace(ab))
-                        details = fa + " + " + ab;
-                    else
-                        details = !string.IsNullOrWhiteSpace(fa) ? fa : ab;
-                    lines.Add($"  • ✓ Zonen-Halt: Der Preis wurde an der Zone {details}.");
+                    if (bars == null || bars.Count == 0)
+                        return string.Empty;
+                    var distinct = bars.Distinct().ToList();
+                    distinct.Sort();
+                    return $" (in K{string.Join(", K", distinct)})";
                 }
 
-                if (seenAggression)
-                    lines.Add(isLong ? "  • ✓ Käufer-Attacke: Die Käufer schlagen wieder aggressiv zu!" : "  • ✓ Verkäufer-Attacke: Die Verkäufer schlagen wieder aggressiv zu!");
+                if (barsLowVol.Count > 0)
+                    lines.Add($"  • ✓ Trockenlauf: Das Volumen nahm ab. Wenig Gegendruck{FormatBars(barsLowVol)}.");
                 else
-                    lines.Add("  • ✗ Fehlende Initiative: Es fehlt noch der aggressive Schlag in Trendrichtung.");
+                    lines.Add("  • ⚠ Hoher Druck: Kein signifikanter Rückgang des Volumens im Pullback.");
 
-                if (seenPocShift)
-                    lines.Add("  • ✓ Wert-Verschiebung: Der POC hat sich in Trendrichtung verlagert. Momentum ist da.");
+                if (barsExh.Count > 0)
+                    lines.Add($"  • ✓ Erschöpfung: Die Gegenseite ist 'verpufft'{FormatBars(barsExh)}.");
+
+                if (barsFA.Count > 0 || barsAbs.Count > 0)
+                {
+                    var combined = barsFA.Concat(barsAbs).ToList();
+                    lines.Add($"  • ✓ Zonen-Halt: Der Preis wurde an der Zone gestoppt/gehalten{FormatBars(combined)}.");
+                }
+
+                if (barsAggr.Count > 0)
+                    lines.Add($"  • ✓ ATTACKE: Die Trend-Aggression ist zurück{FormatBars(barsAggr)}!");
+                else
+                    lines.Add("  • ✗ Keine Initiative: Bisher kein aggressiver Schlag in Trendrichtung.");
+
+                if (barsPocShift.Count > 0)
+                    lines.Add($"  • ✓ Wert-Verschiebung: Der faire Preis (POC) verschiebt sich wieder{FormatBars(barsPocShift)}.");
 
                 if (tracker.ConsecutiveInvalidCloses > 0)
                     lines.Add($"  • ⚠ Zone schwächelt: Der Preis schloss bereits {tracker.ConsecutiveInvalidCloses}x außerhalb der Zone.");

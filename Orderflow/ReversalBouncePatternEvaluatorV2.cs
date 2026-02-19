@@ -1676,6 +1676,10 @@ namespace MyNamespace.Strategies.Orderflow
                 OvSnapshot? lastBarSnap = null;
                 bool hasFA = false;
 
+                var barsFA = new List<int>();
+                var barsAbs = new List<int>();
+                var barsFlip = new List<int>();
+
                 for (int b = startBar; b <= endBar; b++)
                 {
                     barNumber++;
@@ -1697,6 +1701,8 @@ namespace MyNamespace.Strategies.Orderflow
                     string color = s.Close >= s.Open ? "↑" : "↓";
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
+
+                    int chartBar = s.ChartBarNumber;
 
                     if (s.Close >= s.Open) green++; else red++;
                     if (s.PocDelta > 0m) posDeltaBars++;
@@ -1734,6 +1740,7 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         events.Add("★STOPP(FA)");
                         hasFA = true;
+                        if (chartBar > 0) barsFA.Add(chartBar);
                     }
 
                     // Absorption (Chunk B): anchored imbalance + adaptive magnitude + zone-edge rejection
@@ -1746,6 +1753,7 @@ namespace MyNamespace.Strategies.Orderflow
                         {
                             events.Add("🛡️ABS");
                             hasAbsorption = true;
+                            if (chartBar > 0) barsAbs.Add(chartBar);
                         }
                     }
 
@@ -1777,6 +1785,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 {
                                     events.Add("🔄FLIP");
                                     hasDeltaFlip = true;
+                                    if (chartBar > 0) barsFlip.Add(chartBar);
                                 }
                             }
                         }
@@ -1793,17 +1802,26 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add("MARKT-ANALYSE:");
                 bool isLong = _direction == OrderDirections.Buy;
 
+                string FormatBars(List<int> bars)
+                {
+                    if (bars == null || bars.Count == 0)
+                        return string.Empty;
+                    var distinct = bars.Distinct().ToList();
+                    distinct.Sort();
+                    return $" (in K{string.Join(", K", distinct)})";
+                }
+
                 if (isLong && firstBarSnap != null && firstBarSnap.PocDelta < -50m)
                     lines.Add("  • ⚡ Aufprall: Verkäufer kamen mit Wucht rein, wurden aber gestoppt.");
                 else if (!isLong && firstBarSnap != null && firstBarSnap.PocDelta > 50m)
                     lines.Add("  • ⚡ Aufprall: Käufer stürmten vor, prallten aber ab.");
 
                 if (hasAbsorption)
-                    lines.Add("  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen.");
+                    lines.Add($"  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen{FormatBars(barsAbs)}.");
                 if (hasDeltaFlip)
-                    lines.Add("  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt.");
+                    lines.Add($"  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt{FormatBars(barsFlip)}.");
                 if (hasFA)
-                    lines.Add("  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone.");
+                    lines.Add($"  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone{FormatBars(barsFA)}.");
 
                 if (lastBarSnap != null)
                 {
