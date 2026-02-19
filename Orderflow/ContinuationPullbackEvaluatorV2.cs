@@ -44,6 +44,8 @@ namespace MyNamespace.Strategies.Orderflow
             public int SessionLastEvalBar;
             public Stage SessionStage;
 
+            public int ConsecutiveInvalidCloses;
+
             public int TouchBar;
             public decimal TouchPocPrice;
 
@@ -289,6 +291,88 @@ namespace MyNamespace.Strategies.Orderflow
             return best;
         }
 
+        private static decimal GetAverageVolumeByBars(OfFeaturesHistory history, int currentBar, int lookback)
+        {
+            if (history == null)
+                return 0m;
+            if (lookback <= 0)
+                return 0m;
+
+            int got = 0;
+            decimal sum = 0m;
+            for (int b = currentBar - 1; b >= 0 && got < lookback; b--)
+            {
+                if (!history.TryGetByBar(b, out var f) || f?.Snapshot == null)
+                    continue;
+                var s = f.Snapshot;
+                if (s.Volume <= 0m)
+                    continue;
+                sum += s.Volume;
+                got++;
+            }
+
+            if (got == 0)
+                return 0m;
+            return sum / got;
+        }
+
+        private static bool IsZoneInvalidated(
+            OvSnapshot curr,
+            MarketStructureContext.Zone zone,
+            decimal tickSize,
+            OrderDirections dir,
+            int invalidateWickTicks,
+            int invalidateCloseTicks,
+            ref int consecutiveInvalidCloses,
+            int invalidateBars,
+            out string reasonDe)
+        {
+            reasonDe = string.Empty;
+            if (tickSize <= 0m)
+                tickSize = 0.25m;
+
+            invalidateWickTicks = Math.Max(0, invalidateWickTicks);
+            invalidateCloseTicks = Math.Max(0, invalidateCloseTicks);
+            invalidateBars = Math.Max(1, invalidateBars);
+
+            bool wickInvalid;
+            bool closeInvalid;
+
+            if (dir == OrderDirections.Buy)
+            {
+                wickInvalid = curr.Low < (zone.Low - (invalidateWickTicks * tickSize));
+                closeInvalid = curr.Close < (zone.Low - (invalidateCloseTicks * tickSize));
+            }
+            else
+            {
+                wickInvalid = curr.High > (zone.High + (invalidateWickTicks * tickSize));
+                closeInvalid = curr.Close > (zone.High + (invalidateCloseTicks * tickSize));
+            }
+
+            if (closeInvalid)
+                consecutiveInvalidCloses++;
+            else
+                consecutiveInvalidCloses = 0;
+
+            if (wickInvalid)
+            {
+                reasonDe = dir == OrderDirections.Buy
+                    ? $"Invalidation: Docht unter Zone (Low {curr.Low:F2} < ZoneLow {zone.Low:F2} - {invalidateWickTicks}t)"
+                    : $"Invalidation: Docht über Zone (High {curr.High:F2} > ZoneHigh {zone.High:F2} + {invalidateWickTicks}t)";
+                return true;
+            }
+
+            if (consecutiveInvalidCloses >= invalidateBars)
+            {
+                reasonDe = dir == OrderDirections.Buy
+                    ? $"Invalidation: {consecutiveInvalidCloses}x Close unter Zone (Close {curr.Close:F2} < ZoneLow {zone.Low:F2} - {invalidateCloseTicks}t)"
+                    : $"Invalidation: {consecutiveInvalidCloses}x Close über Zone (Close {curr.Close:F2} > ZoneHigh {zone.High:F2} + {invalidateCloseTicks}t)";
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TouchesPrice(OvSnapshot s, decimal price, decimal tickSize)
         {
             decimal tol = tickSize > 0m ? tickSize : 0.25m;
@@ -316,11 +400,21 @@ namespace MyNamespace.Strategies.Orderflow
             decimal tickSize,
             ZoneTracker tracker)
         {
-            const decimal EntryThreshold = 6m;
+            const decimal EntryThreshold = 5m;
             const int AdaptiveLookback = 30;
             const decimal AbsNetDeltaMedianMultiplier = 1.0m;
 
+            const int VolLookback = 20;
+
             decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, curr, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
+
+            decimal avgVol = GetAverageVolumeByBars(history, curr.Bar, VolLookback);
+            bool hasAvgVol = avgVol > 0m;
+            bool isLowVolume = hasAvgVol && curr.Volume > 0m && curr.Volume < (avgVol * 0.85m);
+
+            bool isExhaustion = _direction == OrderDirections.Buy
+                ? curr.NetDeltaTotal > -absNetDeltaMin
+                : curr.NetDeltaTotal < absNetDeltaMin;
 
             var items = new List<ScoreItem>(16);
             decimal score = 0m;
@@ -333,15 +427,23 @@ namespace MyNamespace.Strategies.Orderflow
                 items.Add(new ScoreItem { Key = "Touch", Points = 1m, TextDe = "Touch: Session aktiv" });
                 score += 1m;
 
+                decimal lowVolPts = isLowVolume ? 2m : 0m;
+                items.Add(new ScoreItem { Key = "LowVol", Points = lowVolPts, TextDe = isLowVolume ? $"Drying Up: Volumen {curr.Volume:0} < Avg {avgVol:0} -> +2" : (hasAvgVol ? $"Drying Up: Volumen {curr.Volume:0} >= Avg {avgVol:0} -> +0" : "Drying Up: n/v -> +0") });
+                score += lowVolPts;
+
+                decimal exhPts = isExhaustion ? 1m : 0m;
+                items.Add(new ScoreItem { Key = "Exhaustion", Points = exhPts, TextDe = isExhaustion ? $"Exhaustion: Gegner-Delta nicht extrem (|Δ|~<{absNetDeltaMin:0}) -> +1" : $"Exhaustion: Gegner-Delta noch stark (|Δ|>~{absNetDeltaMin:0}) -> +0" });
+                score += exhPts;
+
                 decimal faPts = faAtZone ? 2m : 0m;
                 items.Add(new ScoreItem { Key = "FA", Points = faPts, TextDe = faAtZone ? "Finished Auction an Zone: JA -> +2" : "Finished Auction an Zone: NEIN -> +0" });
                 score += faPts;
 
-                decimal absPts = absorption ? 2m : 0m;
-                items.Add(new ScoreItem { Key = "Abs", Points = absPts, TextDe = absorption ? "Absorption: JA -> +2" : "Absorption: NEIN -> +0" });
+                decimal absPts = absorption ? 1m : 0m;
+                items.Add(new ScoreItem { Key = "Abs", Points = absPts, TextDe = absorption ? "Absorption: JA (Bonus) -> +1" : "Absorption: NEIN -> +0" });
                 score += absPts;
 
-                bool okTouch = absorption;
+                bool okTouch = isLowVolume || faAtZone || isExhaustion || absorption;
                 if (!okTouch)
                 {
                     return new DecisionResult
@@ -350,12 +452,13 @@ namespace MyNamespace.Strategies.Orderflow
                         Entry = false,
                         TotalScore = score,
                         Confidence = 0m,
-                        BlockReasonDe = "Touch-Kerze: Absorption ist Pflicht.",
+                        BlockReasonDe = "Touch-Kerze: kein Drying-Up/FA/Exhaustion/Absorption erkennbar.",
                         Items = items
                     };
                 }
 
-                items.Add(new ScoreItem { Key = "Stage", Points = 0m, TextDe = "Stage: Touch OK -> warte Retest" });
+                bool fastConfirm = isLowVolume || faAtZone;
+                items.Add(new ScoreItem { Key = "Stage", Points = 0m, TextDe = fastConfirm ? "Stage: Touch OK -> Fast-Path: warte Confirm" : "Stage: Touch OK -> Optional: warte Retest" });
                 return new DecisionResult
                 {
                     Allowed = true,
@@ -381,31 +484,21 @@ namespace MyNamespace.Strategies.Orderflow
                 items.Add(new ScoreItem { Key = "FA", Points = faPts, TextDe = (faAtZone && retestTouchesPoc) ? "Retest: Finished Auction an Zone: JA -> +2" : "Retest: Finished Auction an Zone: NEIN -> +0" });
                 score += faPts;
 
-                decimal absPts = (absorption && retestTouchesPoc) ? 2m : 0m;
-                items.Add(new ScoreItem { Key = "Abs", Points = absPts, TextDe = (absorption && retestTouchesPoc) ? "Retest: Absorption: JA -> +2" : "Retest: Absorption: NEIN -> +0" });
+                decimal absPts = (absorption && retestTouchesPoc) ? 1m : 0m;
+                items.Add(new ScoreItem { Key = "Abs", Points = absPts, TextDe = (absorption && retestTouchesPoc) ? "Retest: Absorption: JA (Bonus) -> +1" : "Retest: Absorption: NEIN -> +0" });
                 score += absPts;
 
-                bool okRetest = retestTouchesPoc && faAtZone && absorption;
+                bool okRetest = retestTouchesPoc && (faAtZone || absorption);
                 if (!okRetest)
-                {
-                    return new DecisionResult
-                    {
-                        Allowed = false,
-                        Entry = false,
-                        TotalScore = score,
-                        Confidence = 0m,
-                        BlockReasonDe = "Retest-Kerze: Touch-POC muss angetestet werden + Finished Auction an Zone + Absorption.",
-                        Items = items
-                    };
-                }
+                    items.Add(new ScoreItem { Key = "RetestOk", Points = 0m, TextDe = "Retest: optional – noch keine saubere Retest-Qualität" });
 
                 return new DecisionResult
                 {
-                    Allowed = true,
+                    Allowed = okRetest,
                     Entry = false,
                     TotalScore = score,
                     Confidence = Math.Min(1m, score / EntryThreshold),
-                    BlockReasonDe = string.Empty,
+                    BlockReasonDe = okRetest ? string.Empty : "Warte auf optionalen Retest oder Confirm.",
                     Items = items
                 };
             }
@@ -415,29 +508,25 @@ namespace MyNamespace.Strategies.Orderflow
                 items.Add(new ScoreItem { Key = "Confirm", Points = 1m, TextDe = "Confirm: Session aktiv" });
                 score += 1m;
 
-                bool pocDirOk;
-                bool pocDeltaOk;
-
+                bool aggressiveEntry;
                 if (_direction == OrderDirections.Buy)
-                {
-                    pocDirOk = curr.CandlePocPrice >= tracker.TouchPocPrice;
-                    pocDeltaOk = curr.PocDelta > 0m;
-                }
+                    aggressiveEntry = (curr.StackedBuyImbCount > 0 || curr.NetDeltaTotal > absNetDeltaMin) && curr.Close > curr.Open;
                 else
-                {
-                    pocDirOk = curr.CandlePocPrice <= tracker.TouchPocPrice;
-                    pocDeltaOk = curr.PocDelta < 0m;
-                }
+                    aggressiveEntry = (curr.StackedSellImbCount > 0 || curr.NetDeltaTotal < -absNetDeltaMin) && curr.Close < curr.Open;
 
-                decimal pocPts = pocDirOk ? 2m : 0m;
-                items.Add(new ScoreItem { Key = "PocFlip", Points = pocPts, TextDe = pocDirOk ? "POC-Shift in Trade-Richtung: JA -> +2" : "POC-Shift in Trade-Richtung: NEIN -> +0" });
+                decimal aggrPts = aggressiveEntry ? 3m : 0m;
+                items.Add(new ScoreItem { Key = "Aggression", Points = aggrPts, TextDe = aggressiveEntry ? "Trend-Aggression: Initiative kehrt zurück -> +3" : "Trend-Aggression: noch fehlt Initiative -> +0" });
+                score += aggrPts;
+
+                bool pocShift = _direction == OrderDirections.Buy
+                    ? curr.CandlePocPrice > tracker.TouchPocPrice
+                    : curr.CandlePocPrice < tracker.TouchPocPrice;
+
+                decimal pocPts = pocShift ? 2m : 0m;
+                items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = pocShift ? "POC-Shift: Momentum bestätigt Richtung -> +2" : "POC-Shift: keine klare Richtung -> +0" });
                 score += pocPts;
 
-                decimal deltaPts = pocDeltaOk ? 2m : 0m;
-                items.Add(new ScoreItem { Key = "PocDelta", Points = deltaPts, TextDe = pocDeltaOk ? "Kerzen-POC Delta in Trade-Richtung: JA -> +2" : "Kerzen-POC Delta in Trade-Richtung: NEIN -> +0" });
-                score += deltaPts;
-
-                bool entry = pocDirOk && pocDeltaOk;
+                bool entry = aggressiveEntry && score >= EntryThreshold;
                 if (!entry)
                 {
                     return new DecisionResult
@@ -446,7 +535,7 @@ namespace MyNamespace.Strategies.Orderflow
                         Entry = false,
                         TotalScore = score,
                         Confidence = Math.Min(1m, score / EntryThreshold),
-                        BlockReasonDe = "Bestätigung fehlt: POCFlip/POCΔ in Trade-Richtung.",
+                        BlockReasonDe = aggressiveEntry ? "Warte auf stärkere Bestätigung (Score/POC-Shift)." : "Warte auf Aggression in Trendrichtung.",
                         Items = items
                     };
                 }
@@ -479,6 +568,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionStartBar = touchSnapshot.Bar;
             tracker.SessionLastEvalBar = -1;
             tracker.SessionStage = Stage.Touch;
+            tracker.ConsecutiveInvalidCloses = 0;
             tracker.TouchBar = touchSnapshot.Bar;
             tracker.TouchPocPrice = touchSnapshot.CandlePocPrice;
             tracker.RetestDeadlineBar = touchSnapshot.Bar + 2;
@@ -512,18 +602,26 @@ namespace MyNamespace.Strategies.Orderflow
                 if (_loggerSource == null)
                     return;
 
-                const decimal EntryThreshold = 6m;
-                var lines = new List<string>(64);
+                const decimal EntryThreshold = 5m;
+                var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "Long" : "Short";
                 int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
+                string zoneStateDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
 
                 lines.Add("═══════════════════════════════════════════════════════════");
-                lines.Add($"MULTI-BAR CONTINUATION PULLBACK | {dirDe} Zone #{zone.Id} [{zone.Low:F2}..{zone.High:F2}] | {sessionBars} Bars | Outcome: {outcome}");
+                lines.Add($"MULTI-BAR CONTINUATION PULLBACK | {dirDe} Zone #{zone.Id} [{zone.Low:F2}..{zone.High:F2}] | {sessionBars} Bars | Status: {zoneStateDe} | Outcome: {outcome}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
+                lines.Add("KERZEN-ÜBERSICHT:");
+
                 int startBar = tracker.SessionStartBar;
                 int endBar = currentSnapshot.Bar;
+
+                int green = 0;
+                int red = 0;
+                int posDeltaBars = 0;
+                int negDeltaBars = 0;
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -538,13 +636,51 @@ namespace MyNamespace.Strategies.Orderflow
 
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     string color = s.Close >= s.Open ? "↑" : "↓";
+
+                    if (s.Close >= s.Open) green++; else red++;
+                    if (s.PocDelta > 0m) posDeltaBars++;
+                    else if (s.PocDelta < 0m) negDeltaBars++;
+
                     bool faHere = IsFinishedAuction(s, thresholds, _direction) && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
                     bool pocRetest = TouchesPrice(s, tracker.TouchPocPrice, tickSize);
 
-                    var flags = new List<string>(4);
+                    bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
+                    string closeSimple;
+                    if (closeInZone)
+                    {
+                        closeSimple = "IN Zone";
+                    }
+                    else
+                    {
+                        if (_direction == OrderDirections.Buy)
+                            closeSimple = s.Close > zone.High ? "ÜBER Zone" : "UNTER Zone";
+                        else
+                            closeSimple = s.Close < zone.Low ? "UNTER Zone" : "ÜBER Zone";
+                    }
+
+                    var flags = new List<string>(6);
                     if (TouchesZone(s, zone)) flags.Add("Z");
                     if (faHere) flags.Add("★FA");
                     if (pocRetest) flags.Add("POC");
+
+                    if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
+                    {
+                        for (int i = 0; i < Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count); i++)
+                        {
+                            if (tracker.SessionDecisionBars[i] != b)
+                                continue;
+
+                            var d = tracker.SessionDecisionHistory[i];
+                            if (d?.Items != null)
+                            {
+                                if (d.Items.Any(x => x.Key == "LowVol" && x.Points > 0m)) flags.Add("LOWVOL");
+                                if (d.Items.Any(x => x.Key == "Exhaustion" && x.Points > 0m)) flags.Add("EXH");
+                                if (d.Items.Any(x => x.Key == "Aggression" && x.Points > 0m)) flags.Add("AGGR");
+                                if (d.Items.Any(x => x.Key == "PocShift" && x.Points > 0m)) flags.Add("POC↗");
+                            }
+                            break;
+                        }
+                    }
 
                     string eventStr = flags.Count > 0 ? ("| " + string.Join(" ", flags)) : string.Empty;
                     decimal barScore = 0m;
@@ -561,20 +697,43 @@ namespace MyNamespace.Strategies.Orderflow
                     }
 
                     string pocDeltaSign = s.PocDelta >= 0m ? "+" : string.Empty;
-                    lines.Add($"{barLabel}: {color} POCΔ{pocDeltaSign}{s.PocDelta:0} | POC={s.CandlePocPrice:F2} | {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
+                    lines.Add($"{barLabel}: {color} POCΔ{pocDeltaSign}{s.PocDelta:0} | {closeSimple} | POC={s.CandlePocPrice:F2} | {barScore:0.0}/{EntryThreshold:0.0} {eventStr}");
                 }
 
                 lines.Add(string.Empty);
-                lines.Add($"SCORE(best): {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}");
+                string outcomeText;
+                if (finalDecision?.Entry == true)
+                    outcomeText = "GO — Pullback bestätigt (Trendfortsetzung)";
+                else if (outcome.Contains("VERFALL", StringComparison.OrdinalIgnoreCase) || outcome.Contains("verpasst", StringComparison.OrdinalIgnoreCase))
+                    outcomeText = "SESSION VERFALLEN";
+                else
+                    outcomeText = "NOGO — keine Bestätigung";
+
+                lines.Add($"SCORE: {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0} → {outcomeText}");
                 if (!string.IsNullOrWhiteSpace(tracker.SessionEndReason))
-                    lines.Add($"EndReason: {tracker.SessionEndReason}");
+                    lines.Add($"Grund: {tracker.SessionEndReason}");
+                lines.Add($"Stats: Grün/Rot={green}/{red} | Δ+/Δ- Bars={posDeltaBars}/{negDeltaBars}");
 
                 if (finalDecision?.Items != null && finalDecision.Items.Count > 0)
                 {
                     lines.Add(string.Empty);
-                    lines.Add("FINAL DECISION:");
-                    foreach (var it in finalDecision.Items)
-                        lines.Add($"- {it.Key}: {it.Points:0.0} | {it.TextDe}");
+                    lines.Add("GO GRÜNDE:");
+                    int goCount = 0;
+                    foreach (var it in finalDecision.Items.Where(x => x.Points > 0m))
+                    {
+                        lines.Add($"- +{it.Points:0.0} {it.Key}: {it.TextDe}");
+                        goCount++;
+                    }
+
+                    if (goCount == 0)
+                        lines.Add("- (keine)");
+
+                    lines.Add(string.Empty);
+                    lines.Add("NOGO GRÜNDE:");
+                    if (!string.IsNullOrWhiteSpace(finalDecision.BlockReasonDe))
+                        lines.Add($"- {finalDecision.BlockReasonDe}");
+                    else
+                        lines.Add("- (keine)");
                 }
 
                 lines.Add("═══════════════════════════════════════════════════════════");
@@ -690,9 +849,36 @@ namespace MyNamespace.Strategies.Orderflow
                 LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "SessionStart", lines: new[]
                 {
                     $"Touch detected -> session start",
+                    $"State={(candidateZone.IsConfirmed ? "CONFIRMED" : "PENDING")}",
                     $"TouchPOC={tracker.TouchPocPrice:F2}",
                     $"RetestDeadlineBar={tracker.RetestDeadlineBar}"
                 });
+            }
+
+            int zoneHeightTicks = Math.Max(1, RoundTicks(Math.Abs(candidateZone.High - candidateZone.Low), tickSize));
+            int invalidateWickTicks = Math.Max(3, (int)Math.Ceiling(zoneHeightTicks * 0.25m));
+            int invalidateCloseTicks = Math.Max(1, (int)Math.Ceiling(zoneHeightTicks * 0.10m));
+            const int InvalidateBars = 2;
+
+            if (tracker.SessionActive)
+            {
+                if (IsZoneInvalidated(
+                        currentSnapshot,
+                        candidateZone,
+                        tickSize,
+                        _direction,
+                        invalidateWickTicks,
+                        invalidateCloseTicks,
+                        ref tracker.ConsecutiveInvalidCloses,
+                        InvalidateBars,
+                        out var invalidReason))
+                {
+                    EndSession(tracker, invalidReason);
+                    LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Zone invalidiert", null);
+                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                    _trackersByZoneId.Remove(candidateZone.Id);
+                    return PatternEvaluationResult.NotDetected(Type, invalidReason);
+                }
             }
 
             if (tracker.SessionStage == Stage.Touch)
@@ -721,19 +907,70 @@ namespace MyNamespace.Strategies.Orderflow
                     return PatternEvaluationResult.NotDetected(Type, dec.BlockReasonDe);
                 }
 
+                bool touchFastConfirm = dec.Items != null && dec.Items.Any(x => x.Key == "LowVol" && x.Points > 0m)
+                                       || dec.Items != null && dec.Items.Any(x => x.Key == "FA" && x.Points > 0m);
+
+                if (touchFastConfirm)
+                {
+                    // Variant A: Immediate confirm/entry check on the SAME bar (important for range bars)
+                    tracker.SessionStage = Stage.Confirm;
+                    tracker.ConfirmBar = currentSnapshot.Bar;
+
+                    var decConfirmNow = EvaluateDecision(currentSnapshot, prev, candidateZone, thresholds, history, tickSize, tracker);
+
+                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                    tracker.SessionDecisionHistory.Add(decConfirmNow);
+                    tracker.SessionDecisionBars ??= new List<int>();
+                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+
+                    if (decConfirmNow.TotalScore > tracker.SessionBestScore)
+                    {
+                        tracker.SessionBestScore = decConfirmNow.TotalScore;
+                        tracker.SessionBestScoreItems = decConfirmNow.Items != null ? new List<ScoreItem>(decConfirmNow.Items) : null;
+                    }
+
+                    const decimal MinSessionBestScoreForEntry = 5m;
+                    if (decConfirmNow.Entry && tracker.SessionBestScore >= MinSessionBestScoreForEntry)
+                    {
+                        EndSession(tracker, "GO (Immediate)");
+                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "GO – Immediate", decConfirmNow);
+
+                        var reasons = new List<string>
+                        {
+                            $"ZonePullback id={candidateZone.Id}",
+                            $"TouchPOC={tracker.TouchPocPrice:F2}",
+                            $"Score={decConfirmNow.TotalScore:0.0}",
+                            $"Confidence={decConfirmNow.Confidence:0.00}",
+                            "Immediate=1"
+                        };
+
+                        currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                        _trackersByZoneId.Remove(candidateZone.Id);
+
+                        if (_loggerSource != null)
+                            LoggerHelper.LogInfo(_loggerSource,
+                                $"[ContinuationPullbackV2] DETECTED(IMMEDIATE): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={decConfirmNow.TotalScore:0.0} conf={decConfirmNow.Confidence:0.00}");
+
+                        return PatternEvaluationResult.Detected(Type, decConfirmNow.Confidence, reasons,
+                            new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
+                    }
+
+                    // Immediate confirm did not fire -> continue with the normal flow (next bar confirm)
+                    tracker.ConfirmBar = currentSnapshot.Bar + 1;
+                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: Touch ok, fast confirm bar {tracker.ConfirmBar}");
+                }
+
                 tracker.SessionStage = Stage.Retest;
-                return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: Touch ok, wait retest (<= {tracker.RetestDeadlineBar})");
+                return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: Touch ok, optional retest (<= {tracker.RetestDeadlineBar})");
             }
 
             if (tracker.SessionStage == Stage.Retest)
             {
                 if (currentSnapshot.Bar > tracker.RetestDeadlineBar)
                 {
-                    EndSession(tracker, "Retest Fenster verpasst (2 Bars)." );
-                    LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "VERFALLEN", null);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
-                    _trackersByZoneId.Remove(candidateZone.Id);
-                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest window missed");
+                    tracker.SessionStage = Stage.Confirm;
+                    tracker.ConfirmBar = currentSnapshot.Bar + 1;
+                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest missed, go confirm bar {tracker.ConfirmBar}");
                 }
 
                 var prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
@@ -753,7 +990,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (!dec.Allowed)
                 {
-                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: waiting valid retest");
+                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: waiting optional retest/confirm");
                 }
 
                 tracker.RetestBar = currentSnapshot.Bar;
@@ -792,6 +1029,8 @@ namespace MyNamespace.Strategies.Orderflow
                     tracker.SessionBestScoreItems = dec.Items != null ? new List<ScoreItem>(dec.Items) : null;
                 }
 
+                const decimal MinSessionBestScoreForEntry = 5m;
+
                 if (!dec.Entry)
                 {
                     EndSession(tracker, dec.BlockReasonDe);
@@ -799,6 +1038,15 @@ namespace MyNamespace.Strategies.Orderflow
                     currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, dec.BlockReasonDe);
+                }
+
+                if (tracker.SessionBestScore < MinSessionBestScoreForEntry)
+                {
+                    EndSession(tracker, $"Score zu niedrig: SessionBestScore {tracker.SessionBestScore:0.0} < {MinSessionBestScoreForEntry:0.0}");
+                    LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Score zu niedrig", dec);
+                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                    _trackersByZoneId.Remove(candidateZone.Id);
+                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by score");
                 }
 
                 EndSession(tracker, "GO" );
