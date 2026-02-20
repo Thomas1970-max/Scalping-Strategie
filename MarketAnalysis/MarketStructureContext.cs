@@ -875,6 +875,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (clusterIndices.Count == 0)
             {
                 ActiveZones.Add(newZone);
+                ResolveOppositeOverlaps(currentBar: newZone.CreatedBar, tickSize: ts, reason: "Add");
                 return;
             }
 
@@ -906,6 +907,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     }
                 }
 
+                ResolveOppositeOverlaps(currentBar: newZone.CreatedBar, tickSize: ts, reason: "MergeReady");
                 return;
             }
 
@@ -925,6 +927,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                         ActiveZones.RemoveAt(idx);
                 }
 
+                ResolveOppositeOverlaps(currentBar: newZone.CreatedBar, tickSize: ts, reason: "MergeIntersect");
                 return;
             }
 
@@ -945,6 +948,151 @@ namespace MyNamespace.Strategies.MarketAnalysis
                         ActiveZones.RemoveAt(idx);
                 }
             }
+
+            ResolveOppositeOverlaps(currentBar: newZone.CreatedBar, tickSize: ts, reason: "Merge");
+        }
+
+        private static int GetOppositeOverlapMinTicks()
+        {
+            return 2;
+        }
+
+        private static int GetStrongOppositeOverlapMinTicks()
+        {
+            return 1;
+        }
+
+        private static int CalculateOppositeOverlapTicks(Zone a, Zone b, decimal tickSize)
+        {
+            if (a == null || b == null)
+                return 0;
+            if (tickSize <= 0m)
+                tickSize = 0.25m;
+
+            decimal overlap = Math.Min(a.High, b.High) - Math.Max(a.Low, b.Low);
+            if (overlap <= 0m)
+                return 0;
+
+            return (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
+        }
+
+        private static bool IsStrongZone(Zone z)
+        {
+            if (z == null)
+                return false;
+            if (!z.IsConfirmed)
+                return false;
+            if (z.Status == ZoneStatus.Used)
+                return false;
+
+            return z.IsMultiTouch || z.MultiTouchScore >= 2;
+        }
+
+        private void ResolveOppositeOverlaps(int currentBar, decimal tickSize, string reason)
+        {
+            try
+            {
+                if (ActiveZones == null || ActiveZones.Count < 2)
+                    return;
+
+                decimal ts = tickSize > 0m ? tickSize : 0.25m;
+                int minTicks = GetOppositeOverlapMinTicks();
+                int minTicksStrong = GetStrongOppositeOverlapMinTicks();
+
+                bool changed;
+                int guard = 0;
+                do
+                {
+                    changed = false;
+                    guard++;
+                    if (guard > 50)
+                        break;
+
+                    for (int i = 0; i < ActiveZones.Count; i++)
+                    {
+                        var a = ActiveZones[i];
+                        if (a == null || a.Status == ZoneStatus.Used)
+                            continue;
+                        if (!a.IsConfirmed)
+                            continue;
+
+                        for (int j = i + 1; j < ActiveZones.Count; j++)
+                        {
+                            var b = ActiveZones[j];
+                            if (b == null || b.Status == ZoneStatus.Used)
+                                continue;
+                            if (!b.IsConfirmed)
+                                continue;
+
+                            if (a.Type == b.Type)
+                                continue;
+
+                            int overlapTicks = CalculateOppositeOverlapTicks(a, b, ts);
+                            if (overlapTicks <= 0)
+                                continue;
+
+                            bool strongA = IsStrongZone(a);
+                            bool strongB = IsStrongZone(b);
+                            int minReq = (strongA || strongB) ? minTicksStrong : minTicks;
+                            if (overlapTicks < minReq)
+                                continue;
+
+                            int rankA = CalculateZoneRank(a, currentBar) + (strongA ? 5000 : 0);
+                            int rankB = CalculateZoneRank(b, currentBar) + (strongB ? 5000 : 0);
+
+                            int dropIdx;
+                            int keepIdx;
+                            if (rankA > rankB)
+                            {
+                                keepIdx = i;
+                                dropIdx = j;
+                            }
+                            else if (rankB > rankA)
+                            {
+                                keepIdx = j;
+                                dropIdx = i;
+                            }
+                            else
+                            {
+                                if (a.CreatedBar >= b.CreatedBar)
+                                {
+                                    keepIdx = i;
+                                    dropIdx = j;
+                                }
+                                else
+                                {
+                                    keepIdx = j;
+                                    dropIdx = i;
+                                }
+                            }
+
+                            var keep = ActiveZones[keepIdx];
+                            var drop = ActiveZones[dropIdx];
+                            if (keep == null || drop == null)
+                                continue;
+
+                            try
+                            {
+                                LoggerSource?.LogInfo(
+                                    $"[MSZones.ResolveOverlap] bar={currentBar} reason={reason} keep={keep.Id}({keep.Type}) drop={drop.Id}({drop.Type}) overlapTicks={overlapTicks} strongKeep={IsStrongZone(keep)} strongDrop={IsStrongZone(drop)} keepRank={CalculateZoneRank(keep, currentBar)} dropRank={CalculateZoneRank(drop, currentBar)} keepBounds=[{keep.Low:F2}..{keep.High:F2}] dropBounds=[{drop.Low:F2}..{drop.High:F2}]");
+                            }
+                            catch { }
+
+                            if (drop.IsConfirmed)
+                                ArchiveZone(drop, removedBar: currentBar);
+
+                            ActiveZones.RemoveAt(dropIdx);
+                            changed = true;
+                            break;
+                        }
+
+                        if (changed)
+                            break;
+                    }
+                }
+                while (changed);
+            }
+            catch { }
         }
 
         private static bool DoZonesOverlap(Zone z1, Zone z2, decimal mergeDist)
@@ -1246,6 +1394,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                             z.TouchCount = 0;
                             z.LastTouchedBar = -1;
                             z.DwellCount = 0;
+
+						ResolveOppositeOverlaps(currentBar: bar, tickSize: ts, reason: "FlipToSupport");
                         }
                     }
                     else
@@ -1263,6 +1413,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                             z.TouchCount = 0;
                             z.LastTouchedBar = -1;
                             z.DwellCount = 0;
+
+						ResolveOppositeOverlaps(currentBar: bar, tickSize: ts, reason: "FlipToResistance");
                         }
                     }
                 }

@@ -1193,18 +1193,58 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     case SessionEvalOutcome.EntryGo:
                     {
+                        // Safety-net: block entry if a strong opposite zone overlaps this price area
+                        try
+                        {
+                            MarketStructureContext.Zone? oppStrong = null;
+                            foreach (var oz in zones)
+                            {
+                                if (oz == null || oz.Id == candidateZone.Id)
+                                    continue;
+                                if (!oz.IsConfirmed || oz.Status == MarketStructureContext.ZoneStatus.Used)
+                                    continue;
+                                bool isOpp = (_direction == OrderDirections.Buy && oz.Type == MarketStructureContext.ZoneType.Resistance)
+                                    || (_direction == OrderDirections.Sell && oz.Type == MarketStructureContext.ZoneType.Support);
+                                if (!isOpp)
+                                    continue;
+                                bool strong = oz.IsMultiTouch || oz.MultiTouchScore >= 2;
+                                if (!strong)
+                                    continue;
+                                decimal overlap = Math.Min(candidateZone.High, oz.High) - Math.Max(candidateZone.Low, oz.Low);
+                                if (overlap <= 0m)
+                                    continue;
+                                int overlapTicks = (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
+                                if (overlapTicks < 1)
+                                    continue;
+                                oppStrong = oz;
+                                break;
+                            }
+
+                            if (oppStrong != null)
+                            {
+                                LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Entry.Blocked.OppositeOverlap", lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                                    $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
+                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                });
+                                tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                                return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
+                            }
+                        }
+                        catch { }
+
                         LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
                             MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
                             "GO – Entry ausgelöst", sessionDecision);
 
-                        var scenarioLabel = tracker.SessionKind == SessionType.Immediate ? "Immediate" : "Retest";
                         var reasons = new List<string>
                         {
-                            $"Zone{scenarioLabel} id={candidateZone.Id}",
+                            $"Zone id={candidateZone.Id}",
                             $"Path={(sessionDecision!.Path == AllowPath.UaToFa ? "UAtoFA" : "MultiFA")}",
                             $"Score={sessionDecision.TotalScore:0.0}",
-                            $"Confidence={sessionDecision.Confidence:0.00}",
-                            $"SessionBars={currentSnapshot.Bar - tracker.SessionStartBar}"
+                            $"Confidence={sessionDecision.Confidence:0.00}"
                         };
 
                         tracker.EntryTriggered = true;
@@ -1216,7 +1256,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                         if (_loggerSource != null)
                             LoggerHelper.LogInfo(_loggerSource,
-                                $"[ReversalBounceV2] DETECTED ({scenarioLabel}): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={sessionDecision.TotalScore:0.0} conf={sessionDecision.Confidence:0.00}");
+                                $"[ReversalBounceV2] DETECTED: zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={sessionDecision.TotalScore:0.0} conf={sessionDecision.Confidence:0.00}");
 
                         return PatternEvaluationResult.Detected(Type, sessionDecision.Confidence, reasons,
                             new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
@@ -1440,9 +1480,51 @@ namespace MyNamespace.Strategies.Orderflow
 
                         if (firstOutcome == SessionEvalOutcome.EntryGo)
                         {
+                            // Safety-net: block entry if a strong opposite zone overlaps this price area
+                            try
+                            {
+                                MarketStructureContext.Zone? oppStrong = null;
+                                foreach (var oz in zones)
+                                {
+                                    if (oz == null || oz.Id == candidateZone.Id)
+                                        continue;
+                                    if (!oz.IsConfirmed || oz.Status == MarketStructureContext.ZoneStatus.Used)
+                                        continue;
+                                    bool isOpp = (_direction == OrderDirections.Buy && oz.Type == MarketStructureContext.ZoneType.Resistance)
+                                        || (_direction == OrderDirections.Sell && oz.Type == MarketStructureContext.ZoneType.Support);
+                                    if (!isOpp)
+                                        continue;
+                                    bool strong = oz.IsMultiTouch || oz.MultiTouchScore >= 2;
+                                    if (!strong)
+                                        continue;
+                                    decimal overlap = Math.Min(candidateZone.High, oz.High) - Math.Max(candidateZone.Low, oz.Low);
+                                    if (overlap <= 0m)
+                                        continue;
+                                    int overlapTicks = (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
+                                    if (overlapTicks < 1)
+                                        continue;
+                                    oppStrong = oz;
+                                    break;
+                                }
+
+                                if (oppStrong != null)
+                                {
+                                    LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Entry.Blocked.OppositeOverlap", lines: new[]
+                                    {
+                                        $"Dir={_direction}",
+                                        $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                                        $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
+                                        $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                    });
+                                    tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
+                                }
+                            }
+                            catch { }
+
                             LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
                                 MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                                "GO – Entry ausgelöst (Sofort auf Touch-Bar)", firstDecision);
+                                "GO – Entry ausgelöst", firstDecision);
 
                             var reasonsA = new List<string>
                             {
@@ -1623,6 +1705,48 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (retestOutcome == SessionEvalOutcome.EntryGo)
             {
+                // Safety-net: block entry if a strong opposite zone overlaps this price area
+                try
+                {
+                    MarketStructureContext.Zone? oppStrong = null;
+                    foreach (var oz in zones)
+                    {
+                        if (oz == null || oz.Id == candidateZone.Id)
+                            continue;
+                        if (!oz.IsConfirmed || oz.Status == MarketStructureContext.ZoneStatus.Used)
+                            continue;
+                        bool isOpp = (_direction == OrderDirections.Buy && oz.Type == MarketStructureContext.ZoneType.Resistance)
+                            || (_direction == OrderDirections.Sell && oz.Type == MarketStructureContext.ZoneType.Support);
+                        if (!isOpp)
+                            continue;
+                        bool strong = oz.IsMultiTouch || oz.MultiTouchScore >= 2;
+                        if (!strong)
+                            continue;
+                        decimal overlap = Math.Min(candidateZone.High, oz.High) - Math.Max(candidateZone.Low, oz.Low);
+                        if (overlap <= 0m)
+                            continue;
+                        int overlapTicks = (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
+                        if (overlapTicks < 1)
+                            continue;
+                        oppStrong = oz;
+                        break;
+                    }
+
+                    if (oppStrong != null)
+                    {
+                        LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Entry.Blocked.OppositeOverlap", lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                            $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
+                            $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                        });
+                        tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                        return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
+                    }
+                }
+                catch { }
+
                 LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
                     MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
                     "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)", retestDecision);
