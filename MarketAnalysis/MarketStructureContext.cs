@@ -1223,6 +1223,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
                             z.BreakoutDirection = 0;
                             z.BreakoutExtreme = 0m;
                             z.BreakCloseCount = 0;
+                            z.HasRetestTouch = false;
+                            z.TouchCount = 0;
+                            z.LastTouchedBar = -1;
+                            z.DwellCount = 0;
                         }
                     }
                     else
@@ -1235,6 +1239,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
                             z.BreakoutDirection = 0;
                             z.BreakoutExtreme = 0m;
                             z.BreakCloseCount = 0;
+                            z.HasRetestTouch = false;
+                            z.TouchCount = 0;
+                            z.LastTouchedBar = -1;
+                            z.DwellCount = 0;
                         }
                     }
                 }
