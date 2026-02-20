@@ -70,20 +70,22 @@ namespace MyNamespace.Strategies.Orderflow
 			public int LastTouchedBar;
 			public int StoryExitBar;
 
-            // --- Multi-Bar Session ---
-            public bool SessionActive;
-            public SessionType SessionKind;
-            public int SessionStartBar;
-            public int SessionLastEvalBar;
-            public decimal SessionTouchLow;
-            public decimal SessionTouchHigh;
-            public int ConsecutiveBadCloses;
-            public int SessionMaxPenetrationTicks;
-            public decimal SessionBestScore;
-            public List<ScoreItem>? SessionBestScoreItems;
-            public List<DecisionResult>? SessionDecisionHistory;
-            public List<int>? SessionDecisionBars;
-            public string? SessionEndReason;
+			// --- Multi-Bar Session ---
+			public bool SessionActive;
+			public SessionType SessionKind;
+			public int SessionStartBar;
+			public int SessionLastEvalBar;
+			public decimal SessionTouchLow;
+			public decimal SessionTouchHigh;
+			public bool SessionSawUaToFa;
+			public int SessionUaToFaBar;
+			public int ConsecutiveBadCloses;
+			public int SessionMaxPenetrationTicks;
+			public decimal SessionBestScore;
+			public List<ScoreItem>? SessionBestScoreItems;
+			public List<DecisionResult>? SessionDecisionHistory;
+			public List<int>? SessionDecisionBars;
+			public string? SessionEndReason;
         }
 
         private readonly OrderDirections _direction;
@@ -513,6 +515,7 @@ namespace MyNamespace.Strategies.Orderflow
             OrderflowThresholds thresholds,
             decimal tickSize,
             OrderDirections dir,
+            ZoneTracker? tracker,
             bool diagnosticSoftWhenBlocked = false)
         {
             const decimal EntryThreshold = 6m;
@@ -525,6 +528,8 @@ namespace MyNamespace.Strategies.Orderflow
             int faAtZoneW;
             bool progressOk;
             var path = DetermineAllowPath(history, curr, prev, zone, thresholds, tickSize, dir, out touchesW, out faAtZoneW, out progressOk);
+            if (tracker != null && tracker.SessionActive && tracker.SessionSawUaToFa)
+                path = AllowPath.UaToFa;
 
             if (path == AllowPath.None)
             {
@@ -534,7 +539,10 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         Key = "Allow",
                         Points = 0m,
-                        TextDe = $"Harte Freigabe: NEIN – zu wenig Bestätigung am Level (Berührungen letzte 5 Bars: {touchesW}; Finished-Auction an der Zone letzte 5 Bars: {faAtZoneW}; klare Wegbewegung erkennbar: {(progressOk ? "JA" : "NEIN")})."
+                        TextDe = $"Harte Freigabe: NEIN – zu wenig Bestätigung am Level (Berührungen letzte 5 Bars: {touchesW}; Finished-Auction an der Zone letzte 5 Bars: {faAtZoneW}; klare Wegbewegung erkennbar: {(progressOk ? "JA" : "NEIN")})." +
+                                (tracker != null && tracker.SessionActive
+                                    ? $" | UA→FA in Session gesehen: {(tracker.SessionSawUaToFa ? "JA" : "NEIN")}" + (tracker.SessionSawUaToFa ? $" (Bar {tracker.SessionUaToFaBar})" : string.Empty)
+                                    : string.Empty)
                     }
                 };
 
@@ -622,14 +630,18 @@ namespace MyNamespace.Strategies.Orderflow
                         decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
                         bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
                         int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
+
                         bool pocMagOk = pocShiftTicks >= PocShiftMinTicks;
                         const int AdaptivePocVolLookback = 30;
                         const decimal PocVolumeMedianMultiplier = 0.8m;
                         decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
                         bool pocVolOk = curr.PocVolume >= pocVolMin;
-                        diagPocPts = (pocDirOk && pocMagOk && pocVolOk) ? 1m : 0m;
+                        var pocProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
+                        bool proximityOk = pocProxEval.Factor >= 0.5m;
+                        bool pocOk = pocDirOk && pocMagOk && pocVolOk && proximityOk;
+                        diagPocPts = (pocOk ? 1m : 0m);
                         softScore += diagPocPts;
-                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {((pocDirOk && pocMagOk && pocVolOk) ? "OK" : "nicht OK")} ({(diagPocPts > 0m ? "+1" : "+0")}) [Diagnose]" });
+                        blockedItems.Add(new ScoreItem { Key = "PocShift", Points = diagPocPts, TextDe = $"POC-Shift: {((pocDirOk && pocMagOk && pocVolOk && proximityOk) ? "OK" : "nicht OK")} ({(diagPocPts > 0m ? "+1" : "+0")}) [Diagnose]" });
                     }
                     else
                     {
@@ -659,7 +671,9 @@ namespace MyNamespace.Strategies.Orderflow
                 Key = "Base",
                 Points = baseScore,
                 TextDe = path == AllowPath.UaToFa
-                    ? "Basis: +3 (Auktionswechsel UA→FA am Level)"
+                    ? ((tracker != null && tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0 && tracker.SessionUaToFaBar != curr.Bar)
+                        ? $"Basis: +3 (UA→FA in Session gesehen – Latch bei Bar {tracker.SessionUaToFaBar})"
+                        : "Basis: +3 (Auktionswechsel UA→FA am Level)")
                     : $"Basis: +2 (Mehrfach-Verteidigung: FA@Zone≥2, Wegbewegung JA, Berührungen W=5={touchesW})"
             });
 
@@ -804,14 +818,14 @@ namespace MyNamespace.Strategies.Orderflow
                     const int AdaptivePocVolLookback = 30;
                     const decimal PocVolumeMedianMultiplier = 0.8m;
                     decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
-                    bool volumeOk = curr.PocVolume >= pocVolMin;
+                    bool pocVolOk = curr.PocVolume >= pocVolMin;
                     var pocProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
                     bool proximityOk = pocProxEval.Factor >= 0.5m;
-                    bool pocOk = dirOk && magnitudeOk && volumeOk && proximityOk;
-                    pocPts = pocOk ? 1m : 0m;
+                    bool pocOk = dirOk && magnitudeOk && pocVolOk && proximityOk;
+                    pocPts = (pocOk ? 1m : 0m);
                     string reason = pocOk
                         ? $"POC-Shift: OK (Shift={pocShiftTicks} Ticks, Prox={pocProxEval.Factor:0.0}) -> +1"
-                        : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Vol={volumeOk}, Prox={proximityOk}) -> +0";
+                        : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Vol={pocVolOk}, Prox={proximityOk}) -> +0";
                     score += pocPts;
                     items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = reason });
                 }
@@ -1126,7 +1140,6 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Abstand={gapTicks} Ticks (Limit={compressionGapTicks}).",
                                     $"Folge: Kein Entry-Check, um Seitwärts-Chaos zu vermeiden."
                                 });
-
                             return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: boxed between zones (gapTicks={gapTicks} <= {compressionGapTicks})");
                         }
                     }
@@ -1619,6 +1632,8 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionLastEvalBar = -1;
             tracker.SessionTouchLow = snap.Low;
             tracker.SessionTouchHigh = snap.High;
+            tracker.SessionSawUaToFa = false;
+            tracker.SessionUaToFaBar = -1;
             tracker.ConsecutiveBadCloses = 0;
             tracker.SessionMaxPenetrationTicks = 0;
             tracker.SessionBestScore = 0m;
@@ -1703,7 +1718,19 @@ namespace MyNamespace.Strategies.Orderflow
             // --- Scoring ---
             tracker.SessionLastEvalBar = currentSnapshot.Bar;
             var prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
-            DecisionResult dec = EvaluateDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, diagnosticSoftWhenBlocked: true);
+            if (prev != null)
+            {
+                bool prevUa = IsUnfinishedAuction(prev, thresholds, _direction);
+                bool currFaAtZone = IsFinishedAuction(currentSnapshot, thresholds, _direction)
+                    && IsFinishedAuctionAtZone(currentSnapshot, zone, tickSize, _direction);
+                if (prevUa && currFaAtZone)
+                {
+                    tracker.SessionSawUaToFa = true;
+                    tracker.SessionUaToFaBar = currentSnapshot.Bar;
+                }
+            }
+
+            DecisionResult dec = EvaluateDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, tracker, diagnosticSoftWhenBlocked: true);
             decision = dec;
 
             tracker.SessionDecisionHistory ??= new List<DecisionResult>();
@@ -1755,6 +1782,8 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
+                if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
+                    lines.Add($"UA→FA: gesehen in Session (Latch) bei Bar {tracker.SessionUaToFaBar}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
