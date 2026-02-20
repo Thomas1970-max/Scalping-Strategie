@@ -149,6 +149,14 @@ namespace MyNamespace.Strategies
         [Range(0, 100)]
         public int ReversalCompressionGapTicks { get; set; } = 12;
 
+        [OFTParameter]
+        [Category("Orderflow - ContinuationPullback")]
+        [DisplayName("Compression Gap (Ticks)")]
+        [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). 0 = verwende Thresholds.")]
+        [DefaultValue(0)]
+        [Range(0, 100)]
+        public int ContinuationCompressionGapTicks { get; set; } = 0;
+
 
 
         /// <summary>
@@ -5887,8 +5895,8 @@ namespace MyNamespace.Strategies
 
             var reversalEvaluatorLong = new ReversalBouncePatternEvaluatorV2(OrderDirections.Buy, this, ReversalCompressionGapTicks);
             var reversalEvaluatorShort = new ReversalBouncePatternEvaluatorV2(OrderDirections.Sell, this, ReversalCompressionGapTicks);
-            var continuationEvaluatorLong = new ContinuationPullbackEvaluatorV2(OrderDirections.Buy, this);
-            var continuationEvaluatorShort = new ContinuationPullbackEvaluatorV2(OrderDirections.Sell, this);
+            var continuationEvaluatorLong = new ContinuationPullbackEvaluatorV2(OrderDirections.Buy, this, ContinuationCompressionGapTicks);
+            var continuationEvaluatorShort = new ContinuationPullbackEvaluatorV2(OrderDirections.Sell, this, ContinuationCompressionGapTicks);
             _patternRunner = new PatternRunner(
                 reversalEvaluatorLong,
                 reversalEvaluatorShort,

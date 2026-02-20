@@ -64,6 +64,7 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly OrderDirections _direction;
         private readonly OrderflowPatternType _patternType;
         private readonly ILoggerSource? _loggerSource;
+        private readonly int _compressionGapTicks;
 
         private int? _lastPullbackLikePhaseBar;
 
@@ -72,13 +73,17 @@ namespace MyNamespace.Strategies.Orderflow
         public OrderflowPatternType Type => _patternType;
         public OrderDirections Direction => _direction;
 
-        public ContinuationPullbackEvaluatorV2(OrderDirections direction, ILoggerSource? loggerSource = null)
+        public ContinuationPullbackEvaluatorV2(OrderDirections direction, ILoggerSource? loggerSource = null, int? compressionGapTicks = null)
         {
             _direction = direction;
             _patternType = direction == OrderDirections.Buy
                 ? OrderflowPatternType.PotentialLongTrendContinuation
                 : OrderflowPatternType.PotentialShortTrendContinuation;
+
             _loggerSource = loggerSource;
+            _compressionGapTicks = compressionGapTicks.HasValue
+                ? Math.Max(0, compressionGapTicks.Value)
+                : 12;
         }
 
         private void LogExplainOnce(int bar, int zoneId, string stage, IEnumerable<string> lines)
@@ -910,7 +915,9 @@ namespace MyNamespace.Strategies.Orderflow
                     if (nearestOpp != null)
                     {
                         int gapTicks = (int)Math.Round(bestGap / tickSize, MidpointRounding.AwayFromZero);
-                        int compressionGapTicks = thresholds.ContinuationCompressionGapTicks ?? 12;
+                        int compressionGapTicks = _compressionGapTicks;
+                        if (compressionGapTicks <= 0)
+                            compressionGapTicks = thresholds.ContinuationCompressionGapTicks ?? 12;
                         bool inBox = _direction == OrderDirections.Buy
                             ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.Low)
                             : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.High);
