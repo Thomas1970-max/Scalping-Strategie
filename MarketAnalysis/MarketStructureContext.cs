@@ -4,6 +4,7 @@ using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Orderflow;
 using MyNamespace.Strategies.Models;
+using Utils.Common.Logging;
 using static MyNamespace.Strategies.Goldfluss3_3;
 
 namespace MyNamespace.Strategies.MarketAnalysis
@@ -115,6 +116,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         private int _currentUpdateBar;
         public int CurrentBar => _currentUpdateBar;
+
+        public ILoggerSource? LoggerSource { get; set; }
 
         public decimal? LastConfirmedSwingHigh => _lastConfirmedSwingHigh;
         public decimal? LastConfirmedSwingLow => _lastConfirmedSwingLow;
@@ -1184,6 +1187,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     continue;
                 if (z.Status == ZoneStatus.Used)
                 {
+                    try
+                    {
+                        LoggerSource?.LogInfo(
+                            $"[MSZones.Remove] bar={bar} id={z.Id} reason=Used consumedReason={z.ConsumedReason} consumedBar={z.ConsumedBar} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount} breakCloses={z.BreakCloseCount} flipCount={z.FlipCount} dwell={z.DwellCount} dir={z.BreakoutDirection}");
+                    }
+                    catch { }
+
                     if (z.IsConfirmed)
                         ArchiveZone(z, removedBar: bar);
                     ActiveZones.RemoveAt(i);
@@ -1198,6 +1208,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                 if (ZoneDwellBarsMax > 0 && z.DwellCount >= ZoneDwellBarsMax)
                 {
+                    try
+                    {
+                        LoggerSource?.LogInfo(
+                            $"[MSZones.Remove] bar={bar} id={z.Id} reason=DwellMax dwell={z.DwellCount} max={ZoneDwellBarsMax} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount} breakCloses={z.BreakCloseCount} flipCount={z.FlipCount}");
+                    }
+                    catch { }
+
                     if (z.IsConfirmed)
                         ArchiveZone(z, removedBar: bar);
                     ActiveZones.RemoveAt(i);
@@ -1269,6 +1286,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     {
                         if (z.FlipCount >= 1)
                         {
+                            try
+                            {
+                                LoggerSource?.LogInfo(
+                                    $"[MSZones.Remove] bar={bar} id={z.Id} reason=BreakAfterFlip side=Support breakCloses={z.BreakCloseCount} flipCount={z.FlipCount} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount}");
+                            }
+                            catch { }
+
                             if (z.IsConfirmed)
                                 ArchiveZone(z, removedBar: bar);
                             ActiveZones.RemoveAt(i);
@@ -1277,6 +1301,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                         if (!z.HasRetestTouch)
                         {
+                            try
+                            {
+                                LoggerSource?.LogInfo(
+                                    $"[MSZones.Remove] bar={bar} id={z.Id} reason=BreakNoRetest side=Support breakCloses={z.BreakCloseCount} flipCount={z.FlipCount} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount}");
+                            }
+                            catch { }
+
                             if (z.IsConfirmed)
                                 ArchiveZone(z, removedBar: bar);
                             ActiveZones.RemoveAt(i);
@@ -1319,6 +1350,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     {
                         if (z.FlipCount >= 1)
                         {
+                            try
+                            {
+                                LoggerSource?.LogInfo(
+                                    $"[MSZones.Remove] bar={bar} id={z.Id} reason=BreakAfterFlip side=Resistance breakCloses={z.BreakCloseCount} flipCount={z.FlipCount} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount}");
+                            }
+                            catch { }
+
                             if (z.IsConfirmed)
                                 ArchiveZone(z, removedBar: bar);
                             ActiveZones.RemoveAt(i);
@@ -1327,6 +1365,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                         if (!z.HasRetestTouch)
                         {
+                            try
+                            {
+                                LoggerSource?.LogInfo(
+                                    $"[MSZones.Remove] bar={bar} id={z.Id} reason=BreakNoRetest side=Resistance breakCloses={z.BreakCloseCount} flipCount={z.FlipCount} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} retest={z.HasRetestTouch} touchCount={z.TouchCount}");
+                            }
+                            catch { }
+
                             if (z.IsConfirmed)
                                 ArchiveZone(z, removedBar: bar);
                             ActiveZones.RemoveAt(i);

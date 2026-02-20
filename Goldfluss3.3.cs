@@ -5830,6 +5830,7 @@ namespace MyNamespace.Strategies
             _marketStructureContext = new MarketStructureContext();
             try
             {
+                _marketStructureContext.LoggerSource = this;
                 _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
                 var r = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.Normal;
                 _marketStructureContext.WickZoneMinTicks = GetEffectiveMarketStructureWickMinTicks(r);
