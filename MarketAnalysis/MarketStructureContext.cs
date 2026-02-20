@@ -37,6 +37,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
             Used
         }
 
+        public enum ZoneConsumeReason
+        {
+            Entry,
+            Expiry,
+            Invalidation
+        }
+
         public sealed class Zone
         {
             public int Id { get; init; }
@@ -59,6 +66,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
             public bool HasRetestTouch { get; set; }
             public int BreakoutDirection { get; set; }
             public decimal BreakoutExtreme { get; set; }
+
+            public int? ConsumedBar { get; set; }
+            public ZoneConsumeReason? ConsumedReason { get; set; }
 
             public decimal Mid => (Low + High) / 2m;
             public decimal Height => Math.Abs(High - Low);
@@ -99,6 +109,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private int _lastConfirmedSwingLowBar = -1;
         private decimal? _lastConfirmedSwingLow;
         private ZigZagDir _lastConfirmedSwingDir = ZigZagDir.Unknown;
+
+        private int _currentUpdateBar;
+        public int CurrentBar => _currentUpdateBar;
 
         public decimal? LastConfirmedSwingHigh => _lastConfirmedSwingHigh;
         public decimal? LastConfirmedSwingLow => _lastConfirmedSwingLow;
@@ -195,15 +208,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public void Update(
             int bar,
             IMarketCandle candle,
-            OvSnapshot? snapshot,
             decimal tickSize,
             decimal vwap,
-            IReadOnlyList<OfFeatures>? recentOf = null,
-            bool allowZoneCreation = true,
-            bool allowZoneLifecycle = true)
+            bool allowZoneCreation,
+            bool allowZoneLifecycle)
         {
             if (candle == null)
                 return;
+
+            _currentUpdateBar = bar;
 
             if (tickSize <= 0m)
                 tickSize = 0.25m;
@@ -219,6 +232,25 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 var breakDist = Math.Max(0, ZoneBreakDistanceTicks) * tickSize;
                 UpdateZoneLifecycle(bar, candle, tickSize, readyDist, breakDist);
             }
+        }
+
+        public void Update(
+            int bar,
+            IMarketCandle candle,
+            OvSnapshot? snapshot,
+            decimal tickSize,
+            decimal vwap,
+            OfFeatures? recentOf,
+            bool allowZoneCreation,
+            bool allowZoneLifecycle)
+        {
+            Update(
+                bar: bar,
+                candle: candle,
+                tickSize: tickSize,
+                vwap: vwap,
+                allowZoneCreation: allowZoneCreation,
+                allowZoneLifecycle: allowZoneLifecycle);
         }
 
         private bool TryConfirmPendingZoneFromSwing(int swingBar, ZoneType type, decimal tickSize, decimal vwap)
@@ -270,16 +302,34 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         public void ConsumeZoneOnEntry(int zoneId)
         {
+            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+            if (z == null)
+                return;
+
+            z.ConsumedBar = _currentUpdateBar;
+            z.ConsumedReason = ZoneConsumeReason.Entry;
             MarkZoneUsed(zoneId);
         }
 
         public void ConsumeZoneOnExpiry(int zoneId)
         {
+            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+            if (z == null)
+                return;
+
+            z.ConsumedBar = _currentUpdateBar;
+            z.ConsumedReason = ZoneConsumeReason.Expiry;
             MarkZoneUsed(zoneId);
         }
 
         public void ConsumeZoneOnInvalidation(int zoneId)
         {
+            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+            if (z == null)
+                return;
+
+            z.ConsumedBar = _currentUpdateBar;
+            z.ConsumedReason = ZoneConsumeReason.Invalidation;
             MarkZoneUsed(zoneId);
         }
 
