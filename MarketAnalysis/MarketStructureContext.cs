@@ -70,6 +70,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
             public int? ConsumedBar { get; set; }
             public ZoneConsumeReason? ConsumedReason { get; set; }
 
+            public int? LastInvalidationBar { get; set; }
+
             public decimal Mid => (Low + High) / 2m;
             public decimal Height => Math.Abs(High - Low);
         }
@@ -327,6 +329,12 @@ namespace MyNamespace.Strategies.MarketAnalysis
             var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
             if (z == null)
                 return;
+
+            if (z.IsConfirmed && z.HasRetestTouch)
+            {
+                z.LastInvalidationBar = _currentUpdateBar;
+                return;
+            }
 
             z.ConsumedBar = _currentUpdateBar;
             z.ConsumedReason = ZoneConsumeReason.Invalidation;
