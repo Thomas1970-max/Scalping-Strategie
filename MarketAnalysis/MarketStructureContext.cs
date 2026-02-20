@@ -40,7 +40,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public sealed class Zone
         {
             public int Id { get; init; }
-            public ZoneType Type { get; init; }
+            public ZoneType Type { get; set; }
             public decimal Low { get; set; }
             public decimal High { get; set; }
             public ZoneStatus Status { get; set; }
@@ -54,6 +54,11 @@ namespace MyNamespace.Strategies.MarketAnalysis
             public decimal? CreatedVwap { get; set; }
             public bool IsMultiTouch { get; set; }
             public int MultiTouchScore { get; set; }
+
+            public int DwellCount { get; set; }
+            public bool HasRetestTouch { get; set; }
+            public int BreakoutDirection { get; set; }
+            public decimal BreakoutExtreme { get; set; }
 
             public decimal Mid => (Low + High) / 2m;
             public decimal Height => Math.Abs(High - Low);
@@ -119,6 +124,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public int ZoneMergeDistanceTicks { get; set; } = 2;
         public int MomentumProtectionBars { get; set; } = 3;
         public int MomentumProtectionBodyTicksMin { get; set; } = 6;
+
+        public int ZoneDwellBarsMax { get; set; } = 7;
+        public decimal ZoneFlipAwayMultiple { get; set; } = 2.0m;
+        public int ZoneFlipAwayMinTicks { get; set; } = 16;
 
         public bool IsInAnyActiveZone(decimal price, decimal tickSize, int bufferTicks = 0)
         {
@@ -208,7 +217,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             {
                 var readyDist = Math.Max(0, ZoneReadyDistanceTicks) * tickSize;
                 var breakDist = Math.Max(0, ZoneBreakDistanceTicks) * tickSize;
-                UpdateZoneLifecycle(bar, candle, readyDist, breakDist);
+                UpdateZoneLifecycle(bar, candle, tickSize, readyDist, breakDist);
             }
         }
 
@@ -1092,11 +1101,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
             }
         }
 
-        private void UpdateZoneLifecycle(int bar, IMarketCandle c, decimal readyDistance, decimal breakDistance)
+        private void UpdateZoneLifecycle(int bar, IMarketCandle c, decimal tickSize, decimal readyDistance, decimal breakDistance)
         {
             for (int i = ActiveZones.Count - 1; i >= 0; i--)
             {
                 var z = ActiveZones[i];
+                if (z == null)
+                    continue;
                 if (z.Status == ZoneStatus.Used)
                 {
                     if (z.IsConfirmed)
@@ -1105,11 +1116,62 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     continue;
                 }
 
+                bool touchedNow = c.High >= z.Low && c.Low <= z.High;
+                if (touchedNow)
+                    z.DwellCount = Math.Max(0, z.DwellCount) + 1;
+                else
+                    z.DwellCount = 0;
+
+                if (ZoneDwellBarsMax > 0 && z.DwellCount >= ZoneDwellBarsMax)
+                {
+                    if (z.IsConfirmed)
+                        ArchiveZone(z, removedBar: bar);
+                    ActiveZones.RemoveAt(i);
+                    continue;
+                }
+
+                if (z.BreakoutDirection != 0)
+                {
+                    decimal ts = tickSize > 0m ? tickSize : 0.25m;
+                    int zoneWidthTicks = 0;
+                    try { zoneWidthTicks = (int)Math.Round(Math.Abs(z.High - z.Low) / ts, MidpointRounding.AwayFromZero); } catch { zoneWidthTicks = 0; }
+                    zoneWidthTicks = Math.Max(1, zoneWidthTicks);
+                    int awayTicks = (int)Math.Ceiling(zoneWidthTicks * Math.Max(0m, ZoneFlipAwayMultiple));
+                    awayTicks = Math.Max(Math.Max(1, ZoneFlipAwayMinTicks), awayTicks);
+                    decimal awayDist = awayTicks * ts;
+
+                    if (z.BreakoutDirection > 0)
+                    {
+                        if (c.High > z.BreakoutExtreme)
+                            z.BreakoutExtreme = c.High;
+                        if (z.HasRetestTouch && z.BreakoutExtreme >= z.High + awayDist)
+                        {
+                            z.Type = ZoneType.Support;
+                            z.BreakoutDirection = 0;
+                            z.BreakoutExtreme = 0m;
+                            z.BreakCloseCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        if (z.BreakoutExtreme == 0m || c.Low < z.BreakoutExtreme)
+                            z.BreakoutExtreme = c.Low;
+                        if (z.HasRetestTouch && z.BreakoutExtreme <= z.Low - awayDist)
+                        {
+                            z.Type = ZoneType.Resistance;
+                            z.BreakoutDirection = 0;
+                            z.BreakoutExtreme = 0m;
+                            z.BreakCloseCount = 0;
+                        }
+                    }
+                }
+
                 if (z.Type == ZoneType.Support)
                 {
-                    bool touched = c.High >= z.Low && c.Low <= z.High;
-                    if (touched && z.LastTouchedBar != bar)
+                    if (touchedNow && z.LastTouchedBar != bar)
                     {
+                        if (z.TouchCount >= 1)
+                            z.HasRetestTouch = true;
                         z.TouchCount++;
                         z.LastTouchedBar = bar;
                     }
@@ -1121,10 +1183,19 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                     if (z.BreakCloseCount >= 2)
                     {
-                        if (z.IsConfirmed)
-                            ArchiveZone(z, removedBar: bar);
-                        ActiveZones.RemoveAt(i);
-                        continue;
+                        if (!z.HasRetestTouch)
+                        {
+                            if (z.IsConfirmed)
+                                ArchiveZone(z, removedBar: bar);
+                            ActiveZones.RemoveAt(i);
+                            continue;
+                        }
+
+                        if (z.BreakoutDirection == 0)
+                        {
+                            z.BreakoutDirection = -1;
+                            z.BreakoutExtreme = c.Low;
+                        }
                     }
 
                     if (z.Status == ZoneStatus.New)
@@ -1139,9 +1210,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 }
                 else
                 {
-                    bool touched = c.High >= z.Low && c.Low <= z.High;
-                    if (touched && z.LastTouchedBar != bar)
+                    if (touchedNow && z.LastTouchedBar != bar)
                     {
+                        if (z.TouchCount >= 1)
+                            z.HasRetestTouch = true;
                         z.TouchCount++;
                         z.LastTouchedBar = bar;
                     }
@@ -1153,10 +1225,19 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                     if (z.BreakCloseCount >= 2)
                     {
-                        if (z.IsConfirmed)
-                            ArchiveZone(z, removedBar: bar);
-                        ActiveZones.RemoveAt(i);
-                        continue;
+                        if (!z.HasRetestTouch)
+                        {
+                            if (z.IsConfirmed)
+                                ArchiveZone(z, removedBar: bar);
+                            ActiveZones.RemoveAt(i);
+                            continue;
+                        }
+
+                        if (z.BreakoutDirection == 0)
+                        {
+                            z.BreakoutDirection = 1;
+                            z.BreakoutExtreme = c.High;
+                        }
                     }
 
                     if (z.Status == ZoneStatus.New)
