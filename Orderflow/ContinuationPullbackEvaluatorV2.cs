@@ -910,7 +910,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (nearestOpp != null)
                     {
                         int gapTicks = (int)Math.Round(bestGap / tickSize, MidpointRounding.AwayFromZero);
-                        int compressionGapTicks = 12;
+                        int compressionGapTicks = thresholds.ContinuationCompressionGapTicks ?? 12;
                         bool inBox = _direction == OrderDirections.Buy
                             ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.Low)
                             : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.High);

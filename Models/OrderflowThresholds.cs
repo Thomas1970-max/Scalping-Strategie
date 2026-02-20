@@ -167,11 +167,24 @@ namespace MyNamespace.Strategies.Models
         [DefaultValue(6)]
         public int ContinuationPhaseLookbackBars_UI { get; set; } = 6;
 
+        [Category("Continuation")]
+        [DisplayName("Continuation: Compression Gap (Ticks)")]
+        [Description("Blockiert Entry, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). Gilt für ContinuationPullback.")]
+        [DefaultValue(12)]
+        public int ContinuationCompressionGapTicks_UI { get; set; } = 12;
+
         [Browsable(false)]
         public int? ContinuationPhaseLookbackBars
         {
             get => ContinuationPhaseLookbackBars_UI;
             set => ContinuationPhaseLookbackBars_UI = Math.Max(0, value ?? 6);
+        }
+
+        [Browsable(false)]
+        public int? ContinuationCompressionGapTicks
+        {
+            get => ContinuationCompressionGapTicks_UI;
+            set => ContinuationCompressionGapTicks_UI = Math.Max(0, value ?? 12);
         }
 
         [Category("Continuation")]
