@@ -911,7 +911,7 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     EndSession(tracker, invalidReason);
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Zone invalidiert", null);
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                    currentMarketStructureContext.ConsumeZoneOnInvalidation(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, invalidReason);
                 }
@@ -979,7 +979,7 @@ namespace MyNamespace.Strategies.Orderflow
                             "Sofort=1"
                         };
 
-                        currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                        currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
                         _trackersByZoneId.Remove(candidateZone.Id);
 
                         if (_loggerSource != null)
@@ -1092,7 +1092,7 @@ namespace MyNamespace.Strategies.Orderflow
                     $"Confidence={dec.Confidence:0.00}"
                 };
 
-                currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
 
                 if (_loggerSource != null)

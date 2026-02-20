@@ -268,6 +268,21 @@ namespace MyNamespace.Strategies.MarketAnalysis
             z.Status = ZoneStatus.Used;
         }
 
+        public void ConsumeZoneOnEntry(int zoneId)
+        {
+            MarkZoneUsed(zoneId);
+        }
+
+        public void ConsumeZoneOnExpiry(int zoneId)
+        {
+            MarkZoneUsed(zoneId);
+        }
+
+        public void ConsumeZoneOnInvalidation(int zoneId)
+        {
+            MarkZoneUsed(zoneId);
+        }
+
         private void EnqueueRecentCandle(int bar, IMarketCandle candle)
         {
             _recentCandles.Enqueue((bar, candle));

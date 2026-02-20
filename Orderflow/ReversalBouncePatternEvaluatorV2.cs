@@ -945,7 +945,7 @@ namespace MyNamespace.Strategies.Orderflow
                     var away = ConsumeAwayDistanceTicks * tickSize;
                     if (currentSnapshot.Close >= trackedZone.High + away || currentSnapshot.Close <= trackedZone.Low - away)
                     {
-                        currentMarketStructureContext.MarkZoneUsed(trackerZoneId);
+                        currentMarketStructureContext.ConsumeZoneOnExpiry(trackerZoneId);
                         (toRemove ??= new List<int>()).Add(trackerZoneId);
                     }
                 }
@@ -1119,7 +1119,7 @@ namespace MyNamespace.Strategies.Orderflow
                         _lastValidReversalBarIndex = currentSnapshot.Bar;
                         _lastValidReversalDirection = _direction;
 
-                        currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                        currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
                         _trackersByZoneId.Remove(candidateZone.Id);
 
                         if (_loggerSource != null)
@@ -1253,7 +1253,7 @@ namespace MyNamespace.Strategies.Orderflow
                 var wait = currentSnapshot.Time - tracker.FirstTouchTime;
                 if (wait.TotalMinutes > RetestWaitMinutesMax)
                 {
-                    currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                    currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired waiting for retest (minutes={wait.TotalMinutes:F1})");
                 }
@@ -1264,7 +1264,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (currentSnapshot.Bar - tracker.FirstTouchBar > MaxBarsAfterFirstTouch)
             {
-                currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired (barsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar})");
             }
@@ -1335,7 +1335,7 @@ namespace MyNamespace.Strategies.Orderflow
                             _lastValidReversalBarIndex = currentSnapshot.Bar;
                             _lastValidReversalDirection = _direction;
 
-                            currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                            currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
                             _trackersByZoneId.Remove(candidateZone.Id);
 
                             if (_loggerSource != null)
@@ -1407,7 +1407,7 @@ namespace MyNamespace.Strategies.Orderflow
                     var level = swingSignal.LastSwingHigh.Value + SignificantBreakTicks * tickSize;
                     if (currentSnapshot.High >= level && currentSnapshot.Bar > tracker.ConfirmedBar)
                     {
-                        currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                        currentMarketStructureContext.ConsumeZoneOnInvalidation(candidateZone.Id);
                         _trackersByZoneId.Remove(candidateZone.Id);
                         return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: invalidated (new swing high exceeded {level:F2} before retest)");
                     }
@@ -1417,7 +1417,7 @@ namespace MyNamespace.Strategies.Orderflow
                     var level = swingSignal.LastSwingLow.Value - SignificantBreakTicks * tickSize;
                     if (currentSnapshot.Low <= level && currentSnapshot.Bar > tracker.ConfirmedBar)
                     {
-                        currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                        currentMarketStructureContext.ConsumeZoneOnInvalidation(candidateZone.Id);
                         _trackersByZoneId.Remove(candidateZone.Id);
                         return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: invalidated (new swing low exceeded {level:F2} before retest)");
                     }
@@ -1497,7 +1497,7 @@ namespace MyNamespace.Strategies.Orderflow
                 _lastValidReversalBarIndex = currentSnapshot.Bar;
                 _lastValidReversalDirection = _direction;
 
-                currentMarketStructureContext.MarkZoneUsed(candidateZone.Id);
+                currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
 
                 if (_loggerSource != null)
