@@ -945,6 +945,19 @@ namespace MyNamespace.Strategies.Orderflow
                     var away = ConsumeAwayDistanceTicks * tickSize;
                     if (currentSnapshot.Close >= trackedZone.High + away || currentSnapshot.Close <= trackedZone.Low - away)
                     {
+                        LogExplainOnce(
+                            currentSnapshot.Bar,
+                            trackerZoneId,
+                            stage: "Consume.Expiry.AwayCleanup",
+                            lines: new[]
+                            {
+                                $"Dir={_direction}",
+                                $"Zone={trackerZoneId}",
+                                $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
+                                $"Close={currentSnapshot.Close:F2}",
+                                $"AwayTicks={ConsumeAwayDistanceTicks}",
+                                $"Reason: RetestAttempted und Preis ist weit genug weg → ConsumeZoneOnExpiry."
+                            });
                         currentMarketStructureContext.ConsumeZoneOnExpiry(trackerZoneId);
                         (toRemove ??= new List<int>()).Add(trackerZoneId);
                     }
@@ -1262,6 +1275,19 @@ namespace MyNamespace.Strategies.Orderflow
                 var wait = currentSnapshot.Time - tracker.FirstTouchTime;
                 if (wait.TotalMinutes > RetestWaitMinutesMax)
                 {
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        candidateZone.Id,
+                        stage: "Consume.Expiry.RetestTimeout",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Zone={candidateZone.Id}",
+                            $"FirstTouchTime={tracker.FirstTouchTime:O}",
+                            $"Now={currentSnapshot.Time:O}",
+                            $"WaitMinutes={wait.TotalMinutes:F1} Limit={RetestWaitMinutesMax}",
+                            $"Reason: Zu lange auf Retest gewartet → ConsumeZoneOnExpiry."
+                        });
                     currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired waiting for retest (minutes={wait.TotalMinutes:F1})");
@@ -1273,6 +1299,19 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (currentSnapshot.Bar - tracker.FirstTouchBar > MaxBarsAfterFirstTouch)
             {
+                LogExplainOnce(
+                    currentSnapshot.Bar,
+                    candidateZone.Id,
+                    stage: "Consume.Expiry.MaxBarsAfterFirstTouch",
+                    lines: new[]
+                    {
+                        $"Dir={_direction}",
+                        $"Zone={candidateZone.Id}",
+                        $"FirstTouchBar={tracker.FirstTouchBar}",
+                        $"CurrentBar={currentSnapshot.Bar}",
+                        $"BarsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar} Limit={MaxBarsAfterFirstTouch}",
+                        $"Reason: Zu viele Bars seit FirstTouch → ConsumeZoneOnExpiry."
+                    });
                 currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired (barsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar})");
