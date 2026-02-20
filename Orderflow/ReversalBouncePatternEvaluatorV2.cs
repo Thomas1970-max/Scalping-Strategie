@@ -972,6 +972,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             // --- Candidate Selection ---
             // 1) Zonen, die aktuell berührt werden
+            var prevClosed = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 12);
             var touchedZones = new List<MarketStructureContext.Zone>(4);
             foreach (var z in zones)
             {
@@ -987,6 +988,31 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (!TouchesZone(currentSnapshot, z))
                     continue;
+
+                if (prevClosed != null)
+                {
+                    decimal tol = tickSize;
+                    bool approachOk = _direction == OrderDirections.Buy
+                        ? prevClosed.Close >= (z.High - tol)
+                        : prevClosed.Close <= (z.Low + tol);
+                    if (!approachOk)
+                    {
+                        LogExplainOnce(
+                            currentSnapshot.Bar,
+                            z.Id,
+                            stage: "Touch.Blocked.WrongSide",
+                            lines: new[]
+                            {
+                                $"Dir={_direction}",
+                                $"Zone={z.Id}",
+                                $"Type={z.Type}",
+                                $"PrevClose={prevClosed.Close:F2}",
+                                $"Bounds=[{z.Low:F2}..{z.High:F2}]",
+                                $"Rule={(z.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Touch ignoriert"
+                            });
+                        continue;
+                    }
+                }
 
                 touchedZones.Add(z);
             }
@@ -1349,9 +1375,12 @@ namespace MyNamespace.Strategies.Orderflow
                     bool reclaimedInside = currentSnapshot.Close >= candidateZone.Low && currentSnapshot.Close <= candidateZone.High;
                     bool responseOk = tracker.FirstOutsideBar >= 0 && (currentSnapshot.Bar - tracker.FirstOutsideBar) <= ImmediateResponseTimeBarsMax;
                     bool extensionOk = tracker.MaxOutsideExtensionTicks <= ImmediateMaxOutsideExtensionTicks;
+                    bool approachOk = prevClosed == null || (_direction == OrderDirections.Buy
+                        ? prevClosed.Close >= (candidateZone.High - tickSize)
+                        : prevClosed.Close <= (candidateZone.Low + tickSize));
 
                     bool armedStopRun = responseOk && reclaimedInside && extensionOk;
-                    bool armedTouch = TouchesZone(currentSnapshot, candidateZone) && reclaimedInside;
+                    bool armedTouch = TouchesZone(currentSnapshot, candidateZone) && reclaimedInside && approachOk;
 
                     // Armed-Moment → Session starten (statt One-Shot)
                     if (!tracker.ImmediateAttempted && (armedStopRun || armedTouch))
@@ -1427,9 +1456,30 @@ namespace MyNamespace.Strategies.Orderflow
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: pending; retest blocked until zigzag confirmation");
             }
 
-            // Bestätigte Zone, aber kein Touch → warten + Swing-Invalidierung
-            if (!TouchesZone(currentSnapshot, candidateZone))
+            // Bestätigte Zone, aber kein Touch (oder Touch von falscher Seite) → warten + Swing-Invalidierung
+            bool touchNow = TouchesZone(currentSnapshot, candidateZone);
+            bool approachNowOk = prevClosed == null || (_direction == OrderDirections.Buy
+                ? prevClosed.Close >= (candidateZone.High - tickSize)
+                : prevClosed.Close <= (candidateZone.Low + tickSize));
+            if (!touchNow || !approachNowOk)
             {
+                if (touchNow && !approachNowOk && prevClosed != null)
+                {
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        candidateZone.Id,
+                        stage: "Touch.Blocked.WrongSide",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Zone={candidateZone.Id}",
+                            $"Type={candidateZone.Type}",
+                            $"PrevClose={prevClosed.Close:F2}",
+                            $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                            $"Rule={(candidateZone.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Touch ignoriert"
+                        });
+                }
+
                 LogExplainOnce(
                     currentSnapshot.Bar,
                     candidateZone.Id,

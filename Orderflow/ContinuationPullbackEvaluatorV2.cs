@@ -824,6 +824,14 @@ namespace MyNamespace.Strategies.Orderflow
             if (zones == null || zones.Count == 0)
                 return PatternEvaluationResult.NotDetected(Type, "ZoneGate: no zones");
 
+            OvSnapshot? prevClosed = null;
+            try
+            {
+                if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
+                    prevClosed = prevF.Snapshot;
+            }
+            catch { }
+
             MarketStructureContext.Zone? candidateZone = null;
             foreach (var z in zones)
             {
@@ -839,6 +847,27 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (!TouchesZone(currentSnapshot, z))
                     continue;
+
+                if (prevClosed != null)
+                {
+                    decimal tol = tickSize;
+                    bool approachOk = _direction == OrderDirections.Buy
+                        ? prevClosed.Close >= (z.High - tol)
+                        : prevClosed.Close <= (z.Low + tol);
+                    if (!approachOk)
+                    {
+                        LogExplainOnce(currentSnapshot.Bar, z.Id, stage: "Touch.Blocked.WrongSide", lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Zone={z.Id}",
+                            $"Type={z.Type}",
+                            $"PrevClose={prevClosed.Close:F2}",
+                            $"Bounds=[{z.Low:F2}..{z.High:F2}]",
+                            $"Rule={(z.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Touch ignoriert"
+                        });
+                        continue;
+                    }
+                }
 
                 candidateZone = z;
                 break;
