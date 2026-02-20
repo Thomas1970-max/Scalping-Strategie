@@ -153,9 +153,9 @@ namespace MyNamespace.Strategies
         [Category("Orderflow - ContinuationPullback")]
         [DisplayName("Compression Gap (Ticks)")]
         [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). 0 = verwende Thresholds.")]
-        [DefaultValue(0)]
+        [DefaultValue(12)]
         [Range(0, 100)]
-        public int ContinuationCompressionGapTicks { get; set; } = 0;
+        public int ContinuationCompressionGapTicks { get; set; } = 12;
 
 
 
