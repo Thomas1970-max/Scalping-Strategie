@@ -975,6 +975,36 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionActive && tracker.SessionLastEvalBar == currentSnapshot.Bar)
                 return PatternEvaluationResult.NotDetected(Type, "Session: already evaluated");
 
+            if (tracker.SessionActive)
+            {
+                try
+                {
+                    bool touchNowSession = TouchesZone(currentSnapshot, candidateZone);
+                    if (touchNowSession && prevClosed != null)
+                    {
+                        decimal tol = tickSize;
+                        bool approachOk = _direction == OrderDirections.Buy
+                            ? prevClosed.Close >= (candidateZone.High - tol)
+                            : prevClosed.Close <= (candidateZone.Low + tol);
+                        if (!approachOk)
+                        {
+                            LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Session.Touch.Blocked.WrongSide", lines: new[]
+                            {
+                                $"Dir={_direction}",
+                                $"Zone={candidateZone.Id}",
+                                $"Type={candidateZone.Type}",
+                                $"PrevClose={prevClosed.Close:F2}",
+                                $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                                $"Rule={(candidateZone.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Session-Bar nicht entry-relevant"
+                            });
+                            tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                            return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: session touch blocked (wrong side)");
+                        }
+                    }
+                }
+                catch { }
+            }
+
             if (!tracker.SessionActive)
             {
                 StartSession(tracker, currentSnapshot);
