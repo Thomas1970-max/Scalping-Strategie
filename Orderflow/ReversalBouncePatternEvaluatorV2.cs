@@ -1270,7 +1270,7 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.FirstTouchTime = currentSnapshot.Time;
 
             // Timeout: Zu lange auf Retest gewartet
-            if (tracker.FirstTouchTime != default && !tracker.RetestAttempted && !tracker.SessionActive)
+            if (tracker.FirstTouchTime != default && !tracker.RetestAttempted && !tracker.SessionActive && !candidateZone.IsConfirmed)
             {
                 var wait = currentSnapshot.Time - tracker.FirstTouchTime;
                 if (wait.TotalMinutes > RetestWaitMinutesMax)
