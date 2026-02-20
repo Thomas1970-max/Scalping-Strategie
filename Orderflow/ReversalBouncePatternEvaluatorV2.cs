@@ -1153,6 +1153,37 @@ namespace MyNamespace.Strategies.Orderflow
             // ============================================================
             if (tracker.SessionActive)
             {
+                try
+                {
+                    bool touchNow = TouchesZone(currentSnapshot, candidateZone);
+                    if (touchNow && prevClosed != null)
+                    {
+                        decimal tol = tickSize;
+                        bool approachOk = _direction == OrderDirections.Buy
+                            ? prevClosed.Close >= (candidateZone.High - tol)
+                            : prevClosed.Close <= (candidateZone.Low + tol);
+                        if (!approachOk)
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                candidateZone.Id,
+                                stage: "Session.Touch.Blocked.WrongSide",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={candidateZone.Id}",
+                                    $"Type={candidateZone.Type}",
+                                    $"PrevClose={prevClosed.Close:F2}",
+                                    $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                                    $"Rule={(candidateZone.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Session-Bar nicht entry-relevant"
+                                });
+                            tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                            return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: session touch blocked (wrong side)");
+                        }
+                    }
+                }
+                catch { }
+
                 var sessionOutcome = EvaluateActiveSession(
                     tracker, currentSnapshot, history, candidateZone, thresholds, tickSize,
                     MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
@@ -1470,13 +1501,13 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // Bestätigte Zone, aber kein Touch (oder Touch von falscher Seite) → warten + Swing-Invalidierung
-            bool touchNow = TouchesZone(currentSnapshot, candidateZone);
+            bool touchNowSession = TouchesZone(currentSnapshot, candidateZone);
             bool approachNowOk = prevClosed == null || (_direction == OrderDirections.Buy
                 ? prevClosed.Close >= (candidateZone.High - tickSize)
                 : prevClosed.Close <= (candidateZone.Low + tickSize));
-            if (!touchNow || !approachNowOk)
+            if (!touchNowSession || !approachNowOk)
             {
-                if (touchNow && !approachNowOk && prevClosed != null)
+                if (touchNowSession && !approachNowOk && prevClosed != null)
                 {
                     LogExplainOnce(
                         currentSnapshot.Bar,
