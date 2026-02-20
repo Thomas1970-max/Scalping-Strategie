@@ -58,6 +58,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             public int TouchCount { get; set; }
             public int LastTouchedBar { get; set; }
             public int BreakCloseCount { get; set; }
+            public int FlipCount { get; set; }
             public decimal? CreatedVwap { get; set; }
             public bool IsMultiTouch { get; set; }
             public int MultiTouchScore { get; set; }
@@ -1220,6 +1221,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                         if (z.HasRetestTouch && z.BreakoutExtreme >= z.High + awayDist)
                         {
                             z.Type = ZoneType.Support;
+                            z.FlipCount = Math.Max(0, z.FlipCount) + 1;
                             z.BreakoutDirection = 0;
                             z.BreakoutExtreme = 0m;
                             z.BreakCloseCount = 0;
@@ -1236,6 +1238,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                         if (z.HasRetestTouch && z.BreakoutExtreme <= z.Low - awayDist)
                         {
                             z.Type = ZoneType.Resistance;
+                            z.FlipCount = Math.Max(0, z.FlipCount) + 1;
                             z.BreakoutDirection = 0;
                             z.BreakoutExtreme = 0m;
                             z.BreakCloseCount = 0;
@@ -1264,6 +1267,14 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                     if (z.BreakCloseCount >= 2)
                     {
+                        if (z.FlipCount >= 1)
+                        {
+                            if (z.IsConfirmed)
+                                ArchiveZone(z, removedBar: bar);
+                            ActiveZones.RemoveAt(i);
+                            continue;
+                        }
+
                         if (!z.HasRetestTouch)
                         {
                             if (z.IsConfirmed)
@@ -1306,6 +1317,14 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                     if (z.BreakCloseCount >= 2)
                     {
+                        if (z.FlipCount >= 1)
+                        {
+                            if (z.IsConfirmed)
+                                ArchiveZone(z, removedBar: bar);
+                            ActiveZones.RemoveAt(i);
+                            continue;
+                        }
+
                         if (!z.HasRetestTouch)
                         {
                             if (z.IsConfirmed)
