@@ -1043,6 +1043,10 @@ namespace MyNamespace.Strategies.Orderflow
                         if (z == null || z.Id == candidateZone.Id || !z.IsConfirmed)
                             continue;
 
+                        bool strongOpp = z.IsMultiTouch || z.MultiTouchScore >= 2;
+                        if (!strongOpp)
+                            continue;
+
                         bool oppOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Resistance)
                                      || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Support);
                         if (!oppOk)
@@ -1063,23 +1067,28 @@ namespace MyNamespace.Strategies.Orderflow
                     if (nearestOpp != null)
                     {
                         int gapTicks = (int)Math.Round(bestGap / tickSize, MidpointRounding.AwayFromZero);
-                        if (gapTicks <= compressionGapTicks)
+                        bool inBox = _direction == OrderDirections.Buy
+                            ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.Low)
+                            : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.High);
+
+                        if (gapTicks <= compressionGapTicks && inBox)
                         {
                             LogExplainOnce(
                                 currentSnapshot.Bar,
                                 candidateZone.Id,
                                 stage: "Compression.Block",
+
                                 lines: new[]
                                 {
                                     $"Dir={_direction}",
                                     $"CandidateZone={candidateZone.Id}[{candidateZone.Low:F2}..{candidateZone.High:F2}]({candidateZone.Type})",
                                     $"NearestOppZone={nearestOpp.Id}[{nearestOpp.Low:F2}..{nearestOpp.High:F2}]({nearestOpp.Type})",
-                                    $"Blockiert: Gegen-Zone ist zu nah dran.",
+                                    $"Blockiert: Markt ist zwischen Zone und starker Gegen-Zone eingeklemmt (Box/Sandwich).",
                                     $"Abstand={gapTicks} Ticks (Limit={compressionGapTicks}).",
                                     $"Folge: Kein Entry-Check, um Seitwärts-Chaos zu vermeiden."
                                 });
 
-                            return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: opposing CONFIRMED zone too close (gapTicks={gapTicks} <= {compressionGapTicks})");
+                            return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: boxed between zones (gapTicks={gapTicks} <= {compressionGapTicks})");
                         }
                     }
                 }
