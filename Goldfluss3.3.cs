@@ -5115,20 +5115,20 @@ namespace MyNamespace.Strategies
 
         // MicroComposite ? Weg-Frei-Einstellungen (Handelslogik)
         [Display(Name = "Mindest-LVNs im Pfad",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Wie viele LVN-Korridore (Low Volume Nodes) m?ssen im Preispfad vorhanden sein, damit ein Handel als g?ltig gilt. LVNs sind 'd?nne' Stellen im Volumenprofil, die der Preis leicht durchqueren kann. H?here Werte machen die Strategie selektiver.",
                  Order = 1)]
         [Range(0, 10)]
         public int RequiredLVNsInPath { get; set; } = 1;
 
         [Display(Name = "MC HVN Zonen f?r WegFrei/TP nutzen",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Wenn deaktiviert, werden MicroComposite HVN-Zonen/Punkte NICHT für WegFrei-Blocking und Dynamic TP verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
                  Order = 2)]
         public bool UseMicroCompositeHVNsForWegFreiAndDynamicTP { get; set; } = true;
 
         [Display(Name = "MC LVN Zonen f?r WegFrei/TP nutzen",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Wenn deaktiviert, wird die LVN-Pfad-Anforderung aus dem MicroComposite für WegFrei-Blocking nicht verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
                  Order = 3)]
         public bool UseMicroCompositeLVNsForWegFreiAndDynamicTP { get; set; } = false;
@@ -5317,48 +5317,48 @@ namespace MyNamespace.Strategies
         public int DailyMinBlockerDistanceTicksVsRisk { get; set; } = 1;
 
         [Display(Name = "MicroComposite HVN Strength (0..100)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Ein einziger Stärkeregler für MicroComposite-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
                  Order = 1)]
         [Range(0, 100)]
         public int MicroCompositeHVNStrength { get; set; } = 50;
 
         [Display(Name = "VA-Kanten au?erhalb Value lockern",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Wenn der aktuelle Preis au?erhalb der Value Area (VA) liegt, werden die VA-Kanten (VAL/VAH) als weniger strenge Blocker behandelt. Dies erm?glicht Trades, auch wenn der Preis kurz au?erhalb der wichtigsten Handelszone ist.",
                  Order = 2)]
         public bool RelaxVAEdgesWhenOutsideValue { get; set; } = true;
 
         [Display(Name = "HVN-St?rke vs. POC (%)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Ein HVN (High Volume Node) gilt als 'starker Blocker', wenn sein Volumen mindestens dieser Prozentsatz des POC-Volumens betr?gt. Der POC (Point of Control) ist das Preislevel mit dem h?chsten Volumen. Höhere Werte machen die Blocker-Bewertung strenger.",
                  Order = 3)]
         [Range(0.1, 1.0)]
         public decimal HVNStrengthVsPOC { get; set; } = 0.40m;
 
         [Display(Name = "HVN-St?rke vs. Median (Faktor)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Ein HVN gilt als 'stark', wenn sein Volumen mindestens dieser Faktor mal dem Durchschnittsvolumen aller Preislevel entspricht. Beispiel: 1.2 bedeutet, das HVN muss 20% mehr Volumen als der Durchschnitt haben. Dies hilft, wirklich signifikante Volumenpunkte zu identifizieren.",
                  Order = 4)]
         [Range(0.5, 3.0)]
         public decimal HVNStrengthVsMedian { get; set; } = 1.20m;
 
         [Display(Name = "Mindest-Prominenz vs. Median (%)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Die 'Prominenz' misst, wie deutlich sich ein Volumenpeak von seiner Umgebung abhebt. Dieser Wert bestimmt die minimale Prominenz im Verhältnis zum Medianvolumen. Höhere Werte filtern nur die deutlichsten Peaks heraus und ignorieren kleine Volumenvariationen.",
                  Order = 5)]
         [Range(0.05, 0.5)]
         public decimal MinProminenceVsMedian { get; set; } = 0.15m;
 
         [Display(Name = "Mindest-Abstand Blocker vs. Risk (Faktor)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Ein Blocker (HVN, POC, VA-Kante) muss mindestens diesen Faktor mal dem Risk-Ticks Abstand vom aktuellen Preis entfernt sein. Beispiel: 1 bedeutet der Blocker muss weiter entfernt sein als die Risk-Distanz. Höhere Werte erlauben Trades näher an Blockern.",
                  Order = 6)]
         [Range(0.5, 5.0)]
         public int MinBlockerDistanceTicksVsRisk { get; set; } = 1;
 
         [Display(Name = "D_min (Ticks bis HVN/POC)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
                  Description = "Die fundamentale Risikodistanz in Ticks. Dies ist die Basis f?r alle Weg-Frei-Berechnungen und definiert den Mindestabstand zu wichtigen Volumenleveln. H?here Werte machen die Strategie konservativer und verhindern Trades in volatilen Bereichen.",
                  Order = 7)]
         [Range(1, 100)]
