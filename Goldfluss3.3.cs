@@ -4900,25 +4900,25 @@ namespace MyNamespace.Strategies
         public int SmaPeriod { get; set; } = 50; // Standardwert ist 10
 
         [Display(Name = "VWAP Periode", // Wenn VWAP einen Zeitraum unterst?tzt, andernfalls entfernen oder anpassen.
-          GroupName = "VWAP Settings",
+          GroupName = "VWAP ? Einstellungen",
           Order = 1360)]
         public int VWAPPeriod { get; set; } = 1; // Standardzeitraum; geeigneten Wert in den ATAS-Dokumenten ?berpr?fen
 
 
 
         [Display(Name = "Bänder anzeigen",
-            GroupName = "VWAP Einstellungen",
+            GroupName = "VWAP ? Einstellungen",
             Order = 1)]
         public bool ShowVWAPBands { get; set; } = false; // Standardm??ig auf true setzen, um B?nder anzuzeigen
 
         [Display(Name = "VWAP-Nähe Blocker aktivieren",
-                 GroupName = "VWAP Einstellungen",
+                 GroupName = "VWAP ? Einstellungen",
                  Description = "Blockiert Einstiege bei Annäherung an VWAP aus Richtung",
                  Order = 2)]
         public bool EnableVwapProximityBlocker { get; set; } = false;
 
         [Display(Name = "VWAP Abstand (Ticks)",
-                 GroupName = "VWAP Einstellungen",
+                 GroupName = "VWAP ? Einstellungen",
                  Description = "Abstand in Ticks vom VWAP für Blockade (empfohlen: 6 für ES)",
                  Order = 3)]
         [Range(1, 50, ErrorMessage = "Wert zwischen 1 und 50")]
@@ -4971,12 +4971,12 @@ namespace MyNamespace.Strategies
 
 
 
-        [Display(Name = "MicroComposite ?ber N Bars", GroupName = "MicroComposite Einstellungen",
+        [Display(Name = "MicroComposite ?ber N Bars", GroupName = "MicroComposite ? Einstellungen",
         Description = "Definiert die Gr??e des rollierenden Volumenprofils in Kerzen",
         Order = 7)]
         public int M { get; set; } = 100; // Standardwert anpassen
 
-        [Display(Name = "Value Area %", GroupName = "MicroComposite Einstellungen", Order = 7)]
+        [Display(Name = "Value Area %", GroupName = "MicroComposite ? Einstellungen", Order = 7)]
         public decimal ValueAreaPct { get; set; } = 0.70m; // auf 0.682m setzen, wenn ATAS-so
 
 
@@ -4986,108 +4986,108 @@ namespace MyNamespace.Strategies
 
         // MicroComposite ? System Einstellungen
         [Display(Name = "MicroComposite-System aktivieren",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Aktiviert das komplette MicroComposite-System: Berechnet Volumenprofile, pr?ft Weg-Frei-Blocker und zeigt HVN/LVN-Zonen an. Dies ist der Master-Schalter f?r alle MicroComposite-bezogenen Funktionen.",
                  Order = 1)]
         public bool EnableMicroCompositeSystem { get; set; } = false;
 
         [Display(Name = "MicroComposite visualisieren",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Zeigt MicroComposite-Levels (HVN/LVN-Zonen, POC, VAH/VAL) im Chart an. Ben?tigt 'MicroComposite-System aktivieren'. Wenn Visualisierung ohne Berechnung gew?nscht, wird das MicroComposite-System automatisch aktiviert.",
                  Order = 2)]
         public bool ShowMicroCompositeLevels { get; set; } = false;
 
         [Display(Name = "Daily Profile anzeigen",
-                 GroupName = "Daily Profile ? Visualisierung",
+                 GroupName = "Daily Profile ? Einstellungen",
                  Description = "Zeigt Daily-HVN/LVN-Zonen (aus dem Daily-Volumenprofil) im Chart an. Unabhängig vom MicroComposite.",
                  Order = 1)]
         public bool ShowDailyProfileLevels { get; set; } = false;
 
         [Display(Name = "Daily Histogramm anzeigen",
-                 GroupName = "Daily Profile ? Visualisierung",
+                 GroupName = "Daily Profile ? Einstellungen",
                  Description = "Zeigt das interne Daily-Volumenhistogramm (PublicActiveVolume) als Market-Profile-Balken pro Preislevel.",
                  Order = 2)]
         public bool ShowDailyHistogram { get; set; } = false;
 
         [Display(Name = "Daily Histogramm Breite (px)",
-                 GroupName = "Daily Profile ? Visualisierung",
+                 GroupName = "Daily Profile ? Einstellungen",
                  Description = "Breite der Histogramm-Balken (maximale Ausdehnung) in Pixel.",
                  Order = 3)]
         [Range(40, 1000)]
         public int DailyHistogramWidthPx { get; set; } = 600;
 
         [Display(Name = "Daily Histogramm Opacity (0..255)",
-                 GroupName = "Daily Profile ? Visualisierung",
+                 GroupName = "Daily Profile ? Einstellungen",
                  Description = "Transparenz f?r die Histogramm-F?llung.",
                  Order = 4)]
         [Range(5, 255)]
         public int DailyHistogramOpacity { get; set; } = 60;
 
         [Display(Name = "Daily Profile: Volumenquelle",
-                 GroupName = "Daily Profile ? Visualisierung",
+                 GroupName = "Daily Profile ? Einstellungen",
                  Description = "Wenn aktiv, nutzt das Daily-Profil pvi.Volume (wie ATAS Market Profile bei Einstellung 'Volumen'). Wenn aus, nutzt Ask+Bid (Lots).",
                  Order = 10)]
         public bool DailyProfileUseAtasVolume { get; set; } = true;
 
         // MicroComposite ? Einstellungen (Datenqualit?t)
         [Display(Name = "Top HVN Zonen",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Maximale Anzahl an HVN-Zonen, die nach Scoring behalten werden. Weniger HVNs ausw?hlen; verringert ?berlagerungen und h?lt die wichtigsten, kompakten Zonen im Fokus.",
                  Order = 10)]
         [Range(1, 50)]
         public int TopNHVNs { get; set; } = 4;
 
         [Display(Name = "Top LVN Zonen",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Maximale Anzahl an LVN-Zonen, die nach Scoring behalten werden",
                  Order = 11)]
         [Range(1, 50)]
         public int TopNLVNs { get; set; } = 4;
 
         [Display(Name = "Mindestbreite Zone (Ticks)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Lässt schmale, klare HVNs zu (nicht zu niedrig setzen, sonst Rauschen).",
                  Order = 12)]
         [Range(1, 100)]
         public int MinZoneTicks { get; set; } = 3;
 
         [Display(Name = "Minimale Prominenz",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Hebt die Qualität; indirekt oft schmalere Zonen, weil flache, breitgezogene 'Hügel' rausfallen. (0..1)",
                  Order = 13)]
         [Range(0.0, 1.0)]
         public decimal MinProminence { get; set; } = 0.14m;
 
         [Display(Name = "Min. Volumenanteil",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Filtert Zonen mit sehr wenig Volumenanteil. (0..1)",
                  Order = 14)]
         [Range(0.0, 1.0)]
         public decimal MinVolShare { get; set; } = 0.005m;
 
         [Display(Name = "Min. Breite relativ VA",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Mindestbreite einer Zone relativ zur Value-Area-Breite (0..1)",
                  Order = 15)]
         [Range(0.0, 1.0)]
         public decimal MinWidthPctVA { get; set; } = 0.02m;
 
         [Display(Name = "Merge-Gap (Ticks)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Zonen in diesem Tick-Abstand werden zusammengef?hrt. Klein halten, damit benachbarte Kandidaten/Zonen nicht zu einer sehr breiten Zone zusammengef?hrt werden.",
                  Order = 16)]
         [Range(0, 20)]
         public int GapTicks { get; set; } = 3;
 
         [Display(Name = "Max. Distanzgewicht (Ticks)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Skalierung der Entfernung zum aktuellen Preis im Score",
                  Order = 20)]
         [Range(1, 100)]
         public int MaxDistTicks { get; set; } = 20;
 
         [Display(Name = "Smoothing (Ticks)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Triangular Smoothing-Spanne f?r die Volumenreihe. Weniger Gl?ttung macht Peaks schmaler und Zonen k?rzer.",
                  Order = 21)]
         [Range(1, 50)]
@@ -5095,19 +5095,19 @@ namespace MyNamespace.Strategies
 
         // Zonen-Begrenzungs-Parameter
         [Display(Name = "Zonen an Value Area klemmen",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Schneidet alle HVN/LVN-Zonen an den Value-Area-Grenzen (VAL/VAH) zu. Dies verhindert, dass Zonen ?ber die wichtigsten Handelsbereiche hinausragen und sorgt f?r saubere, definierte Zonengrenzen.",
                  Order = 22)]
         public bool ClampZonesToVA { get; set; } = false;
 
         [Display(Name = "Zonenbreite begrenzen aktiv",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Aktiviert eine harte Obergrenze f?r die maximale Breite von HVN/LVN-Zonen. N?tzlich um ?berbreite Zonen zu vermeiden, die durch Volumen-Schwankungen entstehen k?nnen.",
                  Order = 23)]
         public bool EnableCapZoneWidth { get; set; } = false;
 
         [Display(Name = "Maximale Zonenbreite (Ticks)",
-                 GroupName = "MicroComposite Einstellungen",
+                 GroupName = "MicroComposite ? Einstellungen",
                  Description = "Die maximale Breite einer HVN/LVN-Zone in Ticks, symmetrisch um die Zonenmitte. Kleinere Werte erzeugen engere, pr?zisere Zonen; gr??ere Werte erlauben breitere Handelsbereiche.",
                  Order = 24)]
         [Range(1, 50)]
@@ -5115,20 +5115,20 @@ namespace MyNamespace.Strategies
 
         // MicroComposite ? Weg-Frei-Einstellungen (Handelslogik)
         [Display(Name = "Mindest-LVNs im Pfad",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wie viele LVN-Korridore (Low Volume Nodes) m?ssen im Preispfad vorhanden sein, damit ein Handel als g?ltig gilt. LVNs sind 'd?nne' Stellen im Volumenprofil, die der Preis leicht durchqueren kann. H?here Werte machen die Strategie selektiver.",
                  Order = 1)]
         [Range(0, 10)]
         public int RequiredLVNsInPath { get; set; } = 1;
 
         [Display(Name = "MC HVN Zonen f?r WegFrei/TP nutzen",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wenn deaktiviert, werden MicroComposite HVN-Zonen/Punkte NICHT für WegFrei-Blocking und Dynamic TP verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
                  Order = 2)]
         public bool UseMicroCompositeHVNsForWegFreiAndDynamicTP { get; set; } = true;
 
         [Display(Name = "MC LVN Zonen f?r WegFrei/TP nutzen",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wenn deaktiviert, wird die LVN-Pfad-Anforderung aus dem MicroComposite für WegFrei-Blocking nicht verwendet. MC POC/VAH/VAL bleiben weiterhin aktiv.",
                  Order = 3)]
         public bool UseMicroCompositeLVNsForWegFreiAndDynamicTP { get; set; } = false;
@@ -5317,48 +5317,48 @@ namespace MyNamespace.Strategies
         public int DailyMinBlockerDistanceTicksVsRisk { get; set; } = 1;
 
         [Display(Name = "MicroComposite HVN Strength (0..100)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Ein einziger Stärkeregler für MicroComposite-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
                  Order = 1)]
         [Range(0, 100)]
         public int MicroCompositeHVNStrength { get; set; } = 50;
 
         [Display(Name = "VA-Kanten au?erhalb Value lockern",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Wenn der aktuelle Preis au?erhalb der Value Area (VA) liegt, werden die VA-Kanten (VAL/VAH) als weniger strenge Blocker behandelt. Dies erm?glicht Trades, auch wenn der Preis kurz au?erhalb der wichtigsten Handelszone ist.",
                  Order = 2)]
         public bool RelaxVAEdgesWhenOutsideValue { get; set; } = true;
 
         [Display(Name = "HVN-St?rke vs. POC (%)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Ein HVN (High Volume Node) gilt als 'starker Blocker', wenn sein Volumen mindestens dieser Prozentsatz des POC-Volumens betr?gt. Der POC (Point of Control) ist das Preislevel mit dem h?chsten Volumen. Höhere Werte machen die Blocker-Bewertung strenger.",
                  Order = 3)]
         [Range(0.1, 1.0)]
         public decimal HVNStrengthVsPOC { get; set; } = 0.40m;
 
         [Display(Name = "HVN-St?rke vs. Median (Faktor)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Ein HVN gilt als 'stark', wenn sein Volumen mindestens dieser Faktor mal dem Durchschnittsvolumen aller Preislevel entspricht. Beispiel: 1.2 bedeutet, das HVN muss 20% mehr Volumen als der Durchschnitt haben. Dies hilft, wirklich signifikante Volumenpunkte zu identifizieren.",
                  Order = 4)]
         [Range(0.5, 3.0)]
         public decimal HVNStrengthVsMedian { get; set; } = 1.20m;
 
         [Display(Name = "Mindest-Prominenz vs. Median (%)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Die 'Prominenz' misst, wie deutlich sich ein Volumenpeak von seiner Umgebung abhebt. Dieser Wert bestimmt die minimale Prominenz im Verhältnis zum Medianvolumen. Höhere Werte filtern nur die deutlichsten Peaks heraus und ignorieren kleine Volumenvariationen.",
                  Order = 5)]
         [Range(0.05, 0.5)]
         public decimal MinProminenceVsMedian { get; set; } = 0.15m;
 
         [Display(Name = "Mindest-Abstand Blocker vs. Risk (Faktor)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Ein Blocker (HVN, POC, VA-Kante) muss mindestens diesen Faktor mal dem Risk-Ticks Abstand vom aktuellen Preis entfernt sein. Beispiel: 1 bedeutet der Blocker muss weiter entfernt sein als die Risk-Distanz. Höhere Werte erlauben Trades näher an Blockern.",
                  Order = 6)]
         [Range(0.5, 5.0)]
         public int MinBlockerDistanceTicksVsRisk { get; set; } = 1;
 
         [Display(Name = "D_min (Ticks bis HVN/POC)",
-                 GroupName = "MicroComposite Weg-Frei-Einstellungen",
+                 GroupName = "MicroComposite ? Weg-Frei-Einstellungen",
                  Description = "Die fundamentale Risikodistanz in Ticks. Dies ist die Basis f?r alle Weg-Frei-Berechnungen und definiert den Mindestabstand zu wichtigen Volumenleveln. H?here Werte machen die Strategie konservativer und verhindern Trades in volatilen Bereichen.",
                  Order = 7)]
         [Range(1, 100)]
