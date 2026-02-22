@@ -66,7 +66,7 @@ namespace MyNamespace.Strategies
 
     [DisplayName("Goldfluss 3.3")] // Angepasster Name f?r ATAS
     [Category("Meine Strategien")] // Kategorie in ATAS
-    public class Goldfluss3_3 : ChartStrategy
+    public class Goldfluss3_3 : ChartStrategy, ICustomTypeDescriptor
     {
         private readonly SMA _sma = new SMA();
         private readonly VWAP _vwap = new VWAP();
@@ -77,6 +77,51 @@ namespace MyNamespace.Strategies
             VisualType = VisualMode.Line,
             Width = 2
         };
+
+        AttributeCollection ICustomTypeDescriptor.GetAttributes()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetAttributes();
+
+        string? ICustomTypeDescriptor.GetClassName()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetClassName();
+
+        string? ICustomTypeDescriptor.GetComponentName()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetComponentName();
+
+        TypeConverter ICustomTypeDescriptor.GetConverter()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetConverter();
+
+        EventDescriptor? ICustomTypeDescriptor.GetDefaultEvent()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetDefaultEvent();
+
+        PropertyDescriptor? ICustomTypeDescriptor.GetDefaultProperty()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetDefaultProperty();
+
+        object? ICustomTypeDescriptor.GetEditor(Type editorBaseType)
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetEditor(editorBaseType);
+
+        EventDescriptorCollection ICustomTypeDescriptor.GetEvents()
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetEvents();
+
+        EventDescriptorCollection ICustomTypeDescriptor.GetEvents(Attribute[]? attributes)
+            => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetEvents(attributes);
+
+        PropertyDescriptorCollection ICustomTypeDescriptor.GetProperties()
+            => ((ICustomTypeDescriptor)this).GetProperties(null);
+
+        PropertyDescriptorCollection ICustomTypeDescriptor.GetProperties(Attribute[]? attributes)
+        {
+            var props = TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetProperties(attributes);
+            var filtered = props.Cast<PropertyDescriptor>()
+                .Where(p => !string.Equals(p.Name, "IsActivated", StringComparison.OrdinalIgnoreCase)
+                         && !string.Equals(p.Name, "Visible", StringComparison.OrdinalIgnoreCase)
+                         && !string.Equals(p.Name, "Locked", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            return new PropertyDescriptorCollection(filtered, readOnly: true);
+        }
+
+        object ICustomTypeDescriptor.GetPropertyOwner(PropertyDescriptor? pd)
+            => this;
 
         [OFTParameter]
         [Category("Visualisierung")]
