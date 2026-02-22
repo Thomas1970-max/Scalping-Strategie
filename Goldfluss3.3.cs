@@ -43,7 +43,6 @@ using MyNamespace.Strategies.MarketAnalysis;
 using MyNamespace.Strategies;
 using System.Collections.Generic;
 using System.Collections;
-using static MyNamespace.Strategies.Goldfluss3_3.SetupRegistry;
 using System.Windows.Input;
 using System.Windows.Controls.Primitives;
 using DevExpress.Xpf.Editors.Internal;
@@ -4737,126 +4736,10 @@ namespace MyNamespace.Strategies
 
 
 
-        // =========================================================================
-        // Bounce-Erkennung - Anfang
-        // =========================================================================
-        public enum BouncePhase
-        {
-            Idle,
-            RejectionEval,      // innerhalb des Rejection-Fensters
-            EntryConfirmation    // nach Ende des Fensters (optional f?r Continuation-Checks)
-        }
-
-        public enum BounceSide
-        {
-            None,
-            UpperBand, // z. B. VAH, VWAP+Band oben
-            LowerBand  // z. B. VAL, VWAP-Band unten
-        }
-
-        public struct BounceWindowParams
-        {
-            public int ConfirmationBars { get; set; }
-            public int ProximityTicks { get; set; }
-            public int MaxPenetrationTicks { get; set; }
-            public int MinReboundTicks { get; set; }
-            public int MinApproachTicksFromPoc { get; set; }
-            public int MagnetTicksToPoc { get; set; }
-            public int MinDistToPocForEntry { get; set; }
-            public int StopPadTicks { get; set; }
-            public int PreTouchMaxDistanceTicks { get; set; }   // Distanz zur Kante, innerhalb der ein Reversal ohne Touch erlaubt ist
-            public int RangeReversalTicks { get; set; }         // Mindest-Reversal-Bewegung (weg von der Kante), aggregiert ?ber Fenster
-
-        }
-
-        public struct BounceContext
-        {
-            public int Bar;
-            public decimal TickSize;
-
-            public decimal UpperBand;   // VAH oder VWAP+Band
-            public decimal LowerBand;   // VAL oder VWAP-Band
-            public decimal POC;         // optional (kann 0 sein, wenn nicht genutzt)
-            public decimal Close;
-            public decimal High;
-            public decimal Low;
-            public decimal PrevHigh;
-            public decimal PrevLow;
-            public decimal PrevClose;
-            public bool InValueArea;    // true/false, je nach Setup-Kontext (VA-basiert)
-        }
-        public struct BounceConfirmResult
-        {
-            public bool ConfirmLower;   // Long an Unterer Bandkante (z. B. VAL)
-            public bool ConfirmUpper;   // Short an Oberer Bandkante (z. B. VAH)
-            public int FromBar;
-            public int ToBar;
-            public BounceSide SideTouched;
-            public string Detail;
-        }
-
-        public struct BounceEvalCounters
-        {
-            public int EvalTradesCount;
-            public int EvalPositiveTrades;
-            public int NoAggSellerConsec;
-            public bool IntrabarReclaimed;
-            public bool DwellOk;
-            public DateTime EvalStartUtc;
-        }
-
-        private BounceContext? _ctxSetup6;
-
-        private readonly SetupRegistry _setups = new();
-        // Pro Setup ein Detector-Container (Key kann SetupName oder SetupName+BandId sein)
-
-
-
-
-
-
-        // Richtung-Enum
-        private enum AggressorSide { Buy, Sell }
-        public sealed class SetupRegistry
-        {
-            public delegate IEnumerable<BounceContext> SetupContextBuilderIC(
-                int bar,
-                ATAS.Indicators.IndicatorCandle c,
-                ATAS.Indicators.IndicatorCandle p,
-                decimal tick);
-
-            private readonly Dictionary<string, SetupContextBuilderIC> _setupBuilders = new();
-            private readonly Dictionary<string, BounceWindowParams> _setupParams = new();
-
-            // Optionaler Puffer (kann bleiben oder entfernt werden)
-            private BounceContext _ctxSetup6;
-
-            // Registrierung eines Setups
-            public void Register(string setupKey, SetupContextBuilderIC builder, BounceWindowParams prm)
-            {
-                _setupBuilders[setupKey] = builder;
-                _setupParams[setupKey] = prm;
-            }
-
-            // Zugriff auf Builder + Params
-            public bool TryGet(string setupKey, out SetupContextBuilderIC builder, out BounceWindowParams prm)
-            {
-                builder = _setupBuilders.TryGetValue(setupKey, out var b) ? b : null;
-                prm = _setupParams.TryGetValue(setupKey, out var p) ? p : default;
-                return builder != null;
-            }
-
-            // Schl?ssel-Liste (f?r Iteration/Existenzcheck)
-            public IEnumerable<string> Keys => _setupBuilders.Keys;
-        }
         private decimal? _longTriggerOverride;
         private decimal? _shortTriggerOverride;
         private int? _reclaimTicksOverride;
         private int? _nearTicksOverride;
-
-        // =========================================================================
-        // Bounce-Erkennung - Ende
-        // =========================================================================
 
         private enum EntryState
         {
