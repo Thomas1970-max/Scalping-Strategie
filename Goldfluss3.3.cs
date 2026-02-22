@@ -141,7 +141,7 @@ namespace MyNamespace.Strategies
         public bool ShowSyntheticTick900CandlesDebug { get; set; } = false;
 
         [OFTParameter]
-        [Category("Orderflow - ReversalBounce")]
+        [Category("Reversal Settings")]
         [DisplayName("Compression Gap (Ticks)")]
         [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks).")]
         [DefaultValue(12)]
@@ -149,7 +149,7 @@ namespace MyNamespace.Strategies
         public int ReversalCompressionGapTicks { get; set; } = 12;
 
         [OFTParameter]
-        [Category("Orderflow - ContinuationPullback")]
+        [Category("Continuation Settings")]
         [DisplayName("Compression Gap (Ticks)")]
         [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). 0 = verwende Thresholds.")]
         [DefaultValue(12)]
@@ -4017,30 +4017,7 @@ namespace MyNamespace.Strategies
         [Display(Name = "Timeout (Bars)", GroupName = "Order Timeout", Order = 110)]
         [Range(1, 100, ErrorMessage = "Please enter a value between 1 and 100.")]
         [Description("Anzahl der Bars, nach denen eine nicht gef?llte Entry-Order gel?scht wird.")] // F?ge Beschreibung hinzu
-        public int OrderTimeoutBars { get; set; } = 2;
-
-
-        [OFTParameter]
-        [Category("Orderflow - MarketStateEngine")]
-        [DisplayName("Trend Body (Ticks)")]
-        [Description("Body-Gr??e (in Ticks), die als Trend-Bar gewertet wird (z.B. 6).")]
-        [DefaultValue(5)]
-        [Range(1, 100)]
-        public int Parameter_TrendBodyTicks { get; set; } = 5;
-
-        [OFTParameter]
-        [Category("Orderflow - MarketStateEngine")]
-        [DisplayName("Reversal Body (Ticks)")]
-        [Description("Body-Gr??e (in Ticks), die als Reversal-Bar gewertet wird (z.B. 9).")]
-        [DefaultValue(8)]
-        [Range(1, 200)]
-        public int Parameter_ReversalBodyTicks { get; set; } = 8;
-
-        [OFTParameter]
-        [Category("Orderflow - MarketStateEngine")]
-        [DisplayName("Body Tick Tolerance")]
-        [Description("Toleranz (in Ticks) f?r Rundung/Artefakte, z.B. 0.25.")]
-        public decimal Parameter_BodyTickTolerance { get; set; } = 0.25m;
+        public int OrderTimeoutBars { get; set; } = 30;
 
         [OFTParameter]
         [Category("CSV Export")]

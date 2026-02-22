@@ -143,13 +143,13 @@ namespace MyNamespace.Strategies.Models
         // Die alten nullable Properties bleiben als Browsable(false)-Wrapper erhalten.
         // ---------------------------------------------------------
 
-        [Category("Continuation")]
+        [Category("Continuation Settings")]
         [DisplayName("Continuation: Phase Lookback Bars")]
         [Description("Wie viele Bars rückwirkend Healthy_Pullback oder Momentum_Refuel gewesen sein darf, damit ContinuationPullback-Einstiege weiterhin erlaubt sind.")]
         [DefaultValue(6)]
         public int ContinuationPhaseLookbackBars_UI { get; set; } = 6;
 
-        [Category("Continuation")]
+        [Category("Continuation Settings")]
         [DisplayName("Continuation: Compression Gap (Ticks)")]
         [Description("Blockiert Entry, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). Gilt für ContinuationPullback.")]
         [DefaultValue(12)]
