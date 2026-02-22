@@ -4925,8 +4925,8 @@ namespace MyNamespace.Strategies
         public int VwapProximityTicks { get; set; } = 6;
 
         [Display(Name = "Round Numbers Stufen",
-         GroupName = "Strategie-Parameter",
-         Order = 1000)]
+         GroupName = "Level-Parameter",
+         Order = 100)]
         public decimal PointStep { get; set; } = 50;
 
 
@@ -4936,36 +4936,36 @@ namespace MyNamespace.Strategies
 
         // Entry-Blocker Parameter
         [Display(Name = "Level-System aktivieren",
-                 GroupName = "Level-Parameter ? Entry-Blocker",
+                 GroupName = "Level-Parameter",
                  Description = "Aktiviert das komplette Level-System: Berechnet signifikante Preislevel, ?berwacht Ber?hrungen und blockiert Einstiege bei Level-N?he. Dies ist der Master-Schalter f?r alle Level-bezogenen Funktionen.",
                  Order = 1)]
         public bool EnableIsBlocked { get; set; } = false;
 
         [Display(Name = "Mindestabstand f?r Entry (Ticks)",
-                 GroupName = "Level-Parameter ? Entry-Blocker",
+                 GroupName = "Level-Parameter",
                  Description = "Verhindert den Einstieg, wenn der Preis zu nah an signifikanten Zonen ist. Dies betrifft die 'IsTooCloseForEntry' Logik. H?here Werte machen die Strategie selektiver.",
-                 Order = 2)]
+                 Order = 3)]
         [Range(0.1, 1000)]
         public decimal ProximityTicksForEntry { get; set; } = 8;
 
         // Signifikante Level Parameter
         [Display(Name = "Level visualisieren",
-                 GroupName = "Level-Parameter ? Signifikante Level",
+                 GroupName = "Level-Parameter",
                  Description = "Zeigt signifikante Preislevel im Chart an. Ben?tigt 'Level-System aktivieren'. Wenn Visualisierung ohne Berechnung gew?nscht, wird die Level-Berechnung automatisch aktiviert.",
-                 Order = 1)]
+                 Order = 2)]
         public bool EnableSignificantPreviousLevels { get; set; } = true;
 
         [Display(Name = "Anzahl Tage f?r signifikante Levels",
-                 GroupName = "Level-Parameter ? Signifikante Level",
+                 GroupName = "Level-Parameter",
                  Description = "Definiert ?ber wie viele Tage zur?ck signifikante Preislevel (Tageshoch/-tief, Vortages-POC) f?r die Handelsentscheidung ber?cksichtigt werden. Mehr Tage geben mehr Referenzpunkte.",
-                 Order = 2)]
+                 Order = 4)]
         [Range(1, 100)]
         public int MaxDaysForSignificantLevels { get; set; } = 5;
 
         [Display(Name = "Mindestabstand Kerzen-Ber?hrungen",
-                 GroupName = "Level-Parameter ? Signifikante Level",
+                 GroupName = "Level-Parameter",
                  Description = "Definiert den Mindestabstand in Kerzen, bevor eine neue Ber?hrung desselben Levels gez?hlt wird. Verhindert, dass schnelle Preisfluktuationen um ein Level als multiple Ber?hrungen gewertet werden.",
-                 Order = 3)]
+                 Order = 5)]
         [Range(1, 50)]
         public int MinCandleSeparationForTouches { get; set; } = 5;
 
