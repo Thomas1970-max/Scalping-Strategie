@@ -521,7 +521,7 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal EntryThreshold = 6m;
             const int AdaptiveLookback = 30;
             const decimal AbsNetDeltaMedianMultiplier = 1.0m;
-            const int PocShiftMinTicks = 1;
+            int pocShiftMinTicks = Math.Max(0, thresholds.PocShiftMinTicks);
             decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, curr, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
 
             int touchesW;
@@ -631,7 +631,7 @@ namespace MyNamespace.Strategies.Orderflow
                         bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
                         int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
 
-                        bool pocMagOk = pocShiftTicks >= PocShiftMinTicks;
+                        bool pocMagOk = pocShiftTicks >= pocShiftMinTicks;
                         const int AdaptivePocVolLookback = 30;
                         const decimal PocVolumeMedianMultiplier = 0.8m;
                         decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
@@ -745,11 +745,14 @@ namespace MyNamespace.Strategies.Orderflow
             }
             else
             {
-                const decimal DeltaShiftMin = 20m;
+                decimal deltaShiftMin = thresholds.DeltaShiftMin;
+                if (deltaShiftMin < 0m)
+                    deltaShiftMin = 0m;
                 const decimal ProximityMinFactor = 0.5m;
                 var deltaFlipProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
                 decimal deltaPts = 0m;
                 string deltaFlipText = "Delta-Flip: NEIN";
+
                 if (deltaFlipProxEval.Factor >= ProximityMinFactor)
                 {
                     bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, curr, windowBars: 3, dir);
@@ -779,14 +782,14 @@ namespace MyNamespace.Strategies.Orderflow
                         else
                         {
                             decimal shift = Math.Abs(curr.PocDelta - flipFrom.PocDelta);
-                            if (shift >= DeltaShiftMin)
+                            if (shift >= deltaShiftMin)
                             {
                                 deltaPts = 2m * deltaFlipProxEval.Factor;
                                 deltaFlipText = $"Delta-Flip: JA (Shift={shift:0}, Persistenz=2, Prox={deltaFlipProxEval.Factor:0.0}) -> +{deltaPts:0.0}";
                             }
                             else
                             {
-                                deltaFlipText = $"Delta-Flip: NEIN (Magnitude {shift:0} < {DeltaShiftMin:0})";
+                                deltaFlipText = $"Delta-Flip: NEIN (Magnitude {shift:0} < {deltaShiftMin:0})";
                             }
                         }
                     }
@@ -811,21 +814,21 @@ namespace MyNamespace.Strategies.Orderflow
                 if (prev != null)
                 {
                     decimal pocShift = curr.CandlePocPrice - prev.CandlePocPrice;
+                    bool pocDirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
                     int pocShiftTicks = RoundTicks(Math.Abs(pocShift), tickSize);
 
-                    bool dirOk = dir == OrderDirections.Buy ? pocShift >= 0m : pocShift <= 0m;
-                    bool magnitudeOk = pocShiftTicks >= PocShiftMinTicks;
+                    bool pocMagOk = pocShiftTicks >= pocShiftMinTicks;
                     const int AdaptivePocVolLookback = 30;
                     const decimal PocVolumeMedianMultiplier = 0.8m;
                     decimal pocVolMin = GetAdaptivePocVolumeMin(history, curr, AdaptivePocVolLookback, PocVolumeMedianMultiplier);
                     bool pocVolOk = curr.PocVolume >= pocVolMin;
                     var pocProxEval = EvaluateAbsorptionProximity(curr, zone, tickSize, dir);
                     bool proximityOk = pocProxEval.Factor >= 0.5m;
-                    bool pocOk = dirOk && magnitudeOk && pocVolOk && proximityOk;
+                    bool pocOk = pocDirOk && pocMagOk && pocVolOk && proximityOk;
                     pocPts = (pocOk ? 1m : 0m);
                     string reason = pocOk
                         ? $"POC-Shift: OK (Shift={pocShiftTicks} Ticks, Prox={pocProxEval.Factor:0.0}) -> +1"
-                        : $"POC-Shift: nicht OK (Dir={dirOk}, Mag={magnitudeOk}, Vol={pocVolOk}, Prox={proximityOk}) -> +0";
+                        : $"POC-Shift: nicht OK (Dir={pocDirOk}, Mag={pocMagOk}, Vol={pocVolOk}, Prox={proximityOk}) -> +0";
                     score += pocPts;
                     items.Add(new ScoreItem { Key = "PocShift", Points = pocPts, TextDe = reason });
                 }

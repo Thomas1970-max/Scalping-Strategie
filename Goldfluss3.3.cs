@@ -5912,19 +5912,10 @@ namespace MyNamespace.Strategies
                 var keys = _strategySetup?.PatternDefaultThresholds?.Keys;
                 var keysJoined = keys != null && keys.Any() ? string.Join(",", keys) : "(none)";
                 this.LogInfo($"[INIT] PatternDefaultThresholds keys: {keysJoined}");
-            }
-            catch { }
-
             _marketStateEngineV2 = new MyNamespace.Strategies.MarketAnalysis.MarketStateEngineV2(_tickSize, slopeLookbackK: 5, zWindowN: 100);
-
-            this.LogInfo($"[INIT] ReversalThresholds initialisiert: CVD Impulse Long = {ReversalThresholds.ReversalThCvdImpulseLong_UI}");
 
             // Now prepare per-bar containers (gr??en sinnvoll initialisieren)
             _ofFeaturesByBar = new Dictionary<int, OfFeatures>(_ofFeaturesHistory != null ? Math.Max(16, _ofFeaturesHistory.Count) : 512);
-
-
-
-            // ... (Deine bestehenden Initialisierungen in Configure f?r _featureCalculator etc.) ...
 
             Add(_myClusterStatistic);
 
@@ -6066,6 +6057,11 @@ namespace MyNamespace.Strategies
                     // Aktuelles Datum für Tageswechsel-Erkennung speichern
                     _currentCsvDate = GetCurrentBarDate();
                 }
+            }
+
+            }
+            catch
+            {
             }
 
 
