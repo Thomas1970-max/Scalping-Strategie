@@ -13310,19 +13310,23 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                if (detectedPattern.Type == OrderflowPatternType.PotentialLongReversalBounce && detectedPattern.Direction == OrderDirections.Buy)
+                if ((detectedPattern.Type == OrderflowPatternType.PotentialLongReversalBounce
+                        || detectedPattern.Type == OrderflowPatternType.PotentialLongTrendContinuation)
+                    && detectedPattern.Direction == OrderDirections.Buy)
                 {
                     isLongSetupValid = true;
                     this.LogInfo($"[SETUP-LONG] ✅ Long Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
                 }
-                else if (detectedPattern.Type == OrderflowPatternType.PotentialShortReversalBounce && detectedPattern.Direction == OrderDirections.Sell)
+                else if ((detectedPattern.Type == OrderflowPatternType.PotentialShortReversalBounce
+                            || detectedPattern.Type == OrderflowPatternType.PotentialShortTrendContinuation)
+                         && detectedPattern.Direction == OrderDirections.Sell)
                 {
                     isShortSetupValid = true;
                     this.LogInfo($"[SETUP-SHORT] ✅ Short Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
                 }
                 else
                 {
-                    this.LogDebug($"[SETUP-VALID] Kein V2-ReversalBounce Setup (Type={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
+                    this.LogDebug($"[SETUP-VALID] Kein V2-Setup (Type={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                 }
             }
 
