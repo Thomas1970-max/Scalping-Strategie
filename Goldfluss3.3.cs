@@ -3942,29 +3942,6 @@ namespace MyNamespace.Strategies
             public decimal Low;
         }
 
-        // ==== Dynamic VWAP Caps (ES) ====
-        private decimal _softCapEma = 0m;
-        private decimal _hardCapEma = 0m;
-        private decimal _emaVolLong = 0m;      // langsame Referenz f?r Vol/sec-EMA
-
-        // Baselines in Punkten
-        private const decimal SOFT_BASE_FAST = 12m;
-        private const decimal SOFT_BASE_NORM = 18m;
-        private const decimal SOFT_BASE_SLOW = 24m;
-        private const decimal HARD_BASE = 36m;
-
-        // Clamps in Punkten
-        private const decimal SOFT_MIN = 10m, SOFT_MAX = 26m;
-        private const decimal HARD_MIN = 28m, HARD_MAX = 46m;
-
-        // Skalierung (je h?her Vol ? Caps kleiner)
-        private const decimal SOFT_SCALE = 0.35m;
-        private const decimal HARD_SCALE = 0.25m;
-
-        // Gl?ttungen
-        private const decimal CAPS_EMA_ALPHA = 0.20m;
-        private const decimal EMA_LONG_ALPHA = 0.02m;
-
 
 
         private CandleSnap ToSnap(IndicatorCandle ic)
@@ -4129,16 +4106,6 @@ namespace MyNamespace.Strategies
         // =========================================================================
         // ALLES, WAS BLEIBT | Ende
         // =========================================================================
-        private int _volPhaseWindow = 14;
-        private int _minConsecutiveForSwitch = 3;
-        private decimal _highEnterMult = 1.2m; // Multiplier to enter Fast
-        private decimal _highExitMult = 1.05m; // Multiplier to remain in Fast (hysteresis)
-        private decimal _lowEnterMult = 0.8m; // Multiplier to enter Slow
-        private decimal _lowExitMult = 0.95m; // Multiplier to remain in Slow (hysteresis)
-        private MarketRegime _lastRegime = MarketRegime.Normal;
-        private int _regimeConsecutiveCount = 0;
-        private int _regimeCooldown = 0; // optional cooldown counter
-
         // ========================================================
         // PRIVATE MEMBER-VARIABLEN (Zustand der Strategie)
         // ========================================================    
