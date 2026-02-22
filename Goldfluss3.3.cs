@@ -4099,8 +4099,6 @@ namespace MyNamespace.Strategies
         // =========================================================================
         // ALLES, WAS BLEIBT | Anfang
         // =========================================================================
-        private Dictionary<OrderflowPatternType, OrderflowThresholds> _patternDefaultThresholds;
-
         private SqueezeMomentumCalculator _squeezeCalc;
 
         private decimal _pdPOC, _pdVAH, _pdVAL;
@@ -4240,11 +4238,8 @@ namespace MyNamespace.Strategies
         private string _marketStateV2OverlayText;
         private MarketRegimeDetails _marketRegimeDetails;
  
-        private int _featuresHistoryCapacity;
-
         //Volumenprofil Vortag
         private VolumeProfileGenerator _volumeProfileGenerator;
-        private SessionBarRangeFinder _sessionBarRangeFinder;
         // Volumenprofil
 
         private void AddFeatureAndSync(OfFeatures feature)
@@ -4540,13 +4535,6 @@ namespace MyNamespace.Strategies
             return Convert.ChangeType(src, underlying, CultureInfo.InvariantCulture);
         }
 
-        public int OutcomeTicks { get; set; } = 12;
-        public int StopTicks { get; set; } = 10;
-        public string ResearchBaseDir { get; set; } = @"C:\Users\User\Documents\Strategieauswertung";
-
-
-        private decimal _lastFinalScore = 0;
-        private bool _lastApproved = false;
         // Laufzeit
 
         private string ToCsvLine(
