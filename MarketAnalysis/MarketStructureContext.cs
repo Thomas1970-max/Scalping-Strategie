@@ -145,6 +145,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public int MomentumProtectionBodyTicksMin { get; set; } = 6;
 
         public int ZoneDwellBarsMax { get; set; } = 7;
+        public int PendingZoneMaxAgeBars { get; set; } = 0;
         public decimal ZoneFlipAwayMultiple { get; set; } = 2.0m;
         public int ZoneFlipAwayMinTicks { get; set; } = 16;
 
@@ -430,6 +431,56 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                 _lastConfirmedSwingDir = ZigZagDir.Up;
                                 return;
                             }
+
+                            for (int zi = ActiveZones.Count - 1; zi >= 0; zi--)
+                            {
+                                var z = ActiveZones[zi];
+                                if (z == null)
+                                    continue;
+                                if (z.IsConfirmed)
+                                    continue;
+                                if (z.PivotBar != swingBarP || z.Type != ZoneType.Resistance)
+                                    continue;
+
+                                z.Status = ZoneStatus.Used;
+                                z.ConsumedReason = ZoneConsumeReason.Invalidation;
+                                z.ConsumedBar = bar;
+
+                                try
+                                {
+                                    LoggerSource?.LogInfo($"[MSZones.Remove] bar={bar} id={z.Id} reason=PendingConfirmFailed pivot={swingBarP} type={z.Type} confirmed={z.IsConfirmed}");
+                                }
+                                catch { }
+
+                                ActiveZones.RemoveAt(zi);
+                                break;
+                            }
+                        }
+                        else if (!isSwingHighP)
+                        {
+                            for (int zi = ActiveZones.Count - 1; zi >= 0; zi--)
+                            {
+                                var z = ActiveZones[zi];
+                                if (z == null)
+                                    continue;
+                                if (z.IsConfirmed)
+                                    continue;
+                                if (z.PivotBar != swingBarP || z.Type != ZoneType.Resistance)
+                                    continue;
+
+                                z.Status = ZoneStatus.Used;
+                                z.ConsumedReason = ZoneConsumeReason.Invalidation;
+                                z.ConsumedBar = bar;
+
+                                try
+                                {
+                                    LoggerSource?.LogInfo($"[MSZones.Remove] bar={bar} id={z.Id} reason=PendingDisproven pivot={swingBarP} type={z.Type} confirmed={z.IsConfirmed}");
+                                }
+                                catch { }
+
+                                ActiveZones.RemoveAt(zi);
+                                break;
+                            }
                         }
 
                         if (isSwingLowP && swingBarP != _lastConfirmedSwingLowBar)
@@ -440,6 +491,56 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                 _lastConfirmedSwingLow = centerLowP;
                                 _lastConfirmedSwingDir = ZigZagDir.Down;
                                 return;
+                            }
+
+                            for (int zi = ActiveZones.Count - 1; zi >= 0; zi--)
+                            {
+                                var z = ActiveZones[zi];
+                                if (z == null)
+                                    continue;
+                                if (z.IsConfirmed)
+                                    continue;
+                                if (z.PivotBar != swingBarP || z.Type != ZoneType.Support)
+                                    continue;
+
+                                z.Status = ZoneStatus.Used;
+                                z.ConsumedReason = ZoneConsumeReason.Invalidation;
+                                z.ConsumedBar = bar;
+
+                                try
+                                {
+                                    LoggerSource?.LogInfo($"[MSZones.Remove] bar={bar} id={z.Id} reason=PendingConfirmFailed pivot={swingBarP} type={z.Type} confirmed={z.IsConfirmed}");
+                                }
+                                catch { }
+
+                                ActiveZones.RemoveAt(zi);
+                                break;
+                            }
+                        }
+                        else if (!isSwingLowP)
+                        {
+                            for (int zi = ActiveZones.Count - 1; zi >= 0; zi--)
+                            {
+                                var z = ActiveZones[zi];
+                                if (z == null)
+                                    continue;
+                                if (z.IsConfirmed)
+                                    continue;
+                                if (z.PivotBar != swingBarP || z.Type != ZoneType.Support)
+                                    continue;
+
+                                z.Status = ZoneStatus.Used;
+                                z.ConsumedReason = ZoneConsumeReason.Invalidation;
+                                z.ConsumedBar = bar;
+
+                                try
+                                {
+                                    LoggerSource?.LogInfo($"[MSZones.Remove] bar={bar} id={z.Id} reason=PendingDisproven pivot={swingBarP} type={z.Type} confirmed={z.IsConfirmed}");
+                                }
+                                catch { }
+
+                                ActiveZones.RemoveAt(zi);
+                                break;
                             }
                         }
                     }
@@ -1333,6 +1434,24 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 var z = ActiveZones[i];
                 if (z == null)
                     continue;
+
+                if (!z.IsConfirmed && PendingZoneMaxAgeBars > 0 && z.CreatedBar >= 0 && (bar - z.CreatedBar) >= PendingZoneMaxAgeBars)
+                {
+                    z.Status = ZoneStatus.Used;
+                    z.ConsumedReason = ZoneConsumeReason.Expiry;
+                    z.ConsumedBar = bar;
+
+                    try
+                    {
+                        LoggerSource?.LogInfo(
+                            $"[MSZones.Remove] bar={bar} id={z.Id} reason=PendingMaxAge age={(bar - z.CreatedBar)} max={PendingZoneMaxAgeBars} type={z.Type} status={z.Status} confirmed={z.IsConfirmed} pivot={z.PivotBar} created={z.CreatedBar}");
+                    }
+                    catch { }
+
+                    ActiveZones.RemoveAt(i);
+                    continue;
+                }
+
                 if (z.Status == ZoneStatus.Used)
                 {
                     try
