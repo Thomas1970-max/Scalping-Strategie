@@ -78,9 +78,6 @@ namespace MyNamespace.Strategies
             Width = 2
         };
 
-        public bool ShowZoneRects { get; set; } = true;
-        public bool ShowZoneCenters { get; set; } = true; // eine Centerline je finaler Zone
-
         [OFTParameter]
         [Category("Visualisierung")]
         [DisplayName("MarketStructure Zonen anzeigen")]
@@ -15141,7 +15138,7 @@ namespace MyNamespace.Strategies
                     DrawLabelOnPriceAxis(context, "POC-V", yPOC, _axisFont, System.Drawing.Color.Orange, _axisTextColor);
 
                     // HVN-Zonen (Rot)
-                    if (mc.HVNZones != null && mc.HVNZones.Count > 0 && ShowZoneRects)
+                    if (mc.HVNZones != null && mc.HVNZones.Count > 0)
                     {
                         var pathCfg = GetPathConfig();
                         int hvnZoneWidth = (x2 - x1) / 2;
@@ -15177,16 +15174,13 @@ namespace MyNamespace.Strategies
                             DrawLabelOnPriceAxis(context, "HVN", top, _axisFont, isStrong ? System.Drawing.Color.DarkRed : System.Drawing.Color.IndianRed, _axisTextColor);
 
                             // Optional: genau eine Centerline je finaler Zone
-                            if (ShowZoneCenters)
-                            {
-                                int yCenter = (int)ChartInfo.GetYByPrice(centerPrice, false);
-                                context.DrawLine(isStrong ? new RenderPen(System.Drawing.Color.DarkRed, 2) : penHVNCenter, hvnX1, yCenter, x2, yCenter);
-                            }
+                            int yCenter = (int)ChartInfo.GetYByPrice(centerPrice, false);
+                            context.DrawLine(isStrong ? new RenderPen(System.Drawing.Color.DarkRed, 2) : penHVNCenter, hvnX1, yCenter, x2, yCenter);
                         }
                     }
 
                     // LVN-Zonen (Gr?n)
-                    if (mc.LVNZones != null && mc.LVNZones.Count > 0 && ShowZoneRects)
+                    if (mc.LVNZones != null && mc.LVNZones.Count > 0)
                     {
                         int lvnZoneWidth = (x2 - x1) / 3;
                         int lvnX1 = x2 - lvnZoneWidth;
@@ -15211,12 +15205,9 @@ namespace MyNamespace.Strategies
                             DrawLabelOnPriceAxis(context, "LVN", top, _axisFont, System.Drawing.Color.ForestGreen, _axisTextColor);
 
                             // Optional: genau eine Centerline je finaler Zone
-                            if (ShowZoneCenters)
-                            {
-                                decimal centerPrice = (pStart + pEnd) / 2m;
-                                int yCenter = (int)ChartInfo.GetYByPrice(centerPrice, false);
-                                context.DrawLine(penLVNCenter, lvnX1, yCenter, x2, yCenter);
-                            }
+                            decimal centerPrice = (pStart + pEnd) / 2m;
+                            int yCenter = (int)ChartInfo.GetYByPrice(centerPrice, false);
+                            context.DrawLine(penLVNCenter, lvnX1, yCenter, x2, yCenter);
                         }
                     }
 
@@ -15240,7 +15231,7 @@ namespace MyNamespace.Strategies
                     int lvnX1 = x1;
 
                     // HVN-Zonen (Daily)
-                    if (d.HVNZones != null && d.HVNZones.Count > 0 && ShowZoneRects)
+                    if (d.HVNZones != null && d.HVNZones.Count > 0)
                     {
                         var pathCfg = GetDailyPathConfig();
                         foreach (var z in d.HVNZones)
@@ -15271,7 +15262,7 @@ namespace MyNamespace.Strategies
                     }
 
                     // LVN-Zonen (Daily)
-                    if (d.LVNZones != null && d.LVNZones.Count > 0 && ShowZoneRects)
+                    if (d.LVNZones != null && d.LVNZones.Count > 0)
                     {
                         foreach (var z in d.LVNZones)
                         {
