@@ -1356,6 +1356,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                 if (ZoneDwellBarsMax > 0 && z.DwellCount >= ZoneDwellBarsMax)
                 {
+                    z.Status = ZoneStatus.Used;
+                    z.ConsumedReason = ZoneConsumeReason.Expiry;
+                    z.ConsumedBar = bar;
+
                     try
                     {
                         LoggerSource?.LogInfo(
