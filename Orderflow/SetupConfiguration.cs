@@ -114,13 +114,6 @@ namespace MyNamespace.Strategies.Orderflow
         [Browsable(false)]
         public int MinSnapshotsToPersist { get; set; } = 3;
 
-        [Category("Trade-Profil")]
-        [DisplayName("Aktives Trade-Profil")]
-        [Description("Wählt das TradeProfile (Conservative / Neutral / Aggressive). Beeinflusst die adaptive Schwellenwert-Skalierung.")]
-        [DefaultValue(TradeProfile.Neutral)]
-        [TypeConverter(typeof(Orderflow.EnumDescriptionTypeConverter))]
-        public TradeProfile ActiveTradeProfile { get; set; } = TradeProfile.Neutral;
-
         // Konstruktor zur Initialisierung mit Standard-Condition-Configs
         public SetupConfiguration()
         {
