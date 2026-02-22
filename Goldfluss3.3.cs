@@ -4971,12 +4971,12 @@ namespace MyNamespace.Strategies
 
 
 
-        [Display(Name = "MicroComposite ?ber N Bars", GroupName = "Visualisation",
+        [Display(Name = "MicroComposite ?ber N Bars", GroupName = "MicroComposite Einstellungen",
         Description = "Definiert die Gr??e des rollierenden Volumenprofils in Kerzen",
         Order = 7)]
         public int M { get; set; } = 100; // Standardwert anpassen
 
-        [Display(Name = "Value Area %", GroupName = "Visualisation", Order = 7)]
+        [Display(Name = "Value Area %", GroupName = "MicroComposite Einstellungen", Order = 7)]
         public decimal ValueAreaPct { get; set; } = 0.70m; // auf 0.682m setzen, wenn ATAS-so
 
 
