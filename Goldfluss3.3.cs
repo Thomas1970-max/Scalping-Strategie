@@ -3975,13 +3975,6 @@ namespace MyNamespace.Strategies
         // Diese werden im ATAS Properties Fenster unter "Common Conditions - AggPressure" angezeigt
         // =========================================================================
 
-
-        [Category("Konfiguration")]
-        [DisplayName("Setup Configuration")]
-        [Description("Alle orderflow-bezogenen Einstellungen")]
-        [TypeConverter(typeof(ExpandableObjectConverter))]
-        public SetupConfiguration SetupConfig { get; set; } = new SetupConfiguration();
-
         [Category("Reversal Settings")]
         [DisplayName("Reversal Thresholds")]
         [Description("Reversal-spezifische Orderflow-Schwellenwerte f?r ReversalBounce Pattern")]
@@ -5683,7 +5676,7 @@ namespace MyNamespace.Strategies
             Action<string> debugStr = msg => Trace.WriteLine("DEBUG: " + msg);
 
 
-            _strategySetup = SetupConfig ?? new SetupConfiguration();
+            _strategySetup = new SetupConfiguration();
             _strategySetup.UiThresholds = ReversalThresholds;
 
             // Erst die histories/collections anlegen, die andere Komponenten ben?tigen:
