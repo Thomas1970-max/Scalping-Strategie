@@ -4728,23 +4728,6 @@ namespace MyNamespace.Strategies
 
 
 
-        private SortedDictionary<decimal, decimal> _vwHist = new();
-        private bool _vwActive = false;
-        private int _vwStartBar = -1;
-        private int _vwLastBar = -1;
-        private int _vwDirection = 0;
-        private decimal _vwPrevPOC = 0m;
-        private decimal _vwPOC = 0m;
-        // Output: nur Flag (und optional Preis)
-        public bool VwSignal { get; private set; } = false;
-        public decimal VwSignalPrice { get; private set; } = 0m; // optional, falls du ihn brauchst
-        public void ClearVwSignal()
-        {
-            VwSignal = false;
-            VwSignalPrice = 0m;
-        }
-        private bool _vwPendingReset = false;
-        public int VwSignalDir = 0; // +1 Long, -1 Short, 0 none
         private int TicksBetween(decimal a, decimal b)
         {
             if (_tickSize <= 0m) return 0; // Guard: kein TickSize bekannt
@@ -7166,126 +7149,17 @@ namespace MyNamespace.Strategies
         private decimal ComputePocFromHist(SortedDictionary<decimal, decimal> hist)
         {
             if (hist == null || hist.Count == 0) return 0m;
-            CalculatePOC_VAH_VAL(hist, out decimal poc, out _, out _, log: false); // keine VA-Logs hier
-            return poc;
-        }
-
-        private void VW_Reset()
-        {
-            _vwHist.Clear();
-            _vwActive = false;
-            _vwStartBar = -1;
-            _vwLastBar = -1;
-            _vwDirection = 0;
-            _vwPrevPOC = 0m;
-            _vwPOC = 0m;
-        }
-
-        private void VW_TryStart(int bar)
-        {
-            if (bar < 1 || _vwActive) return;
-
-            var prev = GetCandle(bar - 1);
-            var curr = GetCandle(bar);
-
-            if (prev == null || curr == null)
+            decimal bestPrice = 0m;
+            decimal bestVol = -1m;
+            foreach (var kv in hist)
             {
-                this.LogInfo($"[VW_TryStart] GetCandle returned null at bar {bar}");
-                return;
-            }
-
-            bool prevBull = IsBull(prev.Open, prev.Close);
-            bool prevBear = IsBear(prev.Open, prev.Close);
-            bool currBull = IsBull(curr.Open, curr.Close);
-            bool currBear = IsBear(curr.Open, curr.Close);
-
-            if ((prevBull && currBull) || (prevBear && currBear))
-            {
-                _vwActive = true;
-                _vwStartBar = bar - 1;
-                _vwLastBar = bar - 1;
-                _vwDirection = prevBull ? +1 : -1;
-                _vwHist.Clear();
-
-                AddBarToHistCustom(_vwHist, _vwStartBar, +1);
-                if (!HasSufficientWindow(_vwHist, minBins: 5, minVol: 50m))
+                if (kv.Value > bestVol)
                 {
-                    // zu klein, noch kein POC berechnen, keine Logs
-                    _vwPOC = 0m;
-                    _vwPrevPOC = 0m;
-                    return;
+                    bestVol = kv.Value;
+                    bestPrice = kv.Key;
                 }
-                _vwPOC = ComputePocFromHist(_vwHist);
-                _vwPrevPOC = _vwPOC;
             }
-        }
-
-        private void VW_UpdateOnBar(int bar)
-        {
-            if (!_vwActive) return;
-
-            if (bar <= _vwLastBar) return;
-
-            AddBarToHistCustom(_vwHist, bar, +1);
-            _vwLastBar = bar;
-            if (!HasSufficientWindow(_vwHist, minBins: 5, minVol: 50m))
-            {
-                // zu klein, noch kein POC berechnen, keine Logs
-                _vwPOC = 0m;
-                _vwPrevPOC = 0m;
-                return;
-            }
-            _vwPrevPOC = _vwPOC;
-            _vwPOC = ComputePocFromHist(_vwHist);
-        }
-
-        private void HandleVolumeWindowFeature(int bar)
-        {
-            if (!_vwActive) VW_TryStart(bar);
-            if (!_vwActive) return;
-
-            var curr = GetCandle(bar);
-            bool currBull = IsBull(curr.Open, curr.Close);
-            bool currBear = IsBear(curr.Open, curr.Close);
-
-            // Umkehr relativ zur Fenster-Richtung pr?fen ? VOR jeglichem Histogramm-Update mit der Umkehrkerze
-            bool reversal =
-                (_vwDirection == +1 && currBear) ||
-                (_vwDirection == -1 && currBull);
-
-            if (reversal)
-            {
-                // WICHTIG: Die Umkehrkerze NICHT ins Histogramm aufnehmen.
-                // POC-Check basiert ausschlie?lich auf dem Fenster bis _vwLastBar (Kerze vor der Umkehr)
-                decimal bodyLow = Math.Min(curr.Open, curr.Close);
-                decimal bodyHigh = Math.Max(curr.Open, curr.Close);
-
-                bool pocInsideBody = _vwPOC >= bodyLow && _vwPOC <= bodyHigh;
-                bool pocChanged = _vwPOC != 0m && _vwPrevPOC != 0m && _vwPOC != _vwPrevPOC;
-
-                if (pocInsideBody && pocChanged)
-                {
-                    VwSignal = true;
-                    VwSignalPrice = _vwPOC;
-
-                    // Richtung aus der Umkehr ableiten (entgegengesetzt zur Fenster-Richtung)
-                    VwSignalDir = (_vwDirection == +1 && currBear) ? -1
-                                : (_vwDirection == -1 && currBull) ? +1
-                                : 0;
-
-                    _vwPendingReset = true; // Reset verz?gert ausf?hren (wie gehabt)
-                }
-                else
-                {
-                    // Kein g?ltiges Signal -> sofort reset
-                    VW_Reset();
-                }
-
-                return; // Fr?hzeitiger Exit: keine Aktualisierung mit der Umkehrkerze
-            }
-
-            // Keine Umkehr: jetzt den aktuellen Bar in das Fenster aufnehmen und POC aktualisieren
-            VW_UpdateOnBar(bar);
+            return bestPrice;
         }
 
         // =========================================================================
@@ -9047,10 +8921,6 @@ namespace MyNamespace.Strategies
                 //this.LogInfo($"[MC-SNAP] barClosed={mcBaseBar} tick={tickDbg:F2} sameRef={sameRef} | cur: POC={_currentMC?.POC:F2} VAH={_currentMC?.VAH:F2} VAL={_currentMC?.VAL:F2} HVNZones={hvnZonesCur} {hvnCurStr} LVNZones={lvnZonesCur} | roll: POC={mcRolling?.POC:F2} VAH={mcRolling?.VAH:F2} VAL={mcRolling?.VAL:F2} HVNZones={hvnZonesRoll} {hvnRollStr} LVNZones={lvnZonesRoll}");
 
                 // Feature auf abgeschlossener Kerze ausf?hren
-                HandleVolumeWindowFeature(mcBaseBar);
-
-
-
                 // Z?hler f?r die NEUE Kerze zur?cksetzen
                 _currentBarBuyTrades = 0;
                 _currentBarSellTrades = 0;
@@ -9058,13 +8928,6 @@ namespace MyNamespace.Strategies
                 // WICHTIG: lastCalculatedBar fortschreiben
                 _lastCalculatedBar = bar;
             }
-
-
-            bool vwSignal = VwSignal;
-            int vwEntryDir = vwSignal ? -_vwDirection : 0;
-            decimal vwEntryPrice = vwSignal ? VwSignalPrice : 0m;
-
-
             decimal buyTrades = _buyTradesSeries.GetValueOrDefault(bar);
             decimal sellTrades = _sellTradesSeries.GetValueOrDefault(bar);
             decimal totalTrades = _buyTradesSeries.GetValueOrDefault(bar) + _sellTradesSeries.GetValueOrDefault(bar);
@@ -11544,18 +11407,12 @@ namespace MyNamespace.Strategies
                     //this.LogInfo($"[DBG] Enter isNewBar: bar={bar}, closed={closed}, now={DateTime.UtcNow:O}, CurrentBar={CurrentBar}, _lastEvalBar={_lastEvalBar}");
                     EvaluateSignalsAndOrders(
                         closed, ovSnapshot, _ofFeaturesHistory, isBlockedLong, isBlockedShort,
-                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, vwSignal, vwEntryDir, vwEntryPrice, currentMarketRegime, detectedPattern, _currentMarketStateV2,
+                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, currentMarketRegime, detectedPattern, _currentMarketStateV2,
                         _currentVwapSnapshot?.Current ?? 0m);
                     _lastEvalBar = closed;
 
                     //this.LogInfo($"[OnCalculate] EvaluateSignalsAndOrders completed for closed={closed}; setting _lastEvalBar={closed}");
                 }
-
-
-                ClearVwSignal();
-                if (_vwPendingReset) { VW_Reset(); _vwPendingReset = false; }
-
-
                 if (!IsRealtimeBar(bar)) return;
 
 
@@ -12398,7 +12255,7 @@ namespace MyNamespace.Strategies
             return tpPrice;
         }
 
-        private void EvaluateSignalsAndOrders(int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, bool vwSignal, int vwEntryDir, decimal vwEntryPrice, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MyNamespace.Strategies.Models.MarketStateV2 currentMarketState, decimal currentVwap)
+        private void EvaluateSignalsAndOrders(int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MyNamespace.Strategies.Models.MarketStateV2 currentMarketState, decimal currentVwap)
         {
             //this.LogInfo($"[DBG-EVAL] Start EvaluateSignalsAndOrders(closed={closed}) at {DateTime.UtcNow:O}");
 
