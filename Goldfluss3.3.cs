@@ -4895,6 +4895,7 @@ namespace MyNamespace.Strategies
         [Display(Name = "SMA Periode",
          GroupName = "SMA Settings",
          Order = 115)] // So wird der Parameter in der UI sinnvoll einsortiert
+        [Browsable(false)]
         [Range(1, 500, ErrorMessage = "Die SMA Periode muss zwischen 1 und 500 liegen.")]
         [Description("Periode f?r den Simple Moving Average (SMA), der als Trendfilter f?r das Signal dient.")]
         public int SmaPeriod { get; set; } = 50; // Standardwert ist 10
