@@ -202,6 +202,319 @@ namespace MyNamespace.Strategies
             }
         }
 
+        public sealed class DailyProfileSettingsWrapper
+        {
+            private readonly Goldfluss3_3 _s;
+
+            public DailyProfileSettingsWrapper(Goldfluss3_3 strategy)
+            {
+                _s = strategy;
+            }
+
+            [Display(Name = "Daily Histogramm Breite (px)",
+                     Description = "Breite der Histogramm-Balken (maximale Ausdehnung) in Pixel.",
+                     Order = 3)]
+            [Range(40, 1000)]
+            public int DailyHistogramWidthPx
+            {
+                get => _s.DailyHistogramWidthPx;
+                set => _s.DailyHistogramWidthPx = value;
+            }
+
+            [Display(Name = "Daily Histogramm Opacity (0..255)",
+                     Description = "Transparenz f?r die Histogramm-F?llung.",
+                     Order = 4)]
+            [Range(5, 255)]
+            public int DailyHistogramOpacity
+            {
+                get => _s.DailyHistogramOpacity;
+                set => _s.DailyHistogramOpacity = value;
+            }
+
+            [Display(Name = "Daily Profile: Volumenquelle",
+                     Description = "Wenn aktiv, nutzt das Daily-Profil pvi.Volume (wie ATAS Market Profile bei Einstellung 'Volumen'). Wenn aus, nutzt Ask+Bid (Lots).",
+                     Order = 10)]
+            public bool DailyProfileUseAtasVolume
+            {
+                get => _s.DailyProfileUseAtasVolume;
+                set => _s.DailyProfileUseAtasVolume = value;
+            }
+        }
+
+        public sealed class DailyProfileWegFreiSettingsWrapper
+        {
+            private readonly Goldfluss3_3 _s;
+
+            public DailyProfileWegFreiSettingsWrapper(Goldfluss3_3 strategy)
+            {
+                _s = strategy;
+            }
+
+            [Display(Name = "Daily WegFrei aktiv",
+                     Description = "Aktiviert ein separates Daily-Volumenprofil (nur für WegFrei) und berücksichtigt Daily HVN/LVN zusätzlich zum MicroComposite (UND-Logik, sofern beide aktiv sind).",
+                     Order = 1)]
+            public bool EnableDailyProfilePathSystem
+            {
+                get => _s.EnableDailyProfilePathSystem;
+                set => _s.EnableDailyProfilePathSystem = value;
+            }
+
+            [Display(Name = "Daily DMinTicks (Mindestabstand Blocker)",
+                     Description = "Mindestabstand in Ticks: Blockt Entry, wenn ein Daily Blocker (POC/VA-Kante/HVN-Zonen-Kante) innerhalb dieser Distanz im Pfad liegt. Analog zu DMinTicks im MicroComposite.",
+                     Order = 1)]
+            [Range(1, 200)]
+            public int DailyDMinTicks
+            {
+                get => _s.DailyDMinTicks;
+                set => _s.DailyDMinTicks = value;
+            }
+
+            [Display(Name = "Daily Recalc alle N Bars",
+                     Description = "Rechenintervall in Bars (Range-Bar kompatibel). 1 = jedes Bar neu berechnen.",
+                     Order = 2)]
+            [Range(1, 500)]
+            public int DailyProfileRecalcEveryNBars
+            {
+                get => _s.DailyProfileRecalcEveryNBars;
+                set => _s.DailyProfileRecalcEveryNBars = value;
+            }
+
+            [Display(Name = "Daily Top HVN Zonen",
+                     Description = "Maximale Anzahl an HVN-Zonen (Daily Profil).",
+                     Order = 2)]
+            [Range(1, 50)]
+            public int DailyTopNHVNs
+            {
+                get => _s.DailyTopNHVNs;
+                set => _s.DailyTopNHVNs = value;
+            }
+
+            [Display(Name = "Daily Top LVN Zonen",
+                     Description = "Maximale Anzahl an LVN-Zonen (Daily Profil).",
+                     Order = 2)]
+            [Range(1, 50)]
+            public int DailyTopNLVNs
+            {
+                get => _s.DailyTopNLVNs;
+                set => _s.DailyTopNLVNs = value;
+            }
+
+            [Display(Name = "Daily Mindestbreite Zone (Ticks)",
+                     Description = "Mindestbreite einer Daily HVN/LVN-Zone in Ticks.",
+                     Order = 2)]
+            [Range(1, 100)]
+            public int DailyMinZoneTicks
+            {
+                get => _s.DailyMinZoneTicks;
+                set => _s.DailyMinZoneTicks = value;
+            }
+
+            [Display(Name = "Daily Min Prominenz",
+                     Description = "Filtert flache Peaks (Daily Profil).",
+                     Order = 2)]
+            [Range(0.0, 1.0)]
+            public decimal DailyMinProminence
+            {
+                get => _s.DailyMinProminence;
+                set => _s.DailyMinProminence = value;
+            }
+
+            [Display(Name = "Daily Min Volumenanteil",
+                     Description = "Filtert Zonen mit sehr kleinem Volumenanteil (Daily Profil).",
+                     Order = 2)]
+            [Range(0.0, 1.0)]
+            public decimal DailyMinVolShare
+            {
+                get => _s.DailyMinVolShare;
+                set => _s.DailyMinVolShare = value;
+            }
+
+            [Display(Name = "Daily Min Breite relativ VA",
+                     Description = "Mindestbreite einer Zone relativ zur Value-Area-Breite (Daily Profil).",
+                     Order = 2)]
+            [Range(0.0, 1.0)]
+            public decimal DailyMinWidthPctVA
+            {
+                get => _s.DailyMinWidthPctVA;
+                set => _s.DailyMinWidthPctVA = value;
+            }
+
+            [Display(Name = "Daily Merge-Gap (Ticks)",
+                     Description = "Zonen in diesem Tick-Abstand werden zusammengef?hrt (Daily Profil).",
+                     Order = 2)]
+            [Range(0, 20)]
+            public int DailyGapTicks
+            {
+                get => _s.DailyGapTicks;
+                set => _s.DailyGapTicks = value;
+            }
+
+            [Display(Name = "Daily Max. Distanzgewicht (Ticks)",
+                     Description = "Skalierung der Entfernung zum aktuellen Preis im Score (Daily Profil).",
+                     Order = 2)]
+            [Range(1, 200)]
+            public int DailyMaxDistTicks
+            {
+                get => _s.DailyMaxDistTicks;
+                set => _s.DailyMaxDistTicks = value;
+            }
+
+            [Display(Name = "Daily Zonen an Value Area klemmen",
+                     Description = "Schneidet alle Daily-HVN/LVN-Zonen an den Value-Area-Grenzen (VAL/VAH) zu.",
+                     Order = 2)]
+            public bool DailyClampZonesToVA
+            {
+                get => _s.DailyClampZonesToVA;
+                set => _s.DailyClampZonesToVA = value;
+            }
+
+            [Display(Name = "Daily Zonen au?erhalb VA zulassen",
+                     Description = "Wenn aktiv, d?rfen Daily HVN/LVN-Zonen auch au?erhalb der Value Area liegen (keine VA-Klemmung; Plateau-Scan ?ber komplette Profil-Achse).",
+                     Order = 2)]
+            public bool DailyAllowZonesOutsideVA
+            {
+                get => _s.DailyAllowZonesOutsideVA;
+                set => _s.DailyAllowZonesOutsideVA = value;
+            }
+
+            [Display(Name = "Daily Zonenbreite begrenzen aktiv",
+                     Description = "Aktiviert eine harte Obergrenze f?r die maximale Breite von Daily-HVN/LVN-Zonen.",
+                     Order = 2)]
+            public bool DailyEnableCapZoneWidth
+            {
+                get => _s.DailyEnableCapZoneWidth;
+                set => _s.DailyEnableCapZoneWidth = value;
+            }
+
+            [Display(Name = "Daily Maximale Zonenbreite (Ticks)",
+                     Description = "Maximale Breite einer Daily-HVN/LVN-Zone in Ticks.",
+                     Order = 2)]
+            [Range(1, 100)]
+            public int DailyCapZoneWidthTicks
+            {
+                get => _s.DailyCapZoneWidthTicks;
+                set => _s.DailyCapZoneWidthTicks = value;
+            }
+
+            [Display(Name = "Daily Plateau-Detektor (HVN/LVN)",
+                     Description = "Erkennt HVN/LVN als zusammenh?ngende High/Low-Volume-Areas per Schwellwert (n?her an ATAS bei breiten Zonen).",
+                     Order = 2)]
+            public bool DailyUsePlateauDetector
+            {
+                get => _s.DailyUsePlateauDetector;
+                set => _s.DailyUsePlateauDetector = value;
+            }
+
+            [Display(Name = "Daily HVN Plateau Schwelle (Anteil vom Max)",
+                     Description = "Schwellwert f?r HVN-Areas: smoothVol >= Anteil * maxSmoothVol.",
+                     Order = 2)]
+            [Range(0.1, 0.95)]
+            public decimal DailyHVNPlateauFrac
+            {
+                get => _s.DailyHVNPlateauFrac;
+                set => _s.DailyHVNPlateauFrac = value;
+            }
+
+            [Display(Name = "Daily LVN Plateau Schwelle (Anteil vom Max)",
+                     Description = "Schwellwert f?r LVN-Areas: smoothVol <= Anteil * maxSmoothVol.",
+                     Order = 2)]
+            [Range(0.01, 0.8)]
+            public decimal DailyLVNPlateauFrac
+            {
+                get => _s.DailyLVNPlateauFrac;
+                set => _s.DailyLVNPlateauFrac = value;
+            }
+
+            [Display(Name = "Daily Smoothing (Ticks)",
+                     Description = "Triangular Smoothing-Spanne für Daily HVN/LVN.",
+                     Order = 3)]
+            [Range(1, 50)]
+            public int DailySmoothTicks
+            {
+                get => _s.DailySmoothTicks;
+                set => _s.DailySmoothTicks = value;
+            }
+
+            [Display(Name = "Daily Top Peaks",
+                     Description = "Maximale Anzahl HVN-/LVN-Zentren für Daily Profil.",
+                     Order = 4)]
+            [Range(1, 50)]
+            public int DailyTopNPeaks
+            {
+                get => _s.DailyTopNPeaks;
+                set => _s.DailyTopNPeaks = value;
+            }
+
+            [Display(Name = "Daily Mindest-LVNs im Pfad",
+                     Description = "Wie viele LVN-Korridore m?ssen im Daily-Profil im Pfad liegen.",
+                     Order = 5)]
+            [Range(0, 10)]
+            public int DailyRequiredLVNsInPath
+            {
+                get => _s.DailyRequiredLVNsInPath;
+                set => _s.DailyRequiredLVNsInPath = value;
+            }
+
+            [Display(Name = "Daily VA-Kanten au?erhalb Value lockern",
+                     Description = "Wie MicroComposite: wenn Preis au?erhalb VA, VA-Kanten weniger streng behandeln.",
+                     Order = 6)]
+            public bool DailyRelaxVAEdgesWhenOutsideValue
+            {
+                get => _s.DailyRelaxVAEdgesWhenOutsideValue;
+                set => _s.DailyRelaxVAEdgesWhenOutsideValue = value;
+            }
+
+            [Display(Name = "Daily HVN Strength (0..100)",
+                     Description = "Ein einziger Stärkeregler für Daily-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
+                     Order = 7)]
+            [Range(0, 100)]
+            public int DailyHVNStrength
+            {
+                get => _s.DailyHVNStrength;
+                set => _s.DailyHVNStrength = value;
+            }
+
+            [Display(Name = "Daily HVN-St?rke vs. POC (%)",
+                     Description = "HVN gilt als stark, wenn Volumen >= Anteil des POC-Volumens (Daily Profil).",
+                     Order = 8)]
+            [Range(0.1, 1.0)]
+            public decimal DailyHVNStrengthVsPOC
+            {
+                get => _s.DailyHVNStrengthVsPOC;
+                set => _s.DailyHVNStrengthVsPOC = value;
+            }
+
+            [Display(Name = "Daily HVN-St?rke vs. Median (Faktor)",
+                     Description = "HVN gilt als stark, wenn Volumen >= Faktor * MedianVol (Daily Profil).",
+                     Order = 9)]
+            [Range(0.5, 3.0)]
+            public decimal DailyHVNStrengthVsMedian
+            {
+                get => _s.DailyHVNStrengthVsMedian;
+                set => _s.DailyHVNStrengthVsMedian = value;
+            }
+
+            [Display(Name = "Daily Mindest-Prominenz vs. Median (%)",
+                     Description = "Mindest-Prominenz für Peaks im Daily Profil.",
+                     Order = 10)]
+            [Range(0.05, 0.5)]
+            public decimal DailyMinProminenceVsMedian
+            {
+                get => _s.DailyMinProminenceVsMedian;
+                set => _s.DailyMinProminenceVsMedian = value;
+            }
+
+            [Display(Name = "Daily Mindest-Abstand Blocker vs. Risk (Faktor)",
+                     Description = "Blocker muss mind. RiskTicks * Faktor entfernt sein (Daily Profil).",
+                     Order = 11)]
+            [Range(0.5, 5.0)]
+            public int DailyMinBlockerDistanceTicksVsRisk
+            {
+                get => _s.DailyMinBlockerDistanceTicksVsRisk;
+                set => _s.DailyMinBlockerDistanceTicksVsRisk = value;
+            }
+        }
+
         public sealed class MicroCompositeWegFreiSettingsWrapper
         {
             private readonly Goldfluss3_3 _s;
@@ -314,6 +627,8 @@ namespace MyNamespace.Strategies
 
         private readonly MicroCompositeSettingsWrapper _microCompositeSettings;
         private readonly MicroCompositeWegFreiSettingsWrapper _microCompositeWegFreiSettings;
+        private readonly DailyProfileSettingsWrapper _dailyProfileSettings;
+        private readonly DailyProfileWegFreiSettingsWrapper _dailyProfileWegFreiSettings;
 
         AttributeCollection ICustomTypeDescriptor.GetAttributes()
             => TypeDescriptor.GetProvider(this).GetTypeDescriptor(this).GetAttributes();
@@ -5267,6 +5582,25 @@ namespace MyNamespace.Strategies
                  Order = 2)]
         public bool ShowDailyHistogram { get; set; } = false;
 
+        [Category("Daily Profile")]
+        [DisplayName("Daily Profile Einstellungen")]
+        [Description("Daily Profile Parameter (zugeklappt, bei Bedarf aufklappen).")]
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        public DailyProfileSettingsWrapper DailyProfileSettings
+        {
+            get => _dailyProfileSettings;
+        }
+
+        [Category("Daily Profile")]
+        [DisplayName("Daily Profile Weg-Frei-Einstellungen")]
+        [Description("Daily Profile Weg-Frei/Path/Blocking Parameter (zugeklappt, bei Bedarf aufklappen).")]
+        [TypeConverter(typeof(ExpandableObjectConverter))]
+        public DailyProfileWegFreiSettingsWrapper DailyProfileWegFreiSettings
+        {
+            get => _dailyProfileWegFreiSettings;
+        }
+
+        [Browsable(false)]
         [Display(Name = "Daily Histogramm Breite (px)",
                  GroupName = "Daily Profile Einstellungen",
                  Description = "Breite der Histogramm-Balken (maximale Ausdehnung) in Pixel.",
@@ -5274,6 +5608,7 @@ namespace MyNamespace.Strategies
         [Range(40, 1000)]
         public int DailyHistogramWidthPx { get; set; } = 600;
 
+        [Browsable(false)]
         [Display(Name = "Daily Histogramm Opacity (0..255)",
                  GroupName = "Daily Profile Einstellungen",
                  Description = "Transparenz f?r die Histogramm-F?llung.",
@@ -5281,6 +5616,7 @@ namespace MyNamespace.Strategies
         [Range(5, 255)]
         public int DailyHistogramOpacity { get; set; } = 60;
 
+        [Browsable(false)]
         [Display(Name = "Daily Profile: Volumenquelle",
                  GroupName = "Daily Profile Einstellungen",
                  Description = "Wenn aktiv, nutzt das Daily-Profil pvi.Volume (wie ATAS Market Profile bei Einstellung 'Volumen'). Wenn aus, nutzt Ask+Bid (Lots).",
@@ -5406,12 +5742,14 @@ namespace MyNamespace.Strategies
                  Order = 3)]
         public bool UseMicroCompositeLVNsForWegFreiAndDynamicTP { get; set; } = false;
 
+        [Browsable(false)]
         [Display(Name = "Daily WegFrei aktiv",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Aktiviert ein separates Daily-Volumenprofil (nur für WegFrei) und berücksichtigt Daily HVN/LVN zusätzlich zum MicroComposite (UND-Logik, sofern beide aktiv sind).",
                  Order = 1)]
         public bool EnableDailyProfilePathSystem { get; set; } = false;
 
+        [Browsable(false)]
         [Display(Name = "Daily DMinTicks (Mindestabstand Blocker)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Mindestabstand in Ticks: Blockt Entry, wenn ein Daily Blocker (POC/VA-Kante/HVN-Zonen-Kante) innerhalb dieser Distanz im Pfad liegt. Analog zu DMinTicks im MicroComposite.",
@@ -5419,6 +5757,7 @@ namespace MyNamespace.Strategies
         [Range(1, 200)]
         public int DailyDMinTicks { get; set; } = 8;
 
+        [Browsable(false)]
         [Display(Name = "Daily Recalc alle N Bars",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Rechenintervall in Bars (Range-Bar kompatibel). 1 = jedes Bar neu berechnen.",
@@ -5426,6 +5765,7 @@ namespace MyNamespace.Strategies
         [Range(1, 500)]
         public int DailyProfileRecalcEveryNBars { get; set; } = 1;
 
+        [Browsable(false)]
         [Display(Name = "Daily Top HVN Zonen",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Maximale Anzahl an HVN-Zonen (Daily Profil).",
@@ -5433,6 +5773,7 @@ namespace MyNamespace.Strategies
         [Range(1, 50)]
         public int DailyTopNHVNs { get; set; } = 8;
 
+        [Browsable(false)]
         [Display(Name = "Daily Top LVN Zonen",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Maximale Anzahl an LVN-Zonen (Daily Profil).",
@@ -5440,6 +5781,7 @@ namespace MyNamespace.Strategies
         [Range(1, 50)]
         public int DailyTopNLVNs { get; set; } = 4;
 
+        [Browsable(false)]
         [Display(Name = "Daily Mindestbreite Zone (Ticks)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Mindestbreite einer Daily HVN/LVN-Zone in Ticks.",
@@ -5447,6 +5789,7 @@ namespace MyNamespace.Strategies
         [Range(1, 100)]
         public int DailyMinZoneTicks { get; set; } = 2;
 
+        [Browsable(false)]
         [Display(Name = "Daily Min Prominenz",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Filtert flache Peaks (Daily Profil).",
@@ -5454,6 +5797,7 @@ namespace MyNamespace.Strategies
         [Range(0.0, 1.0)]
         public decimal DailyMinProminence { get; set; } = 0.12m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Min Volumenanteil",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Filtert Zonen mit sehr kleinem Volumenanteil (Daily Profil).",
@@ -5461,6 +5805,7 @@ namespace MyNamespace.Strategies
         [Range(0.0, 1.0)]
         public decimal DailyMinVolShare { get; set; } = 0.004m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Min Breite relativ VA",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Mindestbreite einer Zone relativ zur Value-Area-Breite (Daily Profil).",
@@ -5468,6 +5813,7 @@ namespace MyNamespace.Strategies
         [Range(0.0, 1.0)]
         public decimal DailyMinWidthPctVA { get; set; } = 0.02m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Merge-Gap (Ticks)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Zonen in diesem Tick-Abstand werden zusammengef?hrt (Daily Profil).",
@@ -5475,6 +5821,7 @@ namespace MyNamespace.Strategies
         [Range(0, 20)]
         public int DailyGapTicks { get; set; } = 1;
 
+        [Browsable(false)]
         [Display(Name = "Daily Max. Distanzgewicht (Ticks)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Skalierung der Entfernung zum aktuellen Preis im Score (Daily Profil).",
@@ -5482,24 +5829,28 @@ namespace MyNamespace.Strategies
         [Range(1, 200)]
         public int DailyMaxDistTicks { get; set; } = 40;
 
+        [Browsable(false)]
         [Display(Name = "Daily Zonen an Value Area klemmen",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Schneidet alle Daily-HVN/LVN-Zonen an den Value-Area-Grenzen (VAL/VAH) zu.",
                  Order = 2)]
         public bool DailyClampZonesToVA { get; set; } = true;
 
+        [Browsable(false)]
         [Display(Name = "Daily Zonen au?erhalb VA zulassen",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Wenn aktiv, d?rfen Daily HVN/LVN-Zonen auch au?erhalb der Value Area liegen (keine VA-Klemmung; Plateau-Scan ?ber komplette Profil-Achse).",
                  Order = 2)]
         public bool DailyAllowZonesOutsideVA { get; set; } = true;
 
+        [Browsable(false)]
         [Display(Name = "Daily Zonenbreite begrenzen aktiv",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Aktiviert eine harte Obergrenze f?r die maximale Breite von Daily-HVN/LVN-Zonen.",
                  Order = 2)]
         public bool DailyEnableCapZoneWidth { get; set; } = true;
 
+        [Browsable(false)]
         [Display(Name = "Daily Maximale Zonenbreite (Ticks)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Maximale Breite einer Daily-HVN/LVN-Zone in Ticks.",
@@ -5507,12 +5858,14 @@ namespace MyNamespace.Strategies
         [Range(1, 100)]
         public int DailyCapZoneWidthTicks { get; set; } = 10;
 
+        [Browsable(false)]
         [Display(Name = "Daily Plateau-Detektor (HVN/LVN)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Erkennt HVN/LVN als zusammenh?ngende High/Low-Volume-Areas per Schwellwert (n?her an ATAS bei breiten Zonen).",
                  Order = 2)]
         public bool DailyUsePlateauDetector { get; set; } = true;
 
+        [Browsable(false)]
         [Display(Name = "Daily HVN Plateau Schwelle (Anteil vom Max)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Schwellwert f?r HVN-Areas: smoothVol >= Anteil * maxSmoothVol.",
@@ -5520,6 +5873,7 @@ namespace MyNamespace.Strategies
         [Range(0.1, 0.95)]
         public decimal DailyHVNPlateauFrac { get; set; } = 0.65m;
 
+        [Browsable(false)]
         [Display(Name = "Daily LVN Plateau Schwelle (Anteil vom Max)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Schwellwert f?r LVN-Areas: smoothVol <= Anteil * maxSmoothVol.",
@@ -5527,6 +5881,7 @@ namespace MyNamespace.Strategies
         [Range(0.01, 0.8)]
         public decimal DailyLVNPlateauFrac { get; set; } = 0.25m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Smoothing (Ticks)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Triangular Smoothing-Spanne für Daily HVN/LVN.",
@@ -5534,6 +5889,7 @@ namespace MyNamespace.Strategies
         [Range(1, 50)]
         public int DailySmoothTicks { get; set; } = 3;
 
+        [Browsable(false)]
         [Display(Name = "Daily Top Peaks",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Maximale Anzahl HVN-/LVN-Zentren für Daily Profil.",
@@ -5541,6 +5897,7 @@ namespace MyNamespace.Strategies
         [Range(1, 50)]
         public int DailyTopNPeaks { get; set; } = 6;
 
+        [Browsable(false)]
         [Display(Name = "Daily Mindest-LVNs im Pfad",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Wie viele LVN-Korridore m?ssen im Daily-Profil im Pfad liegen.",
@@ -5548,12 +5905,14 @@ namespace MyNamespace.Strategies
         [Range(0, 10)]
         public int DailyRequiredLVNsInPath { get; set; } = 1;
 
+        [Browsable(false)]
         [Display(Name = "Daily VA-Kanten au?erhalb Value lockern",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Wie MicroComposite: wenn Preis au?erhalb VA, VA-Kanten weniger streng behandeln.",
                  Order = 6)]
         public bool DailyRelaxVAEdgesWhenOutsideValue { get; set; } = true;
 
+        [Browsable(false)]
         [Display(Name = "Daily HVN Strength (0..100)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Ein einziger Stärkeregler für Daily-HVN-Blocking: 50 = neutral, höher = strenger (weniger blockt), niedriger = liberaler (mehr blockt). Intern werden Inside/Outside-VA Schwellen (POC/Median/Prominenz) angepasst.",
@@ -5561,6 +5920,7 @@ namespace MyNamespace.Strategies
         [Range(0, 100)]
         public int DailyHVNStrength { get; set; } = 50;
 
+        [Browsable(false)]
         [Display(Name = "Daily HVN-St?rke vs. POC (%)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "HVN gilt als stark, wenn Volumen >= Anteil des POC-Volumens (Daily Profil).",
@@ -5568,6 +5928,7 @@ namespace MyNamespace.Strategies
         [Range(0.1, 1.0)]
         public decimal DailyHVNStrengthVsPOC { get; set; } = 0.40m;
 
+        [Browsable(false)]
         [Display(Name = "Daily HVN-St?rke vs. Median (Faktor)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "HVN gilt als stark, wenn Volumen >= Faktor * MedianVol (Daily Profil).",
@@ -5575,6 +5936,7 @@ namespace MyNamespace.Strategies
         [Range(0.5, 3.0)]
         public decimal DailyHVNStrengthVsMedian { get; set; } = 1.20m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Mindest-Prominenz vs. Median (%)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Mindest-Prominenz für Peaks im Daily Profil.",
@@ -5582,6 +5944,7 @@ namespace MyNamespace.Strategies
         [Range(0.05, 0.5)]
         public decimal DailyMinProminenceVsMedian { get; set; } = 0.15m;
 
+        [Browsable(false)]
         [Display(Name = "Daily Mindest-Abstand Blocker vs. Risk (Faktor)",
                  GroupName = "Daily Profile Weg-Frei-Einstellungen",
                  Description = "Blocker muss mind. RiskTicks * Faktor entfernt sein (Daily Profil).",
@@ -5867,6 +6230,8 @@ namespace MyNamespace.Strategies
 
             _microCompositeSettings = new MicroCompositeSettingsWrapper(this);
             _microCompositeWegFreiSettings = new MicroCompositeWegFreiSettingsWrapper(this);
+            _dailyProfileSettings = new DailyProfileSettingsWrapper(this);
+            _dailyProfileWegFreiSettings = new DailyProfileWegFreiSettingsWrapper(this);
             // Lock - Objekt: kann inline beim Feld deklariert werden; hier optional nochmal setzen
             // _ofFeaturesSync = new object(); // nur erlaubt, wenn nicht inline initialisiert
             _ofFeaturesByBar = new Dictionary<int, OfFeatures>();
