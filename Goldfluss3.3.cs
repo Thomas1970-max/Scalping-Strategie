@@ -4604,7 +4604,7 @@ namespace MyNamespace.Strategies
         [Display(Name = "Timeout (Bars)", GroupName = "Order Timeout", Order = 110)]
         [Range(1, 100, ErrorMessage = "Please enter a value between 1 and 100.")]
         [Description("Anzahl der Bars, nach denen eine nicht gef?llte Entry-Order gel?scht wird.")] // F?ge Beschreibung hinzu
-        public int OrderTimeoutBars { get; set; } = 30;
+        public int OrderTimeoutBars { get; set; } = 2;
 
         [OFTParameter]
         [Category("CSV Export")]
