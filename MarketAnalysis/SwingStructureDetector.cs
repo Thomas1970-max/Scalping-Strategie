@@ -17,6 +17,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public decimal Confidence { get; set; } = 0m;
         public decimal? LastSwingHigh { get; set; }
         public decimal? LastSwingLow { get; set; }
+        public int BarsSinceBreak { get; set; } = int.MaxValue;
+        public SwingStructureBias LastBreakDirection { get; set; } = SwingStructureBias.None;
+        public decimal? LastBreakLevel { get; set; }
         public decimal? BufferedHigh { get; set; }
         public decimal? BufferedLow { get; set; }
         public decimal? InvalidationLevel { get; set; }
@@ -34,6 +37,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private decimal? _lastSwingHigh;
         private decimal? _prevSwingLow;
         private decimal? _lastSwingLow;
+
+        private int _barsSinceBreak = int.MaxValue;
+        private SwingStructureBias _lastBreakDirection = SwingStructureBias.None;
+        private decimal? _lastBreakLevel;
 
         private struct Bar
         {
@@ -57,6 +64,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
             _lastSwingHigh = null;
             _prevSwingLow = null;
             _lastSwingLow = null;
+
+            _barsSinceBreak = int.MaxValue;
+            _lastBreakDirection = SwingStructureBias.None;
+            _lastBreakLevel = null;
         }
 
         public void AddBar(decimal high, decimal low, decimal close)
@@ -65,7 +76,53 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (_bars.Count > _maxBars)
                 _bars.RemoveAt(0);
 
+            if (_barsSinceBreak != int.MaxValue)
+                _barsSinceBreak++;
+
             TryConfirmSwingAt(_bars.Count - 1 - _right);
+
+            DetectFreshBreak();
+        }
+
+        private void DetectFreshBreak()
+        {
+            if (_bars.Count < 2)
+                return;
+
+            var prevClose = _bars[_bars.Count - 2].Close;
+            var lastClose = _bars[_bars.Count - 1].Close;
+
+            if (_prevSwingLow.HasValue && _lastSwingLow.HasValue && _lastSwingHigh.HasValue)
+            {
+                var l1 = _prevSwingLow.Value;
+                var l2 = _lastSwingLow.Value;
+                var h1 = _lastSwingHigh.Value;
+                bool hl = l2 > l1;
+                bool freshBreak = prevClose <= h1 && lastClose > h1;
+                if (hl && freshBreak)
+                {
+                    _barsSinceBreak = 0;
+                    _lastBreakDirection = SwingStructureBias.Bullish;
+                    _lastBreakLevel = h1;
+                    return;
+                }
+            }
+
+            if (_prevSwingHigh.HasValue && _lastSwingHigh.HasValue && _lastSwingLow.HasValue)
+            {
+                var h1 = _prevSwingHigh.Value;
+                var h2 = _lastSwingHigh.Value;
+                var l1 = _lastSwingLow.Value;
+                bool lh = h2 < h1;
+                bool freshBreak = prevClose >= l1 && lastClose < l1;
+                if (lh && freshBreak)
+                {
+                    _barsSinceBreak = 0;
+                    _lastBreakDirection = SwingStructureBias.Bearish;
+                    _lastBreakLevel = l1;
+                    return;
+                }
+            }
         }
 
         public SwingStructureSignal GetSignal()
@@ -74,7 +131,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
             {
                 BarsBuffered = _bars.Count,
                 LastSwingHigh = _lastSwingHigh,
-                LastSwingLow = _lastSwingLow
+                LastSwingLow = _lastSwingLow,
+                BarsSinceBreak = _barsSinceBreak,
+                LastBreakDirection = _lastBreakDirection,
+                LastBreakLevel = _lastBreakLevel
             };
 
             if (_bars.Count == 0)
