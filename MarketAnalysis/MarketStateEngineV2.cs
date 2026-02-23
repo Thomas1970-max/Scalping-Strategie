@@ -108,6 +108,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                      swingSig.Confidence >= MinSwingConfidence;
 
             state.IsTrendContinuing = isTrendContinuing;
+            state.SwingBias = swingSig.Bias;
+            state.SwingConfidence = swingSig.Confidence;
+            state.SwingBarsSinceBreak = swingSig.BarsSinceBreak;
 
             // ---- POC staircase index (6 bars => 5 steps) ----
             int staircase = UpdateStaircase(input.CandlePocPrice, input.CurrentVAH, input.CurrentVAL);

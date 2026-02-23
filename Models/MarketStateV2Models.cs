@@ -48,6 +48,10 @@ namespace MyNamespace.Strategies.Models
         public bool InPullbackZone { get; set; } = false; // zwischen VWAP und 1σ in Trendrichtung
 
         public bool IsTrendContinuing { get; set; } = false;
+
+        public MarketAnalysis.SwingStructureBias SwingBias { get; set; } = MarketAnalysis.SwingStructureBias.None;
+        public decimal SwingConfidence { get; set; } = 0m;
+        public int SwingBarsSinceBreak { get; set; } = int.MaxValue;
     }
 
     public readonly struct MarketStateInputV2
