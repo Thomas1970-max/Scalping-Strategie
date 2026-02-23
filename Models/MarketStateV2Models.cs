@@ -52,6 +52,7 @@ namespace MyNamespace.Strategies.Models
         public MarketAnalysis.SwingStructureBias SwingBias { get; set; } = MarketAnalysis.SwingStructureBias.None;
         public decimal SwingConfidence { get; set; } = 0m;
         public int SwingBarsSinceBreak { get; set; } = int.MaxValue;
+        public MarketAnalysis.SwingStructureBias SwingLastBreakDirection { get; set; } = MarketAnalysis.SwingStructureBias.None;
     }
 
     public readonly struct MarketStateInputV2

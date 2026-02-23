@@ -96,21 +96,28 @@ namespace MyNamespace.Strategies.MarketAnalysis
             bool swingBiasMatches = (effectiveBias == MarketBiasV2.Long && swingSig.Bias == SwingStructureBias.Bullish)
                                     || (effectiveBias == MarketBiasV2.Short && swingSig.Bias == SwingStructureBias.Bearish);
 
+            bool breakDirMatches = (effectiveBias == MarketBiasV2.Long && swingSig.LastBreakDirection == SwingStructureBias.Bullish)
+                                   || (effectiveBias == MarketBiasV2.Short && swingSig.LastBreakDirection == SwingStructureBias.Bearish);
+
             int maxAgeBars = input.Regime == MarketRegime.Fast ? 15 : 25;
             bool breakRecentEnough = swingSig.BarsSinceBreak != int.MaxValue && swingSig.BarsSinceBreak <= maxAgeBars;
 
             const decimal MinSwingConfidence = 0.3m;
+            bool trendContinuingByActiveBias = swingSig.Bias != SwingStructureBias.None &&
+                                               swingBiasMatches &&
+                                               swingSig.Confidence >= MinSwingConfidence;
+
+            bool trendContinuingByRecentBreakFallback = breakRecentEnough && breakDirMatches;
+
             bool isTrendContinuing = state.AnchorTrendConfirmed &&
                                      effectiveBias != MarketBiasV2.Neutral &&
-                                     swingSig.Bias != SwingStructureBias.None &&
-                                     swingBiasMatches &&
-                                     breakRecentEnough &&
-                                     swingSig.Confidence >= MinSwingConfidence;
+                                     (trendContinuingByActiveBias || trendContinuingByRecentBreakFallback);
 
             state.IsTrendContinuing = isTrendContinuing;
             state.SwingBias = swingSig.Bias;
             state.SwingConfidence = swingSig.Confidence;
             state.SwingBarsSinceBreak = swingSig.BarsSinceBreak;
+            state.SwingLastBreakDirection = swingSig.LastBreakDirection;
 
             // ---- POC staircase index (6 bars => 5 steps) ----
             int staircase = UpdateStaircase(input.CandlePocPrice, input.CurrentVAH, input.CurrentVAL);

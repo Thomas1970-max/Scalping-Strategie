@@ -11823,7 +11823,7 @@ namespace MyNamespace.Strategies
                                 }
 
                                 var volaKurz = VolaKurzDe(VolatilitaetDe(_currentMarketStateV2?.VolatilityMultiplier, sd1));
-                                _marketStateV2OverlayText = $"{PhaseDe(_currentMarketStateV2?.Phase)} | Bias={BiasDe(_currentMarketStateV2?.Bias)} | Vola={volaKurz} | TrendCont={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")}";
+                                _marketStateV2OverlayText = $"{PhaseDe(_currentMarketStateV2?.Phase)} | Bias={BiasDe(_currentMarketStateV2?.Bias)} | Vola={volaKurz} | TrendCont={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")} | SwingLastBreakDir={_currentMarketStateV2?.SwingLastBreakDirection}";
 
                                 var v2Sig = SmartLogger.ComposeSignature(
                                     ("bar", (feat?.Bar ?? ovSnapshot.Bar).ToString()),
@@ -11835,7 +11835,7 @@ namespace MyNamespace.Strategies
                                     barIndex: feat?.Bar ?? ovSnapshot.Bar,
                                     message: $"Bar {feat?.Bar ?? ovSnapshot.Bar}: Phase={PhaseDe(_currentMarketStateV2?.Phase)} [{_currentMarketStateV2?.Phase}] | Bias={BiasDe(_currentMarketStateV2?.Bias)} | " +
                                              $"Volatilität={VolatilitaetDe(_currentMarketStateV2?.VolatilityMultiplier, sd1)} (Multiplikator={_currentMarketStateV2?.VolatilityMultiplier:F2}, 1σ={sd1:F2}) | " +
-                                             $"TrendContinuing={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")} | SwingBias={_currentMarketStateV2?.SwingBias} | SwingConf={_currentMarketStateV2?.SwingConfidence:F2} | SwingBarsSinceBreak={_currentMarketStateV2?.SwingBarsSinceBreak} | " +
+                                             $"TrendContinuing={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")} | SwingBias={_currentMarketStateV2?.SwingBias} | SwingConf={_currentMarketStateV2?.SwingConfidence:F2} | SwingBarsSinceBreak={_currentMarketStateV2?.SwingBarsSinceBreak} | SwingLastBreakDir={_currentMarketStateV2?.SwingLastBreakDirection} | " +
                                              $"VWAP-Trendstärke={VwapTrendstaerkeDe(_currentMarketStateV2?.ZSlope)} | " +
                                              $"POC-Treppenstruktur={PocTreppenstrukturDe(_currentMarketStateV2?.StaircaseIndex)} (Index={_currentMarketStateV2?.StaircaseIndex}) | " +
                                              $"VA={(inVa ? "✅ drin" : "❌ draußen")} (VAL={currentVAL:F2}, VAH={currentVAH:F2}) | " +
@@ -11850,6 +11850,7 @@ namespace MyNamespace.Strategies
                             this.LogWarn($"[OnCalculate MarketStateV2] failed: {exV2.GetType().Name}: {exV2.Message}");
                         }
                     }
+
                     catch (Exception exOuter)
                     {
                         this.LogWarn($"[OnCalculate NEW LOG] Unexpected exception in pattern/marketstate block: {exOuter.GetType().Name}: {exOuter.Message}\n{exOuter.StackTrace}");
