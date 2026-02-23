@@ -46,6 +46,8 @@ namespace MyNamespace.Strategies.Models
         public decimal Sd1 { get; set; } = 0m;
         public decimal SigmaFromVwap { get; set; } = 0m; // (Close - VWAP) / SD1
         public bool InPullbackZone { get; set; } = false; // zwischen VWAP und 1σ in Trendrichtung
+
+        public bool IsTrendContinuing { get; set; } = false;
     }
 
     public readonly struct MarketStateInputV2
@@ -53,6 +55,7 @@ namespace MyNamespace.Strategies.Models
         public MarketStateInputV2(
             int bar,
             decimal high,
+            decimal low,
             decimal close,
             decimal vwap,
             decimal upperBand1,
@@ -68,6 +71,7 @@ namespace MyNamespace.Strategies.Models
             : this(
                 bar: bar,
                 high: high,
+                low: low,
                 close: close,
                 vwap: vwap,
                 upperBand1: upperBand1,
@@ -90,6 +94,7 @@ namespace MyNamespace.Strategies.Models
         public MarketStateInputV2(
             int bar,
             decimal high,
+            decimal low,
             decimal close,
             decimal vwap,
             decimal upperBand1,
@@ -109,6 +114,7 @@ namespace MyNamespace.Strategies.Models
         {
             Bar = bar;
             High = high;
+            Low = low;
             Close = close;
             Vwap = vwap;
             UpperBand1 = upperBand1;
@@ -129,6 +135,7 @@ namespace MyNamespace.Strategies.Models
 
         public int Bar { get; }
         public decimal High { get; }
+        public decimal Low { get; }
         public decimal Close { get; }
         public decimal Vwap { get; }
         public decimal UpperBand1 { get; }

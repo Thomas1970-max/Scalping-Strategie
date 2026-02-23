@@ -825,6 +825,9 @@ namespace MyNamespace.Strategies.Orderflow
             if (!IsBiasOk(_direction, currentMarketState.Bias) && !IsBiasOk(_direction, currentDirectionalBias))
                 return PatternEvaluationResult.NotDetected(Type, "BiasGate: wrong direction");
 
+            if (!currentMarketState.IsTrendContinuing)
+                return PatternEvaluationResult.NotDetected(Type, "StructureGate: trend not continuing");
+
             int phaseLookbackBars = thresholds.ContinuationPhaseLookbackBars ?? 6;
             phaseLookbackBars = Math.Max(0, phaseLookbackBars);
             bool phaseOkNow = IsPhaseOk(currentMarketState.Phase);

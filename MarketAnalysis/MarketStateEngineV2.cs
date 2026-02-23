@@ -22,6 +22,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private readonly Queue<(decimal poc, decimal vah, decimal val)> _pocVaWindow = new Queue<(decimal poc, decimal vah, decimal val)>();
         private readonly Queue<(decimal high, decimal close, decimal vwap, decimal upper1, decimal lower1, decimal upper2, decimal lower2)> _priceWindow = new Queue<(decimal high, decimal close, decimal vwap, decimal upper1, decimal lower1, decimal upper2, decimal lower2)>();
 
+        private readonly SwingStructureDetector _swingDetector = new SwingStructureDetector(leftBars: 2, rightBars: 2, maxBars: 200);
+
         private MarketPhaseV2? _prevPhase;
         private MarketBiasV2 _prevBias = MarketBiasV2.Neutral;
         private MarketRegime? _prevRegime;
@@ -80,6 +82,28 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
             var effectiveBias = DetermineEffectiveBias(state.Bias, zSlope);
 
+            SwingStructureSignal swingSig;
+            try
+            {
+                _swingDetector.AddBar(input.High, input.Low, input.Close);
+                swingSig = _swingDetector.GetSignal();
+            }
+            catch
+            {
+                swingSig = new SwingStructureSignal();
+            }
+
+            bool swingBiasMatches = (effectiveBias == MarketBiasV2.Long && swingSig.Bias == SwingStructureBias.Bullish)
+                                    || (effectiveBias == MarketBiasV2.Short && swingSig.Bias == SwingStructureBias.Bearish);
+
+            const decimal MinSwingConfidence = 0.5m;
+            bool isTrendContinuing = state.AnchorTrendConfirmed &&
+                                     effectiveBias != MarketBiasV2.Neutral &&
+                                     swingBiasMatches &&
+                                     swingSig.Confidence >= MinSwingConfidence;
+
+            state.IsTrendContinuing = isTrendContinuing;
+
             // ---- POC staircase index (6 bars => 5 steps) ----
             int staircase = UpdateStaircase(input.CandlePocPrice, input.CurrentVAH, input.CurrentVAL);
             state.StaircaseIndex = staircase;
@@ -118,7 +142,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                                     (state.Bias == MarketBiasV2.Short && sigma <= 0m && sigma >= -1.0m));
 
             // Momentum_Refuel (scalping refuel above Band1): cool-down after breakout into a confirmed HTF zone.
-            if (IsMomentumRefuel(input, effectiveBias, signedSigma, staircase, zSlope))
+            if (isTrendContinuing && IsMomentumRefuel(input, effectiveBias, signedSigma, staircase, zSlope))
             {
                 state.Bias = effectiveBias;
                 state.Phase = MarketPhaseV2.Momentum_Refuel;
@@ -162,6 +186,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             //   staircase break, optional vorherige Phase trendig).
             bool healthyPullback = state.AnchorTrendConfirmed &&
                                   state.InPullbackZone &&
+                                  isTrendContinuing &&
                                   (!UseHardRegimeCooldownGateForHealthyPullback
                                       ? input.Regime != MarketRegime.Fast
                                       : (input.Regime != MarketRegime.Fast && regimeCooling)) &&

@@ -11403,6 +11403,7 @@ namespace MyNamespace.Strategies
                                 var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
                                     bar: feat?.Bar ?? ovSnapshot.Bar,
                                     high: ovSnapshot.High,
+                                    low: ovSnapshot.Low,
                                     close: ovSnapshot.Close,
                                     vwap: _currentVwapSnapshot.Current,
                                     upperBand1: _currentVwapSnapshot.UpperBand1,
@@ -11728,6 +11729,7 @@ namespace MyNamespace.Strategies
                                 var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
                                     bar: feat?.Bar ?? ovSnapshot.Bar,
                                     high: ovSnapshot.High,
+                                    low: ovSnapshot.Low,
                                     close: ovSnapshot.Close,
                                     vwap: _currentVwapSnapshot.Current,
                                     upperBand1: _currentVwapSnapshot.UpperBand1,
