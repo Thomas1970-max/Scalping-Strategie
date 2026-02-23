@@ -1875,7 +1875,14 @@ namespace MyNamespace.Strategies.Orderflow
 
             // --- Scoring ---
             tracker.SessionLastEvalBar = currentSnapshot.Bar;
-            var prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
+            // Prefer the immediate previous bar inside the session for UA→FA detection.
+            // GetPreviousClosedSnapshot can skip bars (e.g. missing snapshots) and would then miss a UA→FA that
+            // the session protocol (which iterates bar-by-bar) correctly prints.
+            OvSnapshot? prev = null;
+            if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
+                prev = prevF.Snapshot;
+            else
+                prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
             if (prev != null)
             {
                 bool prevUa = IsUnfinishedAuction(prev, thresholds, _direction);
