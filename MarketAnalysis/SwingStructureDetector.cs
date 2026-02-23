@@ -222,7 +222,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             for (int i = centerIndex - _left; i <= centerIndex + _right; i++)
             {
                 if (i == centerIndex) continue;
-                if (_bars[i].High >= center.High)
+                if (_bars[i].High > center.High)
                 {
                     isSwingHigh = false;
                     break;
@@ -233,7 +233,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             for (int i = centerIndex - _left; i <= centerIndex + _right; i++)
             {
                 if (i == centerIndex) continue;
-                if (_bars[i].Low <= center.Low)
+                if (_bars[i].Low < center.Low)
                 {
                     isSwingLow = false;
                     break;
