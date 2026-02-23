@@ -169,6 +169,9 @@ namespace MyNamespace.Strategies.Models
             set => ContinuationCompressionGapTicks_UI = Math.Max(0, value ?? 12);
         }
 
+        [Browsable(false)]
+        public int? ContinuationRetestWindowBars { get; set; }
+
 
         [Category("Reversal")]
         [DisplayName("Reversal: Finished Auction Max Ask@Low")]

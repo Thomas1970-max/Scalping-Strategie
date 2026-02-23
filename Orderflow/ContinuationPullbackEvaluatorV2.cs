@@ -66,6 +66,10 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly ILoggerSource? _loggerSource;
         private readonly int _compressionGapTicks;
 
+        private OrderflowThresholds? _lastThresholds;
+
+        public int? RetestWindowBarsOverride { get; set; } = null;
+
         private int? _lastPullbackLikePhaseBar;
 
         private readonly Dictionary<int, ZoneTracker> _trackersByZoneId = new();
@@ -225,7 +229,7 @@ namespace MyNamespace.Strategies.Orderflow
                 absNetDeltaMin = 0m;
 
             const decimal MinDeltaPerVol = 0.15m;
-            const decimal MinExtremeDomRatio = 0.65m;
+            const decimal MinExtremeDomRatio = 0.75m;
             const decimal MinExtremeShare = 0.05m;
 
             decimal vol = curr.Volume;
@@ -257,7 +261,8 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool noFurtherDown = curr.Low >= prev.Low - oneTick;
                 bool rejection = curr.Close >= z.High;
-                return noFurtherDown && rejection;
+                bool bouncedFromLow = (curr.Close - curr.Low) >= oneTick;
+                return noFurtherDown && rejection && bouncedFromLow;
             }
             else
             {
@@ -281,7 +286,8 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool noFurtherUp = curr.High <= prev.High + oneTick;
                 bool rejection = curr.Close <= z.Low;
-                return noFurtherUp && rejection;
+                bool rejectedFromHigh = (curr.High - curr.Close) >= oneTick;
+                return noFurtherUp && rejection && rejectedFromHigh;
             }
         }
 
@@ -455,7 +461,8 @@ namespace MyNamespace.Strategies.Orderflow
                 items.Add(new ScoreItem { Key = "Abs", Points = absPts, TextDe = absorption ? "Absorption: JA (Bonus) -> +1" : "Absorption: NEIN -> +0" });
                 score += absPts;
 
-                bool okTouch = isLowVolume || faAtZone || isExhaustion || absorption;
+                decimal touchSignalsPts = lowVolPts + exhPts + faPts + absPts;
+                bool okTouch = faAtZone || touchSignalsPts >= 2m;
                 if (!okTouch)
                 {
                     return new DecisionResult
@@ -583,7 +590,9 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.ConsecutiveInvalidCloses = 0;
             tracker.TouchBar = touchSnapshot.Bar;
             tracker.TouchPocPrice = touchSnapshot.CandlePocPrice;
-            tracker.RetestDeadlineBar = touchSnapshot.Bar + 2;
+            int retestWindow = RetestWindowBarsOverride ?? _lastThresholds?.ContinuationRetestWindowBars ?? 3;
+            retestWindow = Math.Max(0, retestWindow);
+            tracker.RetestDeadlineBar = touchSnapshot.Bar + retestWindow;
             tracker.RetestBar = null;
             tracker.ConfirmBar = null;
             tracker.SessionBestScore = 0m;
@@ -805,6 +814,8 @@ namespace MyNamespace.Strategies.Orderflow
             if (thresholds == null)
                 return PatternEvaluationResult.NotDetected(Type, "thresholds is null");
 
+            _lastThresholds = thresholds;
+
             decimal tickSize = thresholds.TickSizeDecimal ?? 0.25m;
             if (tickSize <= 0m) tickSize = 0.25m;
 
@@ -1022,7 +1033,6 @@ namespace MyNamespace.Strategies.Orderflow
             int invalidateWickTicks = Math.Max(3, (int)Math.Ceiling(zoneHeightTicks * 0.25m));
             int invalidateCloseTicks = Math.Max(1, (int)Math.Ceiling(zoneHeightTicks * 0.10m));
             const int InvalidateBars = 2;
-            const decimal MinSessionBestScoreForEntry = 5m;
 
             if (tracker.SessionActive)
             {
@@ -1075,91 +1085,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (touchFastConfirm)
                 {
-                    // Variant A: Sofort-Confirm/Entry Check auf derselben Kerze (wichtig für Range-Bars)
                     tracker.SessionStage = Stage.Confirm;
-                    tracker.ConfirmBar = currentSnapshot.Bar;
-
-                    var decConfirmNow = EvaluateDecision(currentSnapshot, prev, candidateZone, thresholds, history, tickSize, tracker);
-
-                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                    tracker.SessionDecisionHistory.Add(decConfirmNow);
-                    tracker.SessionDecisionBars ??= new List<int>();
-                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-
-                    if (decConfirmNow.TotalScore > tracker.SessionBestScore)
-                    {
-                        tracker.SessionBestScore = decConfirmNow.TotalScore;
-                        tracker.SessionBestScoreItems = decConfirmNow.Items != null ? new List<ScoreItem>(decConfirmNow.Items) : null;
-                    }
-
-                    if (decConfirmNow.Entry && tracker.SessionBestScore >= MinSessionBestScoreForEntry)
-                    {
-                        // Safety-net: block entry if a strong opposite zone overlaps this price area
-                        try
-                        {
-                            MarketStructureContext.Zone? oppStrong = null;
-                            foreach (var oz in zones)
-                            {
-                                if (oz == null || oz.Id == candidateZone.Id)
-                                    continue;
-                                if (!oz.IsConfirmed || oz.Status == MarketStructureContext.ZoneStatus.Used)
-                                    continue;
-                                bool isOpp = (_direction == OrderDirections.Buy && oz.Type == MarketStructureContext.ZoneType.Resistance)
-                                    || (_direction == OrderDirections.Sell && oz.Type == MarketStructureContext.ZoneType.Support);
-                                if (!isOpp)
-                                    continue;
-                                bool strong = oz.IsMultiTouch || oz.MultiTouchScore >= 2;
-                                if (!strong)
-                                    continue;
-                                decimal overlap = Math.Min(candidateZone.High, oz.High) - Math.Max(candidateZone.Low, oz.Low);
-                                if (overlap <= 0m)
-                                    continue;
-                                int overlapTicks = (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
-                                if (overlapTicks < 1)
-                                    continue;
-                                oppStrong = oz;
-                                break;
-                            }
-
-                            if (oppStrong != null)
-                            {
-                                LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Entry.Blocked.OppositeOverlap", lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
-                                    $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
-                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
-                                });
-                                tracker.SessionLastEvalBar = currentSnapshot.Bar;
-                                return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: immediate entry blocked by strong opposite overlap (zone {oppStrong.Id})");
-                            }
-                        }
-                        catch { }
-
-                        EndSession(tracker, "GO (Sofort)");
-                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "GO – Sofort", decConfirmNow);
-
-                        var reasons = new List<string>
-                        {
-                            $"ZonePullback id={candidateZone.Id}",
-                            $"TouchPOC={tracker.TouchPocPrice:F2}",
-                            $"Score={decConfirmNow.TotalScore:0.0}",
-                            $"Confidence={decConfirmNow.Confidence:0.00}",
-                            "Sofort=1"
-                        };
-
-                        currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
-                        _trackersByZoneId.Remove(candidateZone.Id);
-
-                        if (_loggerSource != null)
-                            LoggerHelper.LogInfo(_loggerSource,
-                                $"[ContinuationPullbackV2] DETECTED(SOFORT): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={decConfirmNow.TotalScore:0.0} conf={decConfirmNow.Confidence:0.00}");
-
-                        return PatternEvaluationResult.Detected(Type, decConfirmNow.Confidence, reasons,
-                            new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
-                    }
-
-                    // Sofort-Confirm nicht ausgelöst -> normal weiter (Confirm auf nächster Kerze)
                     tracker.ConfirmBar = currentSnapshot.Bar + 1;
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: Touch ok, fast confirm bar {tracker.ConfirmBar}");
                 }
@@ -1238,14 +1164,6 @@ namespace MyNamespace.Strategies.Orderflow
                     LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – keine Bestätigung", dec);
                     _trackersByZoneId.Remove(candidateZone.Id);
                     return PatternEvaluationResult.NotDetected(Type, dec.BlockReasonDe);
-                }
-
-                if (tracker.SessionBestScore < MinSessionBestScoreForEntry)
-                {
-                    EndSession(tracker, $"Score zu niedrig: SessionBestScore {tracker.SessionBestScore:0.0} < {MinSessionBestScoreForEntry:0.0}");
-                    LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize, "NOGO – Score zu niedrig", dec);
-                    _trackersByZoneId.Remove(candidateZone.Id);
-                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by score");
                 }
 
                 // Safety-net: block entry if a strong opposite zone overlaps this price area
