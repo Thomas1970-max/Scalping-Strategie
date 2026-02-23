@@ -96,17 +96,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
             bool swingBiasMatches = (effectiveBias == MarketBiasV2.Long && swingSig.Bias == SwingStructureBias.Bullish)
                                     || (effectiveBias == MarketBiasV2.Short && swingSig.Bias == SwingStructureBias.Bearish);
 
-            int maxAgeBars = input.Regime == MarketRegime.Fast ? 8 : 15;
+            int maxAgeBars = input.Regime == MarketRegime.Fast ? 15 : 25;
             bool breakRecentEnough = swingSig.BarsSinceBreak != int.MaxValue && swingSig.BarsSinceBreak <= maxAgeBars;
-            bool breakDirMatches = (effectiveBias == MarketBiasV2.Long && swingSig.LastBreakDirection == SwingStructureBias.Bullish)
-                                   || (effectiveBias == MarketBiasV2.Short && swingSig.LastBreakDirection == SwingStructureBias.Bearish);
 
-            const decimal MinSwingConfidence = 0.5m;
+            const decimal MinSwingConfidence = 0.3m;
             bool isTrendContinuing = state.AnchorTrendConfirmed &&
                                      effectiveBias != MarketBiasV2.Neutral &&
+                                     swingSig.Bias != SwingStructureBias.None &&
                                      swingBiasMatches &&
                                      breakRecentEnough &&
-                                     breakDirMatches &&
                                      swingSig.Confidence >= MinSwingConfidence;
 
             state.IsTrendContinuing = isTrendContinuing;
