@@ -962,8 +962,8 @@ namespace MyNamespace.Strategies.Orderflow
                         if (compressionGapTicks <= 0)
                             compressionGapTicks = thresholds.ContinuationCompressionGapTicks ?? 12;
                         bool inBox = _direction == OrderDirections.Buy
-                            ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.Low)
-                            : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.High);
+                            ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.High)
+                            : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.Low);
 
                         if (gapTicks <= compressionGapTicks && inBox)
                         {
