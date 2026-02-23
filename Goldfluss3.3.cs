@@ -11822,8 +11822,20 @@ namespace MyNamespace.Strategies
                                     return vola;
                                 }
 
+                                string StrukturbruchDe(MyNamespace.Strategies.MarketAnalysis.SwingStructureBias? d)
+                                {
+                                    if (!d.HasValue) return "n/a";
+                                    switch (d.Value)
+                                    {
+                                        case MyNamespace.Strategies.MarketAnalysis.SwingStructureBias.Bullish: return "Aufwärts";
+                                        case MyNamespace.Strategies.MarketAnalysis.SwingStructureBias.Bearish: return "Abwärts";
+                                        case MyNamespace.Strategies.MarketAnalysis.SwingStructureBias.None: return "—";
+                                        default: return d.Value.ToString();
+                                    }
+                                }
+
                                 var volaKurz = VolaKurzDe(VolatilitaetDe(_currentMarketStateV2?.VolatilityMultiplier, sd1));
-                                _marketStateV2OverlayText = $"{PhaseDe(_currentMarketStateV2?.Phase)} | Bias={BiasDe(_currentMarketStateV2?.Bias)} | Vola={volaKurz} | TrendCont={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")} | SwingLastBreakDir={_currentMarketStateV2?.SwingLastBreakDirection}";
+                                _marketStateV2OverlayText = $"{PhaseDe(_currentMarketStateV2?.Phase)} | Bias={BiasDe(_currentMarketStateV2?.Bias)} | Vola={volaKurz} | Trend-Fortsetzung ok={(_currentMarketStateV2?.IsTrendContinuing == true ? "Ja" : "Nein")} | Letzter Strukturbruch={StrukturbruchDe(_currentMarketStateV2?.SwingLastBreakDirection)}";
 
                                 var v2Sig = SmartLogger.ComposeSignature(
                                     ("bar", (feat?.Bar ?? ovSnapshot.Bar).ToString()),
