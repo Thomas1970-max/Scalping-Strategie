@@ -86,6 +86,11 @@ namespace MyNamespace.Strategies.Orderflow
 			public List<DecisionResult>? SessionDecisionHistory;
 			public List<int>? SessionDecisionBars;
 			public string? SessionEndReason;
+
+			public decimal LastKnownZoneLow;
+			public decimal LastKnownZoneHigh;
+			public MarketStructureContext.ZoneType LastKnownZoneType;
+			public bool LastKnownZoneConfirmed;
         }
 
         private readonly OrderDirections _direction;
@@ -799,7 +804,7 @@ namespace MyNamespace.Strategies.Orderflow
                     }
                     else
                     {
-                        deltaFlipText = "Delta-Flip: NEIN (kein Flip im Fenster)";
+                        deltaFlipText = $"Delta-Flip: NEIN (kein Flip im Fenster)";
                     }
                 }
                 else
@@ -962,21 +967,67 @@ namespace MyNamespace.Strategies.Orderflow
                     var away = ConsumeAwayDistanceTicks * tickSize;
                     if (currentSnapshot.Close >= trackedZone.High + away || currentSnapshot.Close <= trackedZone.Low - away)
                     {
-                        LogExplainOnce(
-                            currentSnapshot.Bar,
-                            trackerZoneId,
-                            stage: "Consume.Expiry.AwayCleanup",
-                            lines: new[]
+                        // Do not delete zones while a session is still active; it would suppress the session's chance to reach GO.
+                        if (!trackedTracker.SessionActive || trackedTracker.EntryTriggered)
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                trackerZoneId,
+                                stage: "Consume.Expiry.AwayCleanup",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={trackerZoneId}",
+                                    $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
+                                    $"Close={currentSnapshot.Close:F2}",
+                                    $"AwayTicks={ConsumeAwayDistanceTicks}",
+                                    $"Reason: RetestAttempted und Preis ist weit genug weg → ConsumeZoneOnExpiry."
+                                });
+
+                            // Always print a full protocol when a valid session has started and we end/consume the zone.
+                            try
                             {
-                                $"Dir={_direction}",
-                                $"Zone={trackerZoneId}",
-                                $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
-                                $"Close={currentSnapshot.Close:F2}",
-                                $"AwayTicks={ConsumeAwayDistanceTicks}",
-                                $"Reason: RetestAttempted und Preis ist weit genug weg → ConsumeZoneOnExpiry."
-                            });
-                        currentMarketStructureContext.ConsumeZoneOnExpiry(trackerZoneId);
-                        (toRemove ??= new List<int>()).Add(trackerZoneId);
+                                var lastDec = trackedTracker.SessionDecisionHistory != null && trackedTracker.SessionDecisionHistory.Count > 0
+                                    ? trackedTracker.SessionDecisionHistory[trackedTracker.SessionDecisionHistory.Count - 1]
+                                    : null;
+
+                                if (trackedTracker.SessionStartBar >= 0 && trackedTracker.SessionDecisionHistory != null && trackedTracker.SessionDecisionHistory.Count > 0)
+                                {
+                                    LogSessionProtocol(
+                                        trackedTracker,
+                                        trackedZone,
+                                        history,
+                                        currentSnapshot,
+                                        thresholds,
+                                        tickSize,
+                                        MaxSessionBars,
+                                        MaxConsecutiveBadCloses,
+                                        MaxSessionPenetrationTicks,
+                                        outcome: "VERFALL – Zone verbraucht (AwayCleanup)",
+                                        finalDecision: lastDec);
+                                }
+                            }
+                            catch { }
+
+                            currentMarketStructureContext.ConsumeZoneOnExpiry(trackerZoneId);
+                            (toRemove ??= new List<int>()).Add(trackerZoneId);
+                        }
+                        else
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                trackerZoneId,
+                                stage: "Consume.Skip.AwayCleanup.SessionActive",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={trackerZoneId}",
+                                    $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
+                                    $"Close={currentSnapshot.Close:F2}",
+                                    $"AwayTicks={ConsumeAwayDistanceTicks}",
+                                    $"Reason: SessionActive=true → AwayCleanup wird übersprungen, damit die Session weiter geprüft werden kann."
+                                });
+                        }
                     }
                 }
 
@@ -991,10 +1042,26 @@ namespace MyNamespace.Strategies.Orderflow
             // 1) Zonen, die aktuell berührt werden
             var prevClosed = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 12);
             var touchedZones = new List<MarketStructureContext.Zone>(4);
+
+            int zoneCountAll = 0;
+            int zoneCountEligibleStatus = 0;
+            int zoneCountDirOk = 0;
+            int zoneCountTouchesAny = 0;
+            int zoneCountTouchesEligible = 0;
             foreach (var z in zones)
             {
                 if (z == null)
                     continue;
+
+                zoneCountAll++;
+                bool statusEligible = (z.Status == MarketStructureContext.ZoneStatus.New || z.Status == MarketStructureContext.ZoneStatus.Ready);
+                if (statusEligible)
+                    zoneCountEligibleStatus++;
+
+                bool touchesAny = TouchesZone(currentSnapshot, z);
+                if (touchesAny)
+                    zoneCountTouchesAny++;
+
                 if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
                     continue;
 
@@ -1003,8 +1070,12 @@ namespace MyNamespace.Strategies.Orderflow
                 if (!dirOk)
                     continue;
 
+                zoneCountDirOk++;
+
                 if (!TouchesZone(currentSnapshot, z))
                     continue;
+
+                zoneCountTouchesEligible++;
 
                 if (prevClosed != null)
                 {
@@ -1034,6 +1105,30 @@ namespace MyNamespace.Strategies.Orderflow
                 touchedZones.Add(z);
             }
 
+            if (touchedZones.Count == 0)
+            {
+                try
+                {
+                    SmartLogger.Instance.LogIfChanged(
+                        category: "ReversalBounceV2",
+                        sourceId: $"V2.{_direction}",
+                        barIndex: currentSnapshot.Bar,
+                        message: $"[ReversalBounceV2:ZoneGate.NoCandidate] Dir={_direction} | zones={zoneCountAll} | eligibleStatus(New/Ready)={zoneCountEligibleStatus} | dirOk={zoneCountDirOk} | touchesAny={zoneCountTouchesAny} | touchesEligible={zoneCountTouchesEligible} | prevClosed={(prevClosed != null ? prevClosed.Close.ToString("F2") : "null")}",
+                        signature: SmartLogger.ComposeSignature(
+                            ("dir", _direction.ToString()),
+                            ("stage", "ZoneGate.NoCandidate"),
+                            ("bar", currentSnapshot.Bar.ToString()),
+                            ("zAll", zoneCountAll.ToString()),
+                            ("zElig", zoneCountEligibleStatus.ToString()),
+                            ("zDir", zoneCountDirOk.ToString()),
+                            ("zTouchAny", zoneCountTouchesAny.ToString()),
+                            ("zTouchElig", zoneCountTouchesEligible.ToString())),
+                        backendLogAction: s => _loggerSource?.LogInfo(s)
+                    );
+                }
+                catch { }
+            }
+
             MarketStructureContext.Zone? candidateZone = touchedZones.Count > 0 ? touchedZones[0] : null;
             bool candidateFromTouch = candidateZone != null;
 
@@ -1055,6 +1150,7 @@ namespace MyNamespace.Strategies.Orderflow
             // 2) Fallback: Zone mit aktiver Session (auch ohne Touch)
             if (candidateZone == null)
             {
+                List<int>? trackersToRemove = null;
                 foreach (var kv in _trackersByZoneId)
                 {
                     var t = kv.Value;
@@ -1062,10 +1158,17 @@ namespace MyNamespace.Strategies.Orderflow
                         continue;
 
                     MarketStructureContext.Zone? sessionZone = null;
+                    MarketStructureContext.Zone? foundZoneAnyStatus = null;
                     foreach (var z in zones)
                     {
-                        if (z != null && z.Id == kv.Key
-                            && (z.Status == MarketStructureContext.ZoneStatus.New || z.Status == MarketStructureContext.ZoneStatus.Ready))
+                        if (z == null || z.Id != kv.Key)
+                            continue;
+
+                        foundZoneAnyStatus = z;
+
+                        // For continuing an already active session we must not require New/Ready.
+                        // A zone can legitimately be Triggered while the session is still evaluating.
+                        if (z.Status != MarketStructureContext.ZoneStatus.Used)
                         {
                             bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
                                          || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
@@ -1080,6 +1183,118 @@ namespace MyNamespace.Strategies.Orderflow
                         candidateFromTouch = false;
                         break;
                     }
+
+                    // If the zone exists but is already Used, finalize the session with a full report and cleanup.
+                    if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
+                    {
+                        try
+                        {
+                            var lastDec = t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0
+                                ? t.SessionDecisionHistory[t.SessionDecisionHistory.Count - 1]
+                                : null;
+
+                            if (t.SessionStartBar >= 0 && t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0)
+                            {
+                                LogSessionProtocol(
+                                    t,
+                                    foundZoneAnyStatus,
+                                    history,
+                                    currentSnapshot,
+                                    thresholds,
+                                    tickSize,
+                                    MaxSessionBars,
+                                    MaxConsecutiveBadCloses,
+                                    MaxSessionPenetrationTicks,
+                                    outcome: "ABBRUCH – Zone wurde intern auf Used gesetzt",
+                                    finalDecision: lastDec);
+                            }
+                        }
+                        catch { }
+
+                        try
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                kv.Key,
+                                stage: "Session.End.ZoneUsed",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={kv.Key}",
+                                    $"Reason: SessionActive=true aber Zone.Status=Used → Session wird beendet und Tracker entfernt."
+                                });
+                        }
+                        catch { }
+
+                        t.SessionActive = false;
+                        (trackersToRemove ??= new List<int>()).Add(kv.Key);
+                        continue;
+                    }
+
+                    // Session is active but its zone isn't available/eligible from ActiveZones snapshot.
+                    // Log once so this never looks like "no checks happened".
+                    try
+                    {
+                        LogExplainOnce(
+                            currentSnapshot.Bar,
+                            kv.Key,
+                            stage: "Session.ZoneMissing",
+                            lines: new[]
+                            {
+                                $"Dir={_direction}",
+                                $"Zone={kv.Key}",
+                                $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones (evtl. entfernt oder Status=Used).",
+                                $"zones.Count={zones.Count}"
+                            });
+                    }
+                    catch { }
+
+                    // Guarantee: if a session is active but its zone is missing from ActiveZones,
+                    // print a full report using last-known zone data and end the session.
+                    try
+                    {
+                        var lastDec = t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0
+                            ? t.SessionDecisionHistory[t.SessionDecisionHistory.Count - 1]
+                            : null;
+
+                        if (t.SessionStartBar >= 0 && t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0)
+                        {
+                            var synthetic = new MarketStructureContext.Zone
+                            {
+                                Id = kv.Key,
+                                Type = t.LastKnownZoneType,
+                                Low = t.LastKnownZoneLow,
+                                High = t.LastKnownZoneHigh,
+                                Status = MarketStructureContext.ZoneStatus.Used,
+                                PivotBar = -1,
+                                IsConfirmed = t.LastKnownZoneConfirmed,
+                                CreatedBar = -1,
+                            };
+
+                            LogSessionProtocol(
+                                t,
+                                synthetic,
+                                history,
+                                currentSnapshot,
+                                thresholds,
+                                tickSize,
+                                MaxSessionBars,
+                                MaxConsecutiveBadCloses,
+                                MaxSessionPenetrationTicks,
+                                outcome: "ABBRUCH – Zone nicht mehr in ActiveZones (Snapshot/Removal)",
+                                finalDecision: lastDec);
+                        }
+                    }
+                    catch { }
+
+                    t.SessionActive = false;
+                    (trackersToRemove ??= new List<int>()).Add(kv.Key);
+                }
+
+                if (trackersToRemove != null)
+                {
+                    for (int i = 0; i < trackersToRemove.Count; i++)
+                        _trackersByZoneId.Remove(trackersToRemove[i]);
                 }
             }
 
@@ -1343,8 +1558,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (readyBar >= 0 && readyBar < currentSnapshot.Bar)
                     {
                         int awayClosesFromReady;
-                        bool ok = TryCountAwayClosesSinceFirstTouch(
-                            history, firstTouchBar: readyBar, currentBar: currentSnapshot.Bar,
+                        bool ok = TryCountAwayClosesSinceFirstTouch(history, firstTouchBar: readyBar, currentBar: currentSnapshot.Bar,
                             zone: candidateZone, dir: _direction, out awayClosesFromReady);
 
                         if (ok && awayClosesFromReady >= RetestMinAwayCloses)
@@ -1560,12 +1774,44 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool movedAway = tracker.MovedAwaySeen || HasMovedAwayFromZone(currentSnapshot, candidateZone, tickSize);
                 if (!movedAway)
+                {
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        candidateZone.Id,
+                        stage: "Touch.WaitMoveAway",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Zone={candidateZone.Id}",
+                            $"Type={candidateZone.Type}",
+                            $"State={(candidateZone.IsConfirmed ? "CONFIRMED" : "PENDING")}",
+                            $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                            $"Rule: Nach FirstTouch wird erst weiter geprüft, wenn der Markt erkennbar von der Zone weg gelaufen ist (MovedAway).",
+                            $"Folge: Kein Session/Entry-Check auf dieser Bar."
+                        });
+
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: erste Berührung – warte auf Wegbewegung");
+                }
 
                 tracker.MovedAwaySeen = true;
 
                 if (!candidateZone.IsConfirmed)
                 {
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        candidateZone.Id,
+                        stage: "Touch.WaitZigZagConfirm",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Zone={candidateZone.Id}",
+                            $"Type={candidateZone.Type}",
+                            $"State=PENDING",
+                            $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                            $"Rule: Retest (Szenario B) wird erst geprüft, wenn die Zone durch ZigZag bestätigt ist.",
+                            $"Folge: Kein Entry-Check auf dieser Bar."
+                        });
+
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: pending; waiting zigzag confirmation before retest");
                 }
 
@@ -1573,6 +1819,125 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.ConfirmedBar = currentSnapshot.Bar;
                 if (_loggerSource != null)
                     LoggerHelper.LogInfo(_loggerSource, $"[ReversalBounceV2] Zone confirmed: id={candidateZone.Id} dir={_direction} firstTouch={tracker.FirstTouchBar} confirmedBar={tracker.ConfirmedBar}");
+
+                // If the zone becomes confirmed ON a touch bar, we only allow immediate Retest processing
+                // in the special case where Scenario A was already explicitly skipped via RetestMode.FromReadyBar.
+                // This keeps the normal A->B flow intact (first touch is NOT treated as retest).
+                if (tracker.ImmediateDisabled && tracker.ImmediateAttempted)
+                {
+                    try
+                    {
+                        bool touchNowOnConfirm = TouchesZone(currentSnapshot, candidateZone);
+                        bool approachNowOkOnConfirm = prevClosed == null || (_direction == OrderDirections.Buy
+                            ? prevClosed.Close >= (candidateZone.High - tickSize)
+                            : prevClosed.Close <= (candidateZone.Low + tickSize));
+
+                        if (touchNowOnConfirm && approachNowOkOnConfirm)
+                        {
+                            if (currentSnapshot.Bar - tracker.FirstTouchBar >= MinBarsBetweenFirstTouchAndRetest)
+                            {
+                                if (TryCountAwayClosesSinceFirstTouch(history, tracker.FirstTouchBar, currentSnapshot.Bar, candidateZone, _direction, out var awayClosesNow)
+                                    && awayClosesNow >= RetestMinAwayCloses)
+                                {
+                                    tracker.RetestAttempted = true;
+                                    tracker.RetestBar = currentSnapshot.Bar;
+                                    tracker.RetestAttemptTime = currentSnapshot.Time;
+                                    LogExplainOnce(
+                                        currentSnapshot.Bar,
+                                        candidateZone.Id,
+                                        stage: "Retest.SessionStart.OnConfirmTouch",
+                                        lines: new[]
+                                        {
+                                            $"Zone wurde in dieser Touch-Bar bestätigt und Szenario A wurde vorher übersprungen (FromReadyBar) → Retest-Session wird sofort gestartet.",
+                                            $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
+                                            $"awayClosesInRow={awayClosesNow} (min={RetestMinAwayCloses})"
+                                        });
+
+                                    StartSession(tracker, SessionType.Retest, currentSnapshot);
+
+                                    var retestOutcomeNow = EvaluateActiveSession(
+                                        tracker, currentSnapshot, history, candidateZone, thresholds, tickSize,
+                                        MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
+                                        out var retestDecisionNow);
+
+                                    if (retestOutcomeNow == SessionEvalOutcome.EntryGo)
+                                    {
+                                        // Safety-net: block entry if a strong opposite zone overlaps this price area
+                                        try
+                                        {
+                                            MarketStructureContext.Zone? oppStrong = null;
+                                            foreach (var oz in zones)
+                                            {
+                                                if (oz == null || oz.Id == candidateZone.Id)
+                                                    continue;
+                                                if (!oz.IsConfirmed || oz.Status == MarketStructureContext.ZoneStatus.Used)
+                                                    continue;
+                                                bool isOpp = (_direction == OrderDirections.Buy && oz.Type == MarketStructureContext.ZoneType.Resistance)
+                                                    || (_direction == OrderDirections.Sell && oz.Type == MarketStructureContext.ZoneType.Support);
+                                                if (!isOpp)
+                                                    continue;
+                                                bool strong = oz.IsMultiTouch || oz.MultiTouchScore >= 2;
+                                                if (!strong)
+                                                    continue;
+                                                decimal overlap = Math.Min(candidateZone.High, oz.High) - Math.Max(candidateZone.Low, oz.Low);
+                                                if (overlap <= 0m)
+                                                    continue;
+                                                int overlapTicks = (int)Math.Round(overlap / tickSize, MidpointRounding.AwayFromZero);
+                                                if (overlapTicks < 1)
+                                                    continue;
+                                                oppStrong = oz;
+                                                break;
+                                            }
+
+                                            if (oppStrong != null)
+                                            {
+                                                LogExplainOnce(currentSnapshot.Bar, candidateZone.Id, stage: "Entry.Blocked.OppositeOverlap", lines: new[]
+                                                {
+                                                    $"Dir={_direction}",
+                                                    $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
+                                                    $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
+                                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                                });
+                                                tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                                                return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
+                                            }
+                                        }
+                                        catch { }
+
+                                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
+                                            MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
+                                            "GO – Entry ausgelöst (Sofort auf Confirm+Retest-Touch-Bar)", retestDecisionNow);
+
+                                        var reasonsNow = new List<string>
+                                        {
+                                            $"ZoneRetest id={candidateZone.Id}",
+                                            $"Path={(retestDecisionNow!.Path == AllowPath.UaToFa ? "UAtoFA" : "MultiFA")}",
+                                            $"Score={retestDecisionNow.TotalScore:0.0}",
+                                            $"Confidence={retestDecisionNow.Confidence:0.00}"
+                                        };
+
+                                        tracker.EntryTriggered = true;
+                                        _lastValidReversalBarIndex = currentSnapshot.Bar;
+                                        _lastValidReversalDirection = _direction;
+
+                                        currentMarketStructureContext.ConsumeZoneOnEntry(candidateZone.Id);
+                                        _trackersByZoneId.Remove(candidateZone.Id);
+
+                                        if (_loggerSource != null)
+                                            LoggerHelper.LogInfo(_loggerSource,
+                                                $"[ReversalBounceV2] DETECTED (RetestOnConfirmTouch): zone={candidateZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={retestDecisionNow.TotalScore:0.0} conf={retestDecisionNow.Confidence:0.00}");
+
+                                        return PatternEvaluationResult.Detected(Type, retestDecisionNow.Confidence, reasonsNow,
+                                            new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
+                                    }
+
+                                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest session started on confirm-touch bar");
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
 
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: confirmed, waiting for retest");
             }
@@ -2202,18 +2567,17 @@ namespace MyNamespace.Strategies.Orderflow
             }
         }
 
-        private ZoneTracker GetOrCreateTracker(int zoneId, int currentBar)
+        private ZoneTracker GetOrCreateTracker(int zoneId, int bar)
         {
-            if (_trackersByZoneId.TryGetValue(zoneId, out var tracker))
-                return tracker;
+            if (_trackersByZoneId.TryGetValue(zoneId, out var t))
+                return t;
 
-            tracker = new ZoneTracker
+            t = new ZoneTracker
             {
                 ZoneId = zoneId,
-                FirstRealTouchBar = currentBar,
-                FirstTouchBar = currentBar,
-                LastTouchBar = currentBar,
+                FirstTouchBar = bar,
                 FirstTouchTime = DateTime.MinValue,
+                LastTouchBar = -999,
                 Confirmed = false,
                 ConfirmedBar = -1,
                 ImmediateAttempted = false,
@@ -2227,7 +2591,7 @@ namespace MyNamespace.Strategies.Orderflow
                 LastStoryLoggedBar = -1,
                 StoryPending = false,
                 StoryEmitted = false,
-                LastTouchedBar = currentBar,
+                LastTouchedBar = bar,
                 StoryExitBar = -1,
                 // Multi-Bar Session
                 SessionActive = false,
@@ -2241,11 +2605,15 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionBestScore = 0m,
                 SessionBestScoreItems = null,
                 SessionDecisionHistory = null,
-                SessionEndReason = null
+                SessionEndReason = null,
+                LastKnownZoneLow = 0m,
+                LastKnownZoneHigh = 0m,
+                LastKnownZoneType = MarketStructureContext.ZoneType.Support,
+                LastKnownZoneConfirmed = false,
             };
 
-            _trackersByZoneId[zoneId] = tracker;
-            return tracker;
+            _trackersByZoneId[zoneId] = t;
+            return t;
         }
 
         private static string FormatBarRef(OfFeaturesHistory history, int barIndex)
