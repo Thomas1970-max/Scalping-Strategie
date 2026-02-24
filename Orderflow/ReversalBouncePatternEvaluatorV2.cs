@@ -287,7 +287,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             const int W = 5;
             const int ProgressTicksMinMultiFa = 6;
-            const int CloseAwayTicksMinFaQuality = 2;
+            const int LookaheadBarsForProgress = 5;
             int maxBar = curr.Bar;
             int minBar = Math.Max(0, maxBar - (W - 1));
             int consecutiveTouches = 0;
@@ -322,14 +322,8 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     faAtZoneW++;
 
-                    int closeAwayTicks;
-                    if (dir == OrderDirections.Buy)
-                        closeAwayTicks = RoundTicks(Math.Max(0m, s.Close - zone.High), tickSize);
-                    else
-                        closeAwayTicks = RoundTicks(Math.Max(0m, zone.Low - s.Close), tickSize);
-
-                    if (closeAwayTicks >= CloseAwayTicksMinFaQuality)
-                        strongFaAtZoneW++;
+                    // Count each FA@Zone as a defense. The quality / follow-through is handled via progressOk.
+                    strongFaAtZoneW++;
 
                     decimal need;
                     if (dir == OrderDirections.Buy)
@@ -337,8 +331,9 @@ namespace MyNamespace.Strategies.Orderflow
                     else
                         need = zone.Low - (ProgressTicksMinMultiFa * tickSize);
 
-                    decimal best = s.Close;
-                    for (int nb = b + 1; nb <= Math.Min(maxBar, b + 2); nb++)
+                    // Follow-through detection: use excursion (High/Low) and allow a wider window.
+                    decimal best = dir == OrderDirections.Buy ? s.High : s.Low;
+                    for (int nb = b; nb <= Math.Min(maxBar, b + LookaheadBarsForProgress); nb++)
                     {
                         OvSnapshot? ns = null;
                         if (nb == curr.Bar)
@@ -348,9 +343,9 @@ namespace MyNamespace.Strategies.Orderflow
                         if (ns == null)
                             continue;
                         if (dir == OrderDirections.Buy)
-                            best = Math.Max(best, ns.Close);
+                            best = Math.Max(best, ns.High);
                         else
-                            best = Math.Min(best, ns.Close);
+                            best = Math.Min(best, ns.Low);
                     }
 
                     if (dir == OrderDirections.Buy)
@@ -2769,15 +2764,10 @@ namespace MyNamespace.Strategies.Orderflow
 
         private static bool IsFinishedAuctionAtZone(OvSnapshot s, MarketStructureContext.Zone z, decimal tickSize, OrderDirections dir)
         {
-            decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
             if (dir == OrderDirections.Buy)
-            {
-                // Low must be inside zone, or max 1 tick below it.
-                return s.Low <= z.High && s.Low >= (z.Low - oneTick);
-            }
+                return s.Close >= z.Low;
 
-            // Short: High must be inside zone, or max 1 tick above it.
-            return s.High >= z.Low && s.High <= (z.High + oneTick);
+            return s.Close <= z.High;
         }
 
         private static bool ImbalanceNoFollowThrough(

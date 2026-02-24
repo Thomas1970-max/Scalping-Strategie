@@ -210,10 +210,10 @@ namespace MyNamespace.Strategies.Orderflow
 
         private static bool IsFinishedAuctionAtZone(OvSnapshot s, MarketStructureContext.Zone z, decimal tickSize, OrderDirections dir)
         {
-            decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
             if (dir == OrderDirections.Buy)
-                return s.Low <= z.High && s.Low >= (z.Low - oneTick);
-            return s.High >= z.Low && s.High <= (z.High + oneTick);
+                return s.Close >= z.Low;
+
+            return s.Close <= z.High;
         }
 
         private static bool ImbalanceNoFollowThrough(
