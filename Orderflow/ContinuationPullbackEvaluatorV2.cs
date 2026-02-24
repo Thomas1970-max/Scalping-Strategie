@@ -746,30 +746,39 @@ namespace MyNamespace.Strategies.Orderflow
                     return $" (in K{string.Join(", K", distinct)})";
                 }
 
+                string WithTag(string text, string tag, List<int> bars)
+                {
+                    var kb = FormatBars(bars);
+                    return string.IsNullOrEmpty(kb)
+                        ? $"{text} {tag}."
+                        : $"{text} {tag}{kb}.";
+                }
+
                 if (barsLowVol.Count > 0)
-                    lines.Add($"  • ✓ Trockenlauf: Das Volumen nahm ab. Wenig Gegendruck{FormatBars(barsLowVol)}.");
+                    lines.Add(WithTag("  • ✓ Trockenlauf: Das Volumen nahm ab. Wenig Gegendruck", "LOWVOL", barsLowVol));
                 else
-                    lines.Add("  • ⚠ Hoher Druck: Kein signifikanter Rückgang des Volumens im Pullback.");
+                    lines.Add(WithTag("  • ⚠ Hoher Druck: Kein signifikanter Rückgang des Volumens im Pullback", "LOWVOL", new List<int>()));
 
                 if (barsExh.Count > 0)
-                    lines.Add($"  • ✓ Erschöpfung: Die Gegenseite ist 'verpufft'{FormatBars(barsExh)}.");
+                    lines.Add(WithTag("  • ✓ Erschöpfung: Die Gegenseite ist 'verpufft'", "Exhaustion", barsExh));
 
                 if (barsFA.Count > 0 || barsAbs.Count > 0)
                 {
                     var combined = barsFA.Concat(barsAbs).ToList();
-                    lines.Add($"  • ✓ Zonen-Halt: Der Preis wurde an der Zone gestoppt/gehalten{FormatBars(combined)}.");
+                    string tag = barsFA.Count > 0 ? "FA@ZONE" : "ABS";
+                    lines.Add(WithTag("  • ✓ Zonen-Halt: Der Preis wurde an der Zone gestoppt/gehalten", tag, combined));
                 }
 
                 if (barsAggr.Count > 0)
-                    lines.Add($"  • ✓ ATTACKE: Die Trend-Aggression ist zurück{FormatBars(barsAggr)}!");
+                    lines.Add(WithTag("  • ✓ ATTACKE: Die Trend-Aggression ist zurück!", "Aggression", barsAggr));
                 else
-                    lines.Add("  • ✗ Keine Initiative: Bisher kein aggressiver Schlag in Trendrichtung.");
+                    lines.Add(WithTag("  • ✗ Keine Initiative: Bisher kein aggressiver Schlag in Trendrichtung", "Aggression", new List<int>()));
 
                 if (barsPocShift.Count > 0)
-                    lines.Add($"  • ✓ Wert-Verschiebung: Der faire Preis (POC) verschiebt sich wieder{FormatBars(barsPocShift)}.");
+                    lines.Add(WithTag("  • ✓ Wert-Verschiebung: Der faire Preis (POC) verschiebt sich wieder", "POCSHIFT", barsPocShift));
 
                 if (tracker.ConsecutiveInvalidCloses > 0)
-                    lines.Add($"  • ⚠ Zone schwächelt: Der Preis schloss bereits {tracker.ConsecutiveInvalidCloses}x außerhalb der Zone.");
+                    lines.Add(WithTag($"  • ⚠ Zone schwächelt: Der Preis schloss bereits {tracker.ConsecutiveInvalidCloses}x außerhalb der Zone", "INVALIDCLOSE", new List<int>()));
 
                 lines.Add(string.Empty);
 

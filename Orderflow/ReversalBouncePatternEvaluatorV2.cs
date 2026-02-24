@@ -2098,7 +2098,7 @@ namespace MyNamespace.Strategies.Orderflow
                 }
 
                 lines.Add(string.Empty);
-                lines.Add("MARKT-ANALYSE:");
+                lines.Add("SZENARIEN-ANALYSE:");
                 bool isLong = _direction == OrderDirections.Buy;
 
                 string FormatBars(List<int> bars)
@@ -2110,28 +2110,43 @@ namespace MyNamespace.Strategies.Orderflow
                     return $" (in K{string.Join(", K", distinct)})";
                 }
 
+                string WithTag(string text, string tag, List<int> bars)
+                {
+                    var kb = FormatBars(bars);
+                    return string.IsNullOrEmpty(kb)
+                        ? $"{text} {tag}."
+                        : $"{text} {tag}{kb}.";
+                }
+
+                var barsImpact = new List<int>();
+                if (firstBarSnap != null && firstBarSnap.ChartBarNumber > 0)
+                    barsImpact.Add(firstBarSnap.ChartBarNumber);
+
+                var barsBreakout = new List<int>();
+                if (lastBarSnap != null && lastBarSnap.ChartBarNumber > 0)
+                    barsBreakout.Add(lastBarSnap.ChartBarNumber);
+
                 if (isLong && firstBarSnap != null && firstBarSnap.PocDelta < -50m)
-                    lines.Add("  • ⚡ Aufprall: Verkäufer kamen mit Wucht rein, wurden aber gestoppt.");
+                    lines.Add(WithTag("  • ⚡ Aufprall: Verkäufer kamen mit Wucht rein, wurden aber gestoppt", "DELTACHG", barsImpact));
                 else if (!isLong && firstBarSnap != null && firstBarSnap.PocDelta > 50m)
-                    lines.Add("  • ⚡ Aufprall: Käufer stürmten vor, prallten aber ab.");
+                    lines.Add(WithTag("  • ⚡ Aufprall: Käufer stürmten vor, prallten aber ab", "DELTACHG", barsImpact));
 
                 if (hasAbsorption)
-                    lines.Add($"  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen{FormatBars(barsAbs)}.");
+                    lines.Add(WithTag("  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen", "ABS", barsAbs));
                 if (hasDeltaFlip)
-                    lines.Add($"  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt{FormatBars(barsFlip)}.");
+                    lines.Add(WithTag("  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt", "DELTAFLIP", barsFlip));
                 if (hasFA)
-                    lines.Add($"  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone{FormatBars(barsFA)}.");
+                    lines.Add(WithTag("  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone", "FA@ZONE", barsFA));
 
                 if (lastBarSnap != null)
                 {
                     bool breakout = isLong ? lastBarSnap.Close > zone.High : lastBarSnap.Close < zone.Low;
                     if (breakout && ((isLong && lastBarSnap.PocDelta > 0m) || (!isLong && lastBarSnap.PocDelta < 0m)))
-                        lines.Add("  • ✅ Bestätigung: Aggressiver Ausbruch aus der Zone bestätigt das Reversal.");
+                        lines.Add(WithTag("  • ✅ Bestätigung: Aggressiver Ausbruch aus der Zone bestätigt das Reversal", "CONF", barsBreakout));
                     else if (breakout)
-                        lines.Add("  • ⚠ Warnung: Preis bricht aus, aber der Orderflow passt (noch) nicht sauber.");
+                        lines.Add(WithTag("  • ⚠ Warnung: Preis bricht aus, aber der Orderflow passt (noch) nicht sauber", "BRK", barsBreakout));
                 }
 
-                // Bestätigung (Penalty gespiegelt wie im Scoring): nur zählen, wenn Close weg von Zone UND PocΔ-Intent passt
                 if (lastBarSnap != null)
                 {
                     if (isLong)
@@ -2139,18 +2154,18 @@ namespace MyNamespace.Strategies.Orderflow
                         int awayTicks = RoundTicks(Math.Max(0m, (lastBarSnap.Close - zone.High)), tickSize);
                         bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta >= 0m;
                         if (awayTicks >= 1 && intentOk)
-                            lines.Add("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Kaufdruck.");
+                            lines.Add(WithTag("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Kaufdruck", "CONF", barsBreakout));
                         else if (awayTicks >= 1 && !intentOk)
-                            lines.Add($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})");
+                            lines.Add(WithTag($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})", "BRK", barsBreakout));
                     }
                     else
                     {
                         int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - lastBarSnap.Close)), tickSize);
                         bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta <= 0m;
                         if (awayTicks >= 1 && intentOk)
-                            lines.Add("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Verkaufsdruck.");
+                            lines.Add(WithTag("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Verkaufsdruck", "CONF", barsBreakout));
                         else if (awayTicks >= 1 && !intentOk)
-                            lines.Add($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})");
+                            lines.Add(WithTag($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})", "BRK", barsBreakout));
                     }
                 }
 
