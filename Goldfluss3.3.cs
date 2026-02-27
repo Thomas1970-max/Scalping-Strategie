@@ -5488,6 +5488,12 @@ namespace MyNamespace.Strategies
         // =========================================================================
 
         // Entry-Blocker Parameter
+        [Display(Name = "Level-System berechnen/rendern",
+                 GroupName = "Level-Parameter",
+                 Description = "Aktiviert die Berechnung und Darstellung der Level (ohne automatisch Entries zu blockieren).",
+                 Order = 0)]
+        public bool EnableLevelSystem { get; set; } = true;
+
         [Display(Name = "Level-System aktivieren",
                  GroupName = "Level-Parameter",
                  Description = "Aktiviert das komplette Level-System: Berechnet signifikante Preislevel, ?berwacht Ber?hrungen und blockiert Einstiege bei Level-N?he. Dies ist der Master-Schalter f?r alle Level-bezogenen Funktionen.",
@@ -6447,7 +6453,7 @@ namespace MyNamespace.Strategies
             _prevSessionSnapshot = null;
             _currentVwapSnapshot = null;
 
-            if (EnableIsBlocked)
+            if (EnableLevelSystem)
             {
                 PerformInitialHistoricalAnalysis();
             }
@@ -10500,7 +10506,7 @@ namespace MyNamespace.Strategies
 
                 bool hasPreviousDayProfile = (_pdPOC != 0m && _pdVAH != 0m && _pdVAL != 0m);
 
-                if (EnableIsBlocked)
+                if (EnableLevelSystem)
                 {
 
 
@@ -10598,7 +10604,7 @@ namespace MyNamespace.Strategies
             decimal levelAbove = levelBelow + PointStep;
 
             // *** HINZUGEF?GT: Dynamische Level (Current POC, Runde Zahlen) zum Zeichnen hinzuf?gen/aktualisieren ***
-            if (EnableIsBlocked)
+            if (EnableLevelSystem)
             {
                 // 1. Alte dynamische Levels f?r Current POC und Runde Zahlen von der vorherigen Kerze entfernen (jeden Bar, da sie dynamisch sind).
                 _untouchedLevels.RemoveAll(l => l.Label == "POC aktuell" || l.Label == "VAH aktuell" || l.Label == "VAL aktuell" || l.Label == "runde Marke");
@@ -10643,7 +10649,7 @@ namespace MyNamespace.Strategies
 
 
 
-            if (EnableIsBlocked)
+            if (EnableLevelSystem)
             {
 
                 decimal previousClose = p.Close;
@@ -13330,15 +13336,29 @@ namespace MyNamespace.Strategies
                         || detectedPattern.Type == OrderflowPatternType.PotentialLongTrendContinuation)
                     && detectedPattern.Direction == OrderDirections.Buy)
                 {
-                    isLongSetupValid = true;
-                    this.LogInfo($"[SETUP-LONG] ✅ Long Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
+                    if (c.Close > c.Open)
+                    {
+                        isLongSetupValid = true;
+                        this.LogInfo($"[SETUP-LONG] ✅ Long Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
+                    }
+                    else
+                    {
+                        this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert: Signalkerze nicht bullisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}).");
+                    }
                 }
                 else if ((detectedPattern.Type == OrderflowPatternType.PotentialShortReversalBounce
                             || detectedPattern.Type == OrderflowPatternType.PotentialShortTrendContinuation)
                          && detectedPattern.Direction == OrderDirections.Sell)
                 {
-                    isShortSetupValid = true;
-                    this.LogInfo($"[SETUP-SHORT] ✅ Short Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
+                    if (c.Close < c.Open)
+                    {
+                        isShortSetupValid = true;
+                        this.LogInfo($"[SETUP-SHORT] ✅ Short Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
+                    }
+                    else
+                    {
+                        this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert: Signalkerze nicht bärisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}).");
+                    }
                 }
                 else
                 {
@@ -13476,13 +13496,15 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CLOSE";
                         entryTriggerLevel = c.Close;
 
-                        int slTicksLong = (int)Math.Round(((c.Close - (c.Low - tickSize)) / tickSize), MidpointRounding.AwayFromZero);
+                        decimal suggestedSlLong = c.Low - tickSize;
+                        int slTicksLong = (int)Math.Ceiling((longEntryPrice - suggestedSlLong) / tickSize);
                         if (slTicksLong < 1) slTicksLong = 1;
 
                         setup = new SetupParams
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLong,
+                            SuggestedStopLossPrice = suggestedSlLong,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
                         };
@@ -13493,13 +13515,15 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CLOSE";
                         entryTriggerLevel = c.Close;
 
-                        int slTicksLongCont = (int)Math.Round(((c.Close - (c.Low - tickSize)) / tickSize), MidpointRounding.AwayFromZero);
+                        decimal suggestedSlLongCont = c.Low - tickSize;
+                        int slTicksLongCont = (int)Math.Ceiling((longEntryPrice - suggestedSlLongCont) / tickSize);
                         if (slTicksLongCont < 1) slTicksLongCont = 1;
 
                         setup = new SetupParams
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLongCont,
+                            SuggestedStopLossPrice = suggestedSlLongCont,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
                         };
@@ -13569,13 +13593,15 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CLOSE";
                         entryTriggerLevel = c.Close;
 
-                        int slTicksShort = (int)Math.Round((((c.High + tickSize) - c.Close) / tickSize), MidpointRounding.AwayFromZero);
+                        decimal suggestedSlShort = c.High + tickSize;
+                        int slTicksShort = (int)Math.Ceiling((suggestedSlShort - shortEntryPrice) / tickSize);
                         if (slTicksShort < 1) slTicksShort = 1;
 
                         setup = new SetupParams
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
+                            SuggestedStopLossPrice = suggestedSlShort,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
                         };
@@ -13586,13 +13612,15 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CLOSE";
                         entryTriggerLevel = c.Close;
 
-                        int slTicksShortCont = (int)Math.Round((((c.High + tickSize) - c.Close) / tickSize), MidpointRounding.AwayFromZero);
+                        decimal suggestedSlShortCont = c.High + tickSize;
+                        int slTicksShortCont = (int)Math.Ceiling((suggestedSlShortCont - shortEntryPrice) / tickSize);
                         if (slTicksShortCont < 1) slTicksShortCont = 1;
 
                         setup = new SetupParams
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShortCont,
+                            SuggestedStopLossPrice = suggestedSlShortCont,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
                         };
@@ -15609,9 +15637,9 @@ namespace MyNamespace.Strategies
             base.OnRender(context, layout);
 
             // Auto-Aktivierung: Wenn Visualisierung gew?nscht aber Level-System deaktiviert
-            if (EnableSignificantPreviousLevels && !EnableIsBlocked)
+            if (EnableSignificantPreviousLevels && !EnableLevelSystem)
             {
-                EnableIsBlocked = true;
+                EnableLevelSystem = true;
                 this.LogInfo("[LEVEL-AUTO] Level-System automatisch aktiviert, da Visualisierung gew?nscht.");
             }
 
@@ -15649,7 +15677,7 @@ namespace MyNamespace.Strategies
             int x2 = ChartInfo.PriceChartContainer.Region.Width;
 
             // 1) Vortages/Vorwochen-Levels
-            if (EnableSignificantPreviousLevels && EnableIsBlocked)
+            if (EnableSignificantPreviousLevels && EnableLevelSystem)
             {
                 var levels = _untouchedLevels?.ToArray();
                 if (levels != null && levels.Length > 0)

@@ -600,7 +600,7 @@ namespace MyNamespace.Strategies.Orderflow
             bool multiFa = pathNow == AllowPath.MultiFaDefense;
             decimal multiFaPts = multiFa ? 1m : 0m;
             score += multiFaPts;
-            items.Add(new ScoreItem { Key = "MultiFA", Points = multiFaPts, TextDe = multiFa ? "Multi-FA-Defense: JA -> +1" : "Multi-FA-Defense: NEIN -> +0" });
+            items.Add(new ScoreItem { Key = "MultiFA", Points = multiFaPts, TextDe = multiFa ? "Multi-FA-Verteidigung: JA -> +1" : "Multi-FA-Verteidigung: NEIN -> +0" });
             if (multiFa)
                 tracker.SessionSawMultiFaDefense = true;
 
@@ -621,13 +621,13 @@ namespace MyNamespace.Strategies.Orderflow
             }
             else
             {
-                items.Add(new ScoreItem { Key = "LowVol", Points = 0m, TextDe = "LowVol: n/v (pressureSeen)" });
-                items.Add(new ScoreItem { Key = "Exhaustion", Points = 0m, TextDe = "Exhaustion: n/v (pressureSeen)" });
+                items.Add(new ScoreItem { Key = "LowVol", Points = 0m, TextDe = "LowVol: n/v (Druck vorhanden)" });
+                items.Add(new ScoreItem { Key = "Exhaustion", Points = 0m, TextDe = "Exhaustion: n/v (Druck vorhanden)" });
             }
 
             int strongCountNow = CountStrongDefenseSignals(tracker);
             tracker.SessionStrongDefenseCount = strongCountNow;
-            items.Add(new ScoreItem { Key = "Defense", Points = score, TextDe = $"DefenseScore: {score:0.0} (min {DefenseThreshold:0.0}); Strong={strongCountNow}/2" });
+            items.Add(new ScoreItem { Key = "Defense", Points = score, TextDe = $"Verteidigung-Score: {score:0.0} (min {DefenseThreshold:0.0}); Strong={strongCountNow}/2" });
 
             bool allowed = score >= DefenseThreshold && strongCountNow >= 2;
             return new DecisionResult
@@ -638,7 +638,7 @@ namespace MyNamespace.Strategies.Orderflow
                 BaseScore = 0,
                 TotalScore = score,
                 Confidence = 0m,
-                BlockReasonDe = allowed ? string.Empty : "Defense noch nicht bestätigt.",
+                BlockReasonDe = allowed ? string.Empty : "Verteidigung noch nicht bestätigt.",
                 Items = items
             };
         }
@@ -2275,15 +2275,21 @@ namespace MyNamespace.Strategies.Orderflow
                 const decimal EntryThreshold = 6m;
                 var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
-                int sessionBars = (currentSnapshot.Bar - tracker.SessionStartBar) + 1;
+                int endBarForReport = currentSnapshot.Bar;
+                if (tracker.SessionLastEvalBar >= tracker.SessionStartBar && tracker.SessionLastEvalBar <= currentSnapshot.Bar)
+                    endBarForReport = tracker.SessionLastEvalBar;
+                int sessionBars = (endBarForReport - tracker.SessionStartBar) + 1;
                 string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
+                string phaseDe = tracker.SessionPhase == ReversalPhase.Defense
+                    ? "Verteidigung"
+                    : tracker.SessionPhase.ToString();
 
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
                 if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
                     lines.Add($"UA→FA: gesehen in Session (Latch) bei Bar {tracker.SessionUaToFaBar}");
-                lines.Add($"PHASE: {tracker.SessionPhase} | pressureSeen={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
+                lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
                 if (tracker.SessionAbsorptionConfirmed)
                     lines.Add($"ABSORPTION: bestätigt bei Bar {tracker.SessionAbsorptionBar} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
@@ -2292,7 +2298,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 lines.Add("DER PREISVERLAUF:");
                 int startBar = tracker.SessionStartBar;
-                int endBar = currentSnapshot.Bar;
+                int endBar = endBarForReport;
                 OvSnapshot? prevSnap = null;
                 OvSnapshot? prevPrevSnap = null;
                 int barNumber = 0;
@@ -2466,9 +2472,9 @@ namespace MyNamespace.Strategies.Orderflow
                         }
                         else
                         {
-                            phaseLabel = "[Defense]";
+                            phaseLabel = "[Verteidigung]";
                             scoreText = $"{barScore:0.0}/{DefenseThreshold:0.0}";
-                            bestText = $"BestDefense: {bestDefense:0.0}/{DefenseThreshold:0.0}";
+                            bestText = $"BestVerteidigung: {bestDefense:0.0}/{DefenseThreshold:0.0}";
                         }
                     }
                     else
@@ -2476,7 +2482,7 @@ namespace MyNamespace.Strategies.Orderflow
                         phaseLabel = barNumber == 1 ? "[Touch]" : "";
                         scoreText = "n/v";
                         bestText = bestDefense > 0m || bestConfirm > 0m
-                            ? $"BestDef: {bestDefense:0.0}/4.0 BestConf: {bestConfirm:0.0}/6.0"
+                            ? $"BestVer: {bestDefense:0.0}/4.0 BestConf: {bestConfirm:0.0}/6.0"
                             : "";
                     }
                     lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel} Score: {scoreText} {bestText} {eventStr}".TrimEnd());
@@ -2563,8 +2569,8 @@ namespace MyNamespace.Strategies.Orderflow
                 string fazitPhase = tracker.SessionPhase == ReversalPhase.Confirm
                     ? $"Confirm-Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}"
                     : (tracker.SessionAbsorptionConfirmed
-                        ? $"Defense bestätigt, Confirm-Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}"
-                        : $"Defense-Score {tracker.SessionBestScore:0.0}/4.0 (Confirm nicht erreicht)");
+                        ? $"Verteidigung bestätigt, Confirm-Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}"
+                        : $"Verteidigung-Score {tracker.SessionBestScore:0.0}/4.0 (Confirm nicht erreicht)");
                 lines.Add($"FAZIT: {emoji} ({fazitPhase})");
 
                 if (finalDecision?.Entry != true)

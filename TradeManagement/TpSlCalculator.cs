@@ -26,6 +26,50 @@ namespace MyNamespace.Strategies.TradeManagement
         private const string DefaultTpType = "Ticks";
         private const string DefaultSlType = "Ticks";
 
+        private bool TryResolveAbsoluteStopFromSetup(decimal entryPrice, TpSlContext ctx, out decimal slPrice, out string reason)
+        {
+            slPrice = 0m;
+            reason = string.Empty;
+
+            var setup = ctx.SetupParams;
+            if (setup == null)
+            {
+                reason = "SetupParams null";
+                return false;
+            }
+
+            if (setup.SuggestedStopLossPrice <= 0m)
+            {
+                reason = "SuggestedStopLossPrice not set";
+                return false;
+            }
+
+            var suggested = setup.SuggestedStopLossPrice;
+
+            // Validierung: SL muss auf der richtigen Seite vom Entry liegen.
+            // Long: SL < Entry, Short: SL > Entry
+            if (ctx.Direction == OrderDirections.Buy)
+            {
+                if (suggested >= entryPrice)
+                {
+                    reason = $"SuggestedStopLossPrice invalid for Long (suggested={suggested:F5} >= entry={entryPrice:F5})";
+                    return false;
+                }
+            }
+            else
+            {
+                if (suggested <= entryPrice)
+                {
+                    reason = $"SuggestedStopLossPrice invalid for Short (suggested={suggested:F5} <= entry={entryPrice:F5})";
+                    return false;
+                }
+            }
+
+            slPrice = suggested;
+            reason = "SuggestedStopLossPrice";
+            return true;
+        }
+
         public TpSlResult Calculate(decimal entryPrice, TpSlContext ctx)
         {
             if (ctx == null) throw new ArgumentNullException(nameof(ctx));
@@ -51,8 +95,19 @@ namespace MyNamespace.Strategies.TradeManagement
                 decimal slTicks = setup.SlTicks ?? DefaultSlTicks;
                 
                 decimal standardTpPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, tpTicks, ctx.Direction);
-                decimal standardSlPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks, 
-                    ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+
+                decimal standardSlPrice;
+                if (TryResolveAbsoluteStopFromSetup(entryPrice, ctx, out var absSl, out var absReason))
+                {
+                    standardSlPrice = absSl;
+                    debugMessages.Add($"SL_SOURCE: {absReason} -> {standardSlPrice:F5}");
+                }
+                else
+                {
+                    standardSlPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks,
+                        ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+                    debugMessages.Add($"SL_SOURCE: Ticks (Reason: {absReason})");
+                }
                 
                 debugMessages.Add($"TP_TICKS (Standard): {tpTicks} -> {standardTpPrice:F5}");
                 debugMessages.Add($"SL_TICKS (Standard): {slTicks} -> {standardSlPrice:F5}");
@@ -565,12 +620,23 @@ namespace MyNamespace.Strategies.TradeManagement
             var tick = ctx.Tick;
             
             decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
-            decimal slPrice = entryPrice + (ctx.Direction == OrderDirections.Buy ? 
-                -(setup.SlTicks ?? DefaultSlTicks) * tick : (setup.SlTicks ?? DefaultSlTicks) * tick);
+
+            decimal slPrice;
+            if (TryResolveAbsoluteStopFromSetup(entryPrice, ctx, out var absSl, out var absReason))
+            {
+                slPrice = absSl;
+                debugMessages.Add($"SL_SOURCE: {absReason} -> {slPrice:F5}");
+            }
+            else
+            {
+                slPrice = entryPrice + (ctx.Direction == OrderDirections.Buy ? 
+                    -(setup.SlTicks ?? DefaultSlTicks) * tick : (setup.SlTicks ?? DefaultSlTicks) * tick);
+                debugMessages.Add($"SL_SOURCE: Ticks (Reason: {absReason})");
+            }
             
-            debugMessages.Add($"TP_LEVEL_BASED: {tpPrice:F5}");
-            debugMessages.Add($"SL_LEVEL_BASED: {slPrice:F5}");
-            
+            debugMessages.Add($"TP_LEVEL_OR_SETUP: TP={tpPrice:F5}");
+            debugMessages.Add($"SL_SETUP: SL={slPrice:F5}");
+
             return new TpSlResult
             {
                 EntryPrice = entryPrice,
@@ -588,8 +654,19 @@ namespace MyNamespace.Strategies.TradeManagement
             decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
             decimal tpTicks = (setup.TpTicks ?? DefaultTpTicks) * 0.8m;
             decimal slTicks = (setup.SlTicks ?? DefaultSlTicks) * 1.2m;
-            decimal slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks, 
-                ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+
+            decimal slPrice;
+            if (TryResolveAbsoluteStopFromSetup(entryPrice, ctx, out var absSl, out var absReason))
+            {
+                slPrice = absSl;
+                debugMessages.Add($"SL_SOURCE: {absReason} -> {slPrice:F5}");
+            }
+            else
+            {
+                slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks,
+                    ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+                debugMessages.Add($"SL_SOURCE: Ticks (Reason: {absReason})");
+            }
             
             debugMessages.Add($"TP_WEG_FREI_BASED (konservativ): {tpTicks} -> {tpPrice:F5}");
             debugMessages.Add($"SL_WEG_FREI_BASED (erweitert): {slTicks} -> {slPrice:F5}");
@@ -611,8 +688,19 @@ namespace MyNamespace.Strategies.TradeManagement
             decimal tpPrice = ResolveTpPriceFromSetup(entryPrice, ctx, debugMessages);
             decimal tpTicks = setup.TpTicks ?? DefaultTpTicks;
             decimal slTicks = (setup.SlTicks ?? DefaultSlTicks) * 0.9m;
-            decimal slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks, 
-                ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+
+            decimal slPrice;
+            if (TryResolveAbsoluteStopFromSetup(entryPrice, ctx, out var absSl, out var absReason))
+            {
+                slPrice = absSl;
+                debugMessages.Add($"SL_SOURCE: {absReason} -> {slPrice:F5}");
+            }
+            else
+            {
+                slPrice = TpSlHelpers.PriceFromTicks(ctx, entryPrice, slTicks,
+                    ctx.Direction == OrderDirections.Buy ? OrderDirections.Sell : OrderDirections.Buy);
+                debugMessages.Add($"SL_SOURCE: Ticks (Reason: {absReason})");
+            }
             
             debugMessages.Add($"TP_COMBINED (Level): {tpTicks} -> {tpPrice:F5}");
             debugMessages.Add($"SL_COMBINED (Weg-Frei optimiert): {slTicks} -> {slPrice:F5}");
