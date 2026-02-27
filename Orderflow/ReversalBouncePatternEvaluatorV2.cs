@@ -1064,111 +1064,59 @@ namespace MyNamespace.Strategies.Orderflow
                         break;
                     }
 
-                    // If the zone exists but is already Used, finalize the session with a full report and cleanup.
+                    // Active session: zone should be "pinned" and must not vanish due to ActiveZones fluctuations.
+                    // If we cannot find it in ActiveZones (or it is Used), we fallback to last-known zone bounds and continue.
                     if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
                     {
-                        try
-                        {
-                            var lastDec = t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0
-                                ? t.SessionDecisionHistory[t.SessionDecisionHistory.Count - 1]
-                                : null;
-
-                            if (t.SessionStartBar >= 0 && t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0)
-                            {
-                                LogSessionProtocol(
-                                    t,
-                                    foundZoneAnyStatus,
-                                    history,
-                                    currentSnapshot,
-                                    thresholds,
-                                    tickSize,
-                                    MaxSessionBars,
-                                    MaxConsecutiveBadCloses,
-                                    MaxSessionPenetrationTicks,
-                                    outcome: "ABBRUCH – Zone wurde intern auf Used gesetzt",
-                                    finalDecision: lastDec);
-                            }
-                        }
-                        catch { }
-
                         try
                         {
                             LogExplainOnce(
                                 currentSnapshot.Bar,
                                 kv.Key,
-                                stage: "Session.End.ZoneUsed",
+                                stage: "Session.ZoneUsed.FallbackPinnedZone",
                                 lines: new[]
                                 {
                                     $"Dir={_direction}",
                                     $"Zone={kv.Key}",
-                                    $"Reason: SessionActive=true aber Zone.Status=Used → Session wird beendet und Tracker entfernt."
+                                    $"Reason: SessionActive=true aber Zone.Status=Used → Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
+                                    $"PinnedBounds=[{t.LastKnownZoneLow:F2}..{t.LastKnownZoneHigh:F2}] Type={t.LastKnownZoneType} Confirmed={t.LastKnownZoneConfirmed}"
                                 });
                         }
                         catch { }
-
-                        t.SessionActive = false;
-                        (trackersToRemove ??= new List<int>()).Add(kv.Key);
-                        continue;
                     }
-
-                    // Session is active but its zone isn't available/eligible from ActiveZones snapshot.
-                    // Log once so this never looks like "no checks happened".
-                    try
+                    else
                     {
-                        LogExplainOnce(
-                            currentSnapshot.Bar,
-                            kv.Key,
-                            stage: "Session.ZoneMissing",
-                            lines: new[]
-                            {
-                                $"Dir={_direction}",
-                                $"Zone={kv.Key}",
-                                $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones (evtl. entfernt oder Status=Used).",
-                                $"zones.Count={zones.Count}"
-                            });
-                    }
-                    catch { }
-
-                    // Guarantee: if a session is active but its zone is missing from ActiveZones,
-                    // print a full report using last-known zone data and end the session.
-                    try
-                    {
-                        var lastDec = t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0
-                            ? t.SessionDecisionHistory[t.SessionDecisionHistory.Count - 1]
-                            : null;
-
-                        if (t.SessionStartBar >= 0 && t.SessionDecisionHistory != null && t.SessionDecisionHistory.Count > 0)
+                        try
                         {
-                            var synthetic = new MarketStructureContext.Zone
-                            {
-                                Id = kv.Key,
-                                Type = t.LastKnownZoneType,
-                                Low = t.LastKnownZoneLow,
-                                High = t.LastKnownZoneHigh,
-                                Status = MarketStructureContext.ZoneStatus.Used,
-                                PivotBar = -1,
-                                IsConfirmed = t.LastKnownZoneConfirmed,
-                                CreatedBar = -1,
-                            };
-
-                            LogSessionProtocol(
-                                t,
-                                synthetic,
-                                history,
-                                currentSnapshot,
-                                thresholds,
-                                tickSize,
-                                MaxSessionBars,
-                                MaxConsecutiveBadCloses,
-                                MaxSessionPenetrationTicks,
-                                outcome: "ABBRUCH – Zone nicht mehr in ActiveZones (Snapshot/Removal)",
-                                finalDecision: lastDec);
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                kv.Key,
+                                stage: "Session.ZoneMissing.FallbackPinnedZone",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={kv.Key}",
+                                    $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones → Fallback auf gepinnte Zone-Daten.",
+                                    $"PinnedBounds=[{t.LastKnownZoneLow:F2}..{t.LastKnownZoneHigh:F2}] Type={t.LastKnownZoneType} Confirmed={t.LastKnownZoneConfirmed}",
+                                    $"zones.Count={zones.Count}"
+                                });
                         }
+                        catch { }
                     }
-                    catch { }
 
-                    t.SessionActive = false;
-                    (trackersToRemove ??= new List<int>()).Add(kv.Key);
+                    candidateZone = new MarketStructureContext.Zone
+                    {
+                        Id = kv.Key,
+                        Type = t.LastKnownZoneType,
+                        Low = t.LastKnownZoneLow,
+                        High = t.LastKnownZoneHigh,
+                        Status = MarketStructureContext.ZoneStatus.Ready,
+                        PivotBar = -1,
+                        IsConfirmed = t.LastKnownZoneConfirmed,
+                        CreatedBar = -1,
+                    };
+                    candidateFromTouch = false;
+                    break;
                 }
 
                 if (trackersToRemove != null)
@@ -1245,6 +1193,11 @@ namespace MyNamespace.Strategies.Orderflow
             }
             catch { }
             var tracker = GetOrCreateTracker(candidateZone.Id, currentSnapshot.Bar);
+
+            tracker.LastKnownZoneLow = candidateZone.Low;
+            tracker.LastKnownZoneHigh = candidateZone.High;
+            tracker.LastKnownZoneType = candidateZone.Type;
+            tracker.LastKnownZoneConfirmed = candidateZone.IsConfirmed;
 
             // ============================================================
             // AKTIVE SESSION WEITERFÜHREN (A oder B)
@@ -2296,12 +2249,20 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
 
-                lines.Add("DER PREISVERLAUF:");
+                lines.Add("STORYLINE:");
                 int startBar = tracker.SessionStartBar;
                 int endBar = endBarForReport;
                 OvSnapshot? prevSnap = null;
                 OvSnapshot? prevPrevSnap = null;
                 int barNumber = 0;
+
+                int confirmStartBar = tracker.SessionAbsorptionConfirmed
+                    ? (tracker.SessionAbsorptionBar + 1)
+                    : int.MaxValue;
+                bool hasDefenseChapter = endBar >= (startBar + 1);
+                bool hasConfirmChapter = tracker.SessionAbsorptionConfirmed && confirmStartBar <= endBar;
+
+                lines.Add("TOUCH:");
 
                 int green = 0;
                 int red = 0;
@@ -2320,6 +2281,18 @@ namespace MyNamespace.Strategies.Orderflow
                 for (int b = startBar; b <= endBar; b++)
                 {
                     barNumber++;
+
+                    if (b == startBar + 1 && hasDefenseChapter)
+                    {
+                        lines.Add(string.Empty);
+                        lines.Add("VERTEIDIGUNG:");
+                    }
+                    if (b == confirmStartBar && hasConfirmChapter)
+                    {
+                        lines.Add(string.Empty);
+                        lines.Add("BESTÄTIGUNG:");
+                    }
+
                     OvSnapshot? s = null;
                     if (b == currentSnapshot.Bar)
                         s = currentSnapshot;
@@ -2472,7 +2445,7 @@ namespace MyNamespace.Strategies.Orderflow
                         }
                         else
                         {
-                            phaseLabel = "[Verteidigung]";
+                            phaseLabel = (b == tracker.SessionStartBar) ? "[Touch→Verteidigung]" : "[Verteidigung]";
                             scoreText = $"{barScore:0.0}/{DefenseThreshold:0.0}";
                             bestText = $"BestVerteidigung: {bestDefense:0.0}/{DefenseThreshold:0.0}";
                         }
