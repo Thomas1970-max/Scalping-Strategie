@@ -98,6 +98,7 @@ namespace MyNamespace.Strategies.Orderflow
 			public decimal SessionAbsorptionPocPrice;
 			public bool SessionSawUaToFa;
 			public int SessionUaToFaBar;
+			public bool SessionSawExhaustion;
 			public int ConsecutiveBadCloses;
 			public int SessionMaxPenetrationTicks;
 			public decimal SessionBestScore;
@@ -591,17 +592,17 @@ namespace MyNamespace.Strategies.Orderflow
             }
             decimal uaToFaPts = tracker.SessionSawUaToFa ? 1m : 0m;
             score += uaToFaPts;
-            items.Add(new ScoreItem { Key = "UaToFa", Points = uaToFaPts, TextDe = tracker.SessionSawUaToFa ? "UA→FA: JA -> +1" : "UA→FA: NEIN -> +0" });
+            items.Add(new ScoreItem { Key = "UA→FA", Points = uaToFaPts, TextDe = tracker.SessionSawUaToFa ? "UA→FA: JA -> +1" : "UA→FA: NEIN -> +0" });
 
             int touchesW;
             int faAtZoneW;
             bool progressOk;
             var pathNow = DetermineAllowPath(history, curr, prev, zone, thresholds, tickSize, dir, out touchesW, out faAtZoneW, out progressOk);
             bool multiFa = pathNow == AllowPath.MultiFaDefense;
-            decimal multiFaPts = multiFa ? 1m : 0m;
+            decimal multiFaPts = (multiFa && !tracker.SessionSawUaToFa) ? 1m : 0m;
             score += multiFaPts;
             items.Add(new ScoreItem { Key = "MultiFA", Points = multiFaPts, TextDe = multiFa ? "Multi-FA-Verteidigung: JA -> +1" : "Multi-FA-Verteidigung: NEIN -> +0" });
-            if (multiFa)
+            if (multiFaPts > 0m)
                 tracker.SessionSawMultiFaDefense = true;
 
             if (!tracker.SessionPressureSeen)
@@ -611,17 +612,20 @@ namespace MyNamespace.Strategies.Orderflow
                 bool lowVol = volMedian > 0m && curr.Volume > 0m && curr.Volume < (volMedian * 0.85m);
                 decimal lowVolPts = lowVol ? 1m : 0m;
                 score += lowVolPts;
-                items.Add(new ScoreItem { Key = "LowVol", Points = lowVolPts, TextDe = lowVol ? "LowVol (adaptiv): JA -> +1" : "LowVol (adaptiv): NEIN -> +0" });
+                items.Add(new ScoreItem { Key = "WenigGegenwehr", Points = lowVolPts, TextDe = lowVol ? "Wenig Gegenwehr: Volumen unter Session-Median (adaptiv) -> +1" : "Wenig Gegenwehr: NEIN -> +0" });
 
-                decimal exhPts = dir == OrderDirections.Buy
-                    ? (curr.NetDeltaTotal > -absNetDeltaMin ? 1m : 0m)
-                    : (curr.NetDeltaTotal < absNetDeltaMin ? 1m : 0m);
+                bool exhaustionHere = dir == OrderDirections.Buy
+                    ? (curr.NetDeltaTotal > -absNetDeltaMin)
+                    : (curr.NetDeltaTotal < absNetDeltaMin);
+                if (exhaustionHere)
+                    tracker.SessionSawExhaustion = true;
+                decimal exhPts = tracker.SessionSawExhaustion ? 1m : 0m;
                 score += exhPts;
-                items.Add(new ScoreItem { Key = "Exhaustion", Points = exhPts, TextDe = exhPts > 0m ? "Exhaustion: JA -> +1" : "Exhaustion: NEIN -> +0" });
+                items.Add(new ScoreItem { Key = "Exhaustion", Points = exhPts, TextDe = tracker.SessionSawExhaustion ? "Exhaustion (Latch): JA -> +1" : "Exhaustion (Latch): NEIN -> +0" });
             }
             else
             {
-                items.Add(new ScoreItem { Key = "LowVol", Points = 0m, TextDe = "LowVol: n/v (Druck vorhanden)" });
+                items.Add(new ScoreItem { Key = "WenigGegenwehr", Points = 0m, TextDe = "Wenig Gegenwehr: n/v (Druck vorhanden)" });
                 items.Add(new ScoreItem { Key = "Exhaustion", Points = 0m, TextDe = "Exhaustion: n/v (Druck vorhanden)" });
             }
 
@@ -661,9 +665,6 @@ namespace MyNamespace.Strategies.Orderflow
 
             var items = new List<ScoreItem>(16);
             decimal score = 0m;
-
-            score += 1m;
-            items.Add(new ScoreItem { Key = "Confirm", Points = 1m, TextDe = "Confirm: Phase aktiv" });
 
             bool aggressiveEntry;
             if (dir == OrderDirections.Buy)
@@ -1982,6 +1983,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionAbsorptionPocPrice = 0m;
             tracker.SessionSawUaToFa = false;
             tracker.SessionUaToFaBar = -1;
+            tracker.SessionSawExhaustion = false;
             tracker.ConsecutiveBadCloses = 0;
             tracker.SessionMaxPenetrationTicks = 0;
             tracker.SessionBestScore = 0m;
@@ -2275,7 +2277,7 @@ namespace MyNamespace.Strategies.Orderflow
                 string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
                 string phaseDe = tracker.SessionPhase == ReversalPhase.Defense
                     ? "Verteidigung"
-                    : tracker.SessionPhase.ToString();
+                    : (tracker.SessionPhase == ReversalPhase.Touch ? "Touch" : "Bestätigung");
 
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
@@ -2503,6 +2505,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 if (it == null) continue;
                                 if (it.Points == 0m) continue;
                                 if (string.IsNullOrEmpty(it.Key)) continue;
+                                if (it.Key == "Defense" || it.Key == "Total") continue;
                                 parts.Add($"{it.Key}({it.Points:+0.0;-0.0;0.0})");
                             }
                             if (parts.Count > 0)
@@ -2511,7 +2514,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                         if (barPhase == ReversalPhase.Confirm)
                         {
-                            phaseLabel = "[Confirm]";
+                            phaseLabel = "[Bestätigung]";
                             scoreText = $"{barScore:0.0}/{ConfirmThreshold:0.0}";
                         }
                         else
