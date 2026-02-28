@@ -10033,7 +10033,24 @@ namespace MyNamespace.Strategies
                     //this.LogInfo($"[OnCalculate] Tick-Update: Last={last}, BestSinceEntry={_bestSinceEntry} (Long={_isLongTrade})");
                 }
 
-                // 2) BreakEven pro Tick ausf?hren, sobald Manager initialisiert sind
+                // 2) Manager-Init intrabar erlauben (nicht an Heavy-Work binden)
+                // Hintergrund: wenn der Entry intrabar erfolgt und der Heavy-Work Teil f?r diesen Bar bereits gelaufen ist,
+                // w?rde _managersInitialized sonst erst beim n?chsten Bar gesetzt und BreakEven kann nicht intrabar arbeiten.
+                if (!_managersInitialized && !_isExitPlacementPending && _slOrder != null && _tpOrder != null)
+                {
+                    try
+                    {
+                        InitializeManagersAfterEntry(_lastTpSlResult);
+                        this.LogInfo("[OnCalculate] Managers initialized in tick-light section.");
+                    }
+                    catch (Exception ex)
+                    {
+                        this.LogWarn($"[OnCalculate] Tick-light InitializeManagersAfterEntry failed: {ex.Message}");
+                        _managersInitialized = false;
+                    }
+                }
+
+                // 3) BreakEven pro Tick ausf?hren, sobald Manager initialisiert sind
                 // (Manager-Init bleibt weiter unten im heavy-work Teil)
                 if (_managersInitialized && !_isExitPlacementPending && EnableBreakEven)
                 {
@@ -13504,6 +13521,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLong,
+                            BreakEvenLevelsTrendConfig = "5:1",
                             SuggestedStopLossPrice = suggestedSlLong,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -13601,6 +13619,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
+                            BreakEvenLevelsTrendConfig = "5:1",
                             SuggestedStopLossPrice = suggestedSlShort,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,

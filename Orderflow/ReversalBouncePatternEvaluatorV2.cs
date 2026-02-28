@@ -2283,6 +2283,29 @@ namespace MyNamespace.Strategies.Orderflow
                 if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
                     lines.Add($"UA→FA: gesehen in Session (Latch) bei Bar {tracker.SessionUaToFaBar}");
                 lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
+
+                decimal bestDefenseOverall = 0m;
+                decimal bestConfirmOverall = 0m;
+                if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
+                {
+                    int minCount = Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count);
+                    if (tracker.SessionDecisionPhases != null)
+                        minCount = Math.Min(minCount, tracker.SessionDecisionPhases.Count);
+
+                    for (int i = 0; i < minCount; i++)
+                    {
+                        var d = tracker.SessionDecisionHistory[i];
+                        if (d == null) continue;
+                        var ph = (tracker.SessionDecisionPhases != null && i < tracker.SessionDecisionPhases.Count)
+                            ? tracker.SessionDecisionPhases[i]
+                            : ReversalPhase.Defense;
+                        if (ph == ReversalPhase.Defense && d.TotalScore > bestDefenseOverall)
+                            bestDefenseOverall = d.TotalScore;
+                        if (ph == ReversalPhase.Confirm && d.TotalScore > bestConfirmOverall)
+                            bestConfirmOverall = d.TotalScore;
+                    }
+                }
+                lines.Add($"BESTSCORE: Verteidigung {bestDefenseOverall:0.0}/4.0 | Confirm {bestConfirmOverall:0.0}/6.0");
                 if (tracker.SessionAbsorptionConfirmed)
                     lines.Add($"ABSORPTION: bestätigt bei Bar {tracker.SessionAbsorptionBar} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
@@ -2317,6 +2340,8 @@ namespace MyNamespace.Strategies.Orderflow
                 var barsFA = new List<int>();
                 var barsAbs = new List<int>();
                 var barsFlip = new List<int>();
+
+                decimal cumulativeScore = 0m;
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -2361,8 +2386,7 @@ namespace MyNamespace.Strategies.Orderflow
                     bool hasDecision = false;
                     decimal barScore = 0m;
                     ReversalPhase barPhase = ReversalPhase.Touch;
-                    decimal bestDefense = 0m;
-                    decimal bestConfirm = 0m;
+                    DecisionResult? barDecision = null;
                     if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
                     {
                         int minCount = Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count);
@@ -2374,23 +2398,12 @@ namespace MyNamespace.Strategies.Orderflow
                             if (tracker.SessionDecisionBars[i] == b)
                             {
                                 barScore = tracker.SessionDecisionHistory[i].TotalScore;
+                                barDecision = tracker.SessionDecisionHistory[i];
                                 if (tracker.SessionDecisionPhases != null && i < tracker.SessionDecisionPhases.Count)
                                     barPhase = tracker.SessionDecisionPhases[i];
                                 hasDecision = true;
                                 break;
                             }
-                        }
-
-                        for (int i = 0; i < minCount; i++)
-                        {
-                            var d = tracker.SessionDecisionHistory[i];
-                            if (d == null) continue;
-                            var ph = (tracker.SessionDecisionPhases != null && i < tracker.SessionDecisionPhases.Count)
-                                ? tracker.SessionDecisionPhases[i] : ReversalPhase.Defense;
-                            if (ph == ReversalPhase.Defense && d.TotalScore > bestDefense)
-                                bestDefense = d.TotalScore;
-                            if (ph == ReversalPhase.Confirm && d.TotalScore > bestConfirm)
-                                bestConfirm = d.TotalScore;
                         }
                     }
 
@@ -2472,33 +2485,47 @@ namespace MyNamespace.Strategies.Orderflow
                     string eventStr = events.Count > 0 ? ("| " + string.Join(" ", events)) : string.Empty;
                     string phaseLabel;
                     string scoreText;
-                    string bestText;
+                    string cumText = string.Empty;
+                    string itemText = string.Empty;
                     if (hasDecision)
                     {
                         const decimal DefenseThreshold = 4m;
                         const decimal ConfirmThreshold = 6m;
+
+                        cumulativeScore += barScore;
+                        cumText = $"Cum: {cumulativeScore:0.0}";
+
+                        if (barDecision?.Items != null && barDecision.Items.Count > 0)
+                        {
+                            var parts = new List<string>(barDecision.Items.Count);
+                            foreach (var it in barDecision.Items)
+                            {
+                                if (it == null) continue;
+                                if (it.Points == 0m) continue;
+                                if (string.IsNullOrEmpty(it.Key)) continue;
+                                parts.Add($"{it.Key}({it.Points:+0.0;-0.0;0.0})");
+                            }
+                            if (parts.Count > 0)
+                                itemText = "| " + string.Join(" ", parts);
+                        }
+
                         if (barPhase == ReversalPhase.Confirm)
                         {
                             phaseLabel = "[Confirm]";
                             scoreText = $"{barScore:0.0}/{ConfirmThreshold:0.0}";
-                            bestText = $"BestConfirm: {bestConfirm:0.0}/{ConfirmThreshold:0.0}";
                         }
                         else
                         {
                             phaseLabel = (b == tracker.SessionStartBar) ? "[Touch→Verteidigung]" : "[Verteidigung]";
                             scoreText = $"{barScore:0.0}/{DefenseThreshold:0.0}";
-                            bestText = $"BestVerteidigung: {bestDefense:0.0}/{DefenseThreshold:0.0}";
                         }
                     }
                     else
                     {
                         phaseLabel = barNumber == 1 ? "[Touch]" : "";
                         scoreText = "n/v";
-                        bestText = bestDefense > 0m || bestConfirm > 0m
-                            ? $"BestVer: {bestDefense:0.0}/4.0 BestConf: {bestConfirm:0.0}/6.0"
-                            : "";
                     }
-                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel} Score: {scoreText} {bestText} {eventStr}".TrimEnd());
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel} Score: {scoreText} {cumText} {eventStr} {itemText}".TrimEnd());
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
