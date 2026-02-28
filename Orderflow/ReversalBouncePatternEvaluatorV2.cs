@@ -1139,72 +1139,105 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             if (candidateZone == null)
-                return PatternEvaluationResult.NotDetected(Type, $"ZoneGate: no touched/session zone for dir={_direction} (zones={zones.Count})");
-
-            // --- Compression Gate ---
-            try
             {
-                if (candidateZone.IsConfirmed)
+                // Wenn bereits eine Session läuft, MUSS diese weiter evaluiert werden – auch ohne frischen Zonenkontakt.
+                ZoneTracker? active = null;
+                try
                 {
-                    MarketStructureContext.Zone? nearestOpp = null;
-                    decimal bestGap = decimal.MaxValue;
-
-                    foreach (var z in zones)
+                    foreach (var kv in _trackersByZoneId)
                     {
-                        if (z == null || z.Id == candidateZone.Id || !z.IsConfirmed)
-                            continue;
-
-                        bool strongOpp = z.IsMultiTouch || z.MultiTouchScore >= 2;
-                        if (!strongOpp)
-                            continue;
-
-                        bool oppOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Resistance)
-                                     || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Support);
-                        if (!oppOk)
-                            continue;
-
-                        decimal gap = _direction == OrderDirections.Buy
-                            ? z.Low - candidateZone.High
-                            : candidateZone.Low - z.High;
-                        if (gap < 0m) gap = 0m;
-
-                        if (gap < bestGap)
+                        if (kv.Value != null && kv.Value.SessionActive)
                         {
-                            bestGap = gap;
-                            nearestOpp = z;
+                            active = kv.Value;
+                            break;
                         }
                     }
+                }
+                catch { }
 
-                    if (nearestOpp != null)
+                if (active != null)
+                {
+                    foreach (var z in zones)
                     {
-                        int gapTicks = (int)Math.Round(bestGap / tickSize, MidpointRounding.AwayFromZero);
-                        bool inBox = _direction == OrderDirections.Buy
-                            ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.High)
-                            : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.Low);
-
-                        if (gapTicks <= compressionGapTicks && inBox)
+                        if (z != null && z.Id == active.ZoneId)
                         {
-                            LogExplainOnce(
-                                currentSnapshot.Bar,
-                                candidateZone.Id,
-                                stage: "Compression.Block",
-
-                                lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"CandidateZone={candidateZone.Id}[{candidateZone.Low:F2}..{candidateZone.High:F2}]({candidateZone.Type})",
-                                    $"NearestOppZone={nearestOpp.Id}[{nearestOpp.Low:F2}..{nearestOpp.High:F2}]({nearestOpp.Type})",
-                                    $"Blockiert: Markt ist zwischen Zone und starker Gegen-Zone eingeklemmt (Box/Sandwich).",
-                                    $"Abstand={gapTicks} Ticks (Limit={compressionGapTicks}).",
-                                    $"Folge: Kein Entry-Check, um Seitwärts-Chaos zu vermeiden."
-                                });
-                            return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: boxed between zones (gapTicks={gapTicks} <= {compressionGapTicks})");
+                            candidateZone = z;
+                            candidateFromTouch = false;
+                            break;
                         }
                     }
                 }
             }
-            catch { }
+
+            if (candidateZone == null)
+                return PatternEvaluationResult.NotDetected(Type, $"ZoneGate: no touched/session zone for dir={_direction} (zones={zones.Count})");
+
             var tracker = GetOrCreateTracker(candidateZone.Id, currentSnapshot.Bar);
+
+            // --- Compression Gate ---
+            // Wichtig: darf KEINE aktive Session unterbrechen, sonst fehlen Decisions pro Bar (Score: n/v im Report).
+            if (!tracker.SessionActive)
+            {
+                try
+                {
+                    if (candidateZone.IsConfirmed)
+                    {
+                        MarketStructureContext.Zone? nearestOpp = null;
+                        decimal bestGap = decimal.MaxValue;
+
+                        foreach (var z in zones)
+                        {
+                            if (z == null || z.Id == candidateZone.Id || !z.IsConfirmed)
+                                continue;
+
+                            bool strongOpp = z.IsMultiTouch || z.MultiTouchScore >= 2;
+                            if (!strongOpp)
+                                continue;
+
+                            bool oppOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Resistance)
+                                         || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Support);
+                            if (!oppOk)
+                                continue;
+
+                            decimal gap = _direction == OrderDirections.Buy
+                                ? z.Low - candidateZone.High
+                                : candidateZone.Low - z.High;
+                            if (gap < 0m) gap = 0m;
+                            if (gap < bestGap)
+                            {
+                                bestGap = gap;
+                                nearestOpp = z;
+                            }
+                        }
+
+                        if (nearestOpp != null)
+                        {
+                            int gapTicks = (int)Math.Round(bestGap / tickSize, MidpointRounding.AwayFromZero);
+                            bool inBox = _direction == OrderDirections.Buy
+                                ? (currentSnapshot.Close >= candidateZone.High && currentSnapshot.Close <= nearestOpp.High)
+                                : (currentSnapshot.Close <= candidateZone.Low && currentSnapshot.Close >= nearestOpp.Low);
+                            if (gapTicks <= compressionGapTicks && inBox)
+                            {
+                                LogExplainOnce(
+                                    currentSnapshot.Bar,
+                                    candidateZone.Id,
+                                    stage: "Compression.Block",
+                                    lines: new[]
+                                    {
+                                        $"Dir={_direction}",
+                                        $"CandidateZone={candidateZone.Id}[{candidateZone.Low:F2}..{candidateZone.High:F2}]({candidateZone.Type})",
+                                        $"NearestOppZone={nearestOpp.Id}[{nearestOpp.Low:F2}..{nearestOpp.High:F2}]({nearestOpp.Type})",
+                                        $"Blockiert: Markt ist zwischen Zone und starker Gegen-Zone eingeklemmt (Box/Sandwich).",
+                                        $"Abstand={gapTicks} Ticks (Limit={compressionGapTicks}).",
+                                        $"Folge: Kein Entry-Check, um Seitwärts-Chaos zu vermeiden."
+                                    });
+                                return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: boxed between zones (gapTicks={gapTicks} <= {compressionGapTicks})");
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
 
             tracker.LastKnownZoneLow = candidateZone.Low;
             tracker.LastKnownZoneHigh = candidateZone.High;
