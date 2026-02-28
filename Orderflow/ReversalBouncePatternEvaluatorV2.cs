@@ -1215,37 +1215,6 @@ namespace MyNamespace.Strategies.Orderflow
             // ============================================================
             if (tracker.SessionActive)
             {
-                try
-                {
-                    bool touchNow = TouchesZone(currentSnapshot, candidateZone);
-                    if (touchNow && prevClosed != null)
-                    {
-                        decimal tol = tickSize;
-                        bool approachOk = _direction == OrderDirections.Buy
-                            ? prevClosed.Close >= (candidateZone.High - tol)
-                            : prevClosed.Close <= (candidateZone.Low + tol);
-                        if (!approachOk)
-                        {
-                            LogExplainOnce(
-                                currentSnapshot.Bar,
-                                candidateZone.Id,
-                                stage: "Session.Touch.Blocked.WrongSide",
-                                lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"Zone={candidateZone.Id}",
-                                    $"Type={candidateZone.Type}",
-                                    $"PrevClose={prevClosed.Close:F2}",
-                                    $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
-                                    $"Rule={(candidateZone.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Session-Bar nicht entry-relevant"
-                                });
-                            tracker.SessionLastEvalBar = currentSnapshot.Bar;
-                            return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: session touch blocked (wrong side)");
-                        }
-                    }
-                }
-                catch { }
-
                 var sessionOutcome = EvaluateActiveSession(
                     tracker, currentSnapshot, history, candidateZone, thresholds, tickSize,
                     MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
@@ -2053,11 +2022,35 @@ namespace MyNamespace.Strategies.Orderflow
 
             int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar + 1;
 
+            static DecisionResult CreateExitDecision(string reason)
+            {
+                return new DecisionResult
+                {
+                    Allowed = false,
+                    Entry = false,
+                    Path = AllowPath.MultiFaDefense,
+                    BaseScore = 0,
+                    TotalScore = 0m,
+                    Confidence = 0m,
+                    BlockReasonDe = reason,
+                    Items = new List<ScoreItem>()
+                };
+            }
+
             // --- Invalidierung: Session-Dauer ---
             if (sessionBarNr > maxSessionBars)
             {
                 tracker.SessionActive = false;
                 tracker.SessionEndReason = $"Session abgelaufen nach {sessionBarNr} Bars ohne ausreichenden Score (max. {maxSessionBars}).";
+
+                var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                decision = exitDec;
+                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                tracker.SessionDecisionBars ??= new List<int>();
+                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                tracker.SessionDecisionHistory.Add(exitDec);
+                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
                 return SessionEvalOutcome.Expired;
             }
 
@@ -2075,6 +2068,15 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 tracker.SessionActive = false;
                 tracker.SessionEndReason = $"Session abgebrochen: {tracker.ConsecutiveBadCloses} Bars in Folge mit Close auf der falschen Seite der Zone (Range-Verdacht).";
+
+                var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                decision = exitDec;
+                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                tracker.SessionDecisionBars ??= new List<int>();
+                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                tracker.SessionDecisionHistory.Add(exitDec);
+                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
                 return SessionEvalOutcome.Invalidated;
             }
 
@@ -2092,6 +2094,15 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 tracker.SessionActive = false;
                 tracker.SessionEndReason = $"Session abgebrochen: Penetration {tracker.SessionMaxPenetrationTicks} Ticks übersteigt Limit ({maxSessionPenetrationTicks} Ticks). Kein Sweep mehr, sondern Durchbruch.";
+
+                var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                decision = exitDec;
+                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                tracker.SessionDecisionBars ??= new List<int>();
+                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                tracker.SessionDecisionHistory.Add(exitDec);
+                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
                 return SessionEvalOutcome.Invalidated;
             }
 
@@ -2132,6 +2143,15 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     tracker.SessionActive = false;
                     tracker.SessionEndReason = $"Session abgebrochen: Defense/Absorption nicht bestätigt innerhalb {MaxAbsorptionBars} Bars.";
+
+                    var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                    decision = exitDec;
+                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                    tracker.SessionDecisionBars ??= new List<int>();
+                    tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                    tracker.SessionDecisionHistory.Add(exitDec);
+                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                    tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
                     return SessionEvalOutcome.Expired;
                 }
 
@@ -2178,6 +2198,15 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     tracker.SessionActive = false;
                     tracker.SessionEndReason = $"Session abgebrochen: Confirm ohne GO innerhalb {MaxConfirmBars} Bars.";
+
+                    var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                    decision = exitDec;
+                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                    tracker.SessionDecisionBars ??= new List<int>();
+                    tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                    tracker.SessionDecisionHistory.Add(exitDec);
+                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                    tracker.SessionDecisionPhases.Add(ReversalPhase.Confirm);
                     return SessionEvalOutcome.Expired;
                 }
 
