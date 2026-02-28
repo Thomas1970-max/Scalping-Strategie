@@ -2344,6 +2344,10 @@ namespace MyNamespace.Strategies.Orderflow
                 var barsFlip = new List<int>();
 
                 decimal cumulativeScore = 0m;
+                decimal lastDefenseScore = 0m;
+                decimal lastConfirmScore = 0m;
+                var lastDefenseItemPoints = new Dictionary<string, decimal>(StringComparer.Ordinal);
+                var lastConfirmItemPoints = new Dictionary<string, decimal>(StringComparer.Ordinal);
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -2494,19 +2498,36 @@ namespace MyNamespace.Strategies.Orderflow
                         const decimal DefenseThreshold = 4m;
                         const decimal ConfirmThreshold = 6m;
 
-                        cumulativeScore += barScore;
+                        bool isConfirmBar = barPhase == ReversalPhase.Confirm;
+                        decimal prevScore = isConfirmBar ? lastConfirmScore : lastDefenseScore;
+                        decimal deltaScore = barScore - prevScore;
+                        if (deltaScore < 0m)
+                            deltaScore = 0m;
+                        cumulativeScore += deltaScore;
                         cumText = $"Cum: {cumulativeScore:0.0}";
+                        if (isConfirmBar)
+                            lastConfirmScore = barScore;
+                        else
+                            lastDefenseScore = barScore;
 
                         if (barDecision?.Items != null && barDecision.Items.Count > 0)
                         {
                             var parts = new List<string>(barDecision.Items.Count);
+                            var lastPoints = isConfirmBar ? lastConfirmItemPoints : lastDefenseItemPoints;
                             foreach (var it in barDecision.Items)
                             {
                                 if (it == null) continue;
                                 if (it.Points == 0m) continue;
                                 if (string.IsNullOrEmpty(it.Key)) continue;
                                 if (it.Key == "Defense" || it.Key == "Total") continue;
-                                parts.Add($"{it.Key}({it.Points:+0.0;-0.0;0.0})");
+
+                                decimal prevPts = 0m;
+                                if (lastPoints.TryGetValue(it.Key, out var p))
+                                    prevPts = p;
+                                decimal deltaPts = it.Points - prevPts;
+                                if (deltaPts > 0m)
+                                    parts.Add($"{it.Key}({deltaPts:+0.0;-0.0;0.0})");
+                                lastPoints[it.Key] = it.Points;
                             }
                             if (parts.Count > 0)
                                 itemText = "| " + string.Join(" ", parts);
