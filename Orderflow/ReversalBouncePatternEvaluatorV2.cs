@@ -918,168 +918,77 @@ namespace MyNamespace.Strategies.Orderflow
                 }
             }
 
-            // --- Candidate Selection ---
-            // 1) Zonen, die aktuell berührt werden
             var prevClosed = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 12);
-            var touchedZones = new List<MarketStructureContext.Zone>(4);
 
-            int zoneCountAll = 0;
-            int zoneCountEligibleStatus = 0;
-            int zoneCountDirOk = 0;
-            int zoneCountTouchesAny = 0;
-            int zoneCountTouchesEligible = 0;
-            foreach (var z in zones)
+            // --- Candidate Selection ---
+            // Harte Regel: maximal eine aktive Session insgesamt.
+            // Solange irgendeine Session aktiv ist, wird ausschließlich diese Session weiter evaluiert.
+            // Touches anderer Zonen starten keine neue Session und dürfen die aktive Session nicht verdrängen.
+            MarketStructureContext.Zone? candidateZone = null;
+            bool candidateFromTouch = false;
+
+            ZoneTracker? activeSessionTracker = null;
+            foreach (var kv in _trackersByZoneId)
             {
-                if (z == null)
+                var t = kv.Value;
+                if (!t.SessionActive)
                     continue;
 
-                zoneCountAll++;
-                bool statusEligible = (z.Status == MarketStructureContext.ZoneStatus.New || z.Status == MarketStructureContext.ZoneStatus.Ready);
-                if (statusEligible)
-                    zoneCountEligibleStatus++;
-
-                bool touchesAny = TouchesZone(currentSnapshot, z);
-                if (touchesAny)
-                    zoneCountTouchesAny++;
-
-                if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
-                    continue;
-
-                bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
-                             || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
-                if (!dirOk)
-                    continue;
-
-                zoneCountDirOk++;
-
-                if (!TouchesZone(currentSnapshot, z))
-                    continue;
-
-                zoneCountTouchesEligible++;
-
-                if (prevClosed != null)
+                if (activeSessionTracker == null)
                 {
-                    decimal tol = tickSize;
-                    bool approachOk = _direction == OrderDirections.Buy
-                        ? prevClosed.Close >= (z.High - tol)
-                        : prevClosed.Close <= (z.Low + tol);
-                    if (!approachOk)
-                    {
-                        LogExplainOnce(
-                            currentSnapshot.Bar,
-                            z.Id,
-                            stage: "Touch.Blocked.WrongSide",
-                            lines: new[]
-                            {
-                                $"Dir={_direction}",
-                                $"Zone={z.Id}",
-                                $"Type={z.Type}",
-                                $"PrevClose={prevClosed.Close:F2}",
-                                $"Bounds=[{z.Low:F2}..{z.High:F2}]",
-                                $"Rule={(z.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Touch ignoriert"
-                            });
+                    activeSessionTracker = t;
+                    continue;
+                }
+
+                if (t.SessionStartBar >= 0 && (activeSessionTracker.SessionStartBar < 0 || t.SessionStartBar < activeSessionTracker.SessionStartBar))
+                    activeSessionTracker = t;
+            }
+
+            if (activeSessionTracker != null)
+            {
+                int activeZoneId = activeSessionTracker.ZoneId;
+                MarketStructureContext.Zone? foundZoneAnyStatus = null;
+                MarketStructureContext.Zone? foundLiveEligible = null;
+
+                foreach (var z in zones)
+                {
+                    if (z == null || z.Id != activeZoneId)
                         continue;
+
+                    foundZoneAnyStatus = z;
+
+                    // For continuing an already active session we must not require New/Ready.
+                    // A zone can legitimately be Triggered while the session is still evaluating.
+                    if (z.Status != MarketStructureContext.ZoneStatus.Used)
+                    {
+                        bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
+                                     || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
+                        if (dirOk)
+                            foundLiveEligible = z;
                     }
                 }
 
-                touchedZones.Add(z);
-            }
-
-            if (touchedZones.Count == 0)
-            {
-                try
+                if (foundLiveEligible != null)
                 {
-                    SmartLogger.Instance.LogIfChanged(
-                        category: "ReversalBounceV2",
-                        sourceId: $"V2.{_direction}",
-                        barIndex: currentSnapshot.Bar,
-                        message: $"[ReversalBounceV2:ZoneGate.NoCandidate] Dir={_direction} | zones={zoneCountAll} | eligibleStatus(New/Ready)={zoneCountEligibleStatus} | dirOk={zoneCountDirOk} | touchesAny={zoneCountTouchesAny} | touchesEligible={zoneCountTouchesEligible} | prevClosed={(prevClosed != null ? prevClosed.Close.ToString("F2") : "null")}",
-                        signature: SmartLogger.ComposeSignature(
-                            ("dir", _direction.ToString()),
-                            ("stage", "ZoneGate.NoCandidate"),
-                            ("bar", currentSnapshot.Bar.ToString()),
-                            ("zAll", zoneCountAll.ToString()),
-                            ("zElig", zoneCountEligibleStatus.ToString()),
-                            ("zDir", zoneCountDirOk.ToString()),
-                            ("zTouchAny", zoneCountTouchesAny.ToString()),
-                            ("zTouchElig", zoneCountTouchesEligible.ToString())),
-                        backendLogAction: s => _loggerSource?.LogInfo(s)
-                    );
+                    candidateZone = foundLiveEligible;
+                    candidateFromTouch = false;
                 }
-                catch { }
-            }
-
-            MarketStructureContext.Zone? candidateZone = touchedZones.Count > 0 ? touchedZones[0] : null;
-            bool candidateFromTouch = candidateZone != null;
-
-            if (touchedZones.Count > 1)
-            {
-                LogExplainOnce(
-                    currentSnapshot.Bar,
-                    candidateZone?.Id ?? 0,
-                    stage: "ZoneTouched.Multi",
-                    lines: new[]
-                    {
-                        $"Dir={_direction}",
-                        $"Mehrere Zonen wurden gleichzeitig berührt.",
-                        $"Berührte Zonen: {string.Join(", ", touchedZones.Select(t => $"#{t.Id} [{t.Low:F2}..{t.High:F2}] ({(t.IsConfirmed ? "bestätigt" : "noch nicht bestätigt")})"))}",
-                        $"Ich prüfe jetzt Zone #{candidateZone?.Id} (die erste in der Liste)."
-                    });
-            }
-
-            // 2) Fallback: Zone mit aktiver Session (auch ohne Touch)
-            if (candidateZone == null)
-            {
-                List<int>? trackersToRemove = null;
-                foreach (var kv in _trackersByZoneId)
+                else
                 {
-                    var t = kv.Value;
-                    if (!t.SessionActive)
-                        continue;
-
-                    MarketStructureContext.Zone? sessionZone = null;
-                    MarketStructureContext.Zone? foundZoneAnyStatus = null;
-                    foreach (var z in zones)
-                    {
-                        if (z == null || z.Id != kv.Key)
-                            continue;
-
-                        foundZoneAnyStatus = z;
-
-                        // For continuing an already active session we must not require New/Ready.
-                        // A zone can legitimately be Triggered while the session is still evaluating.
-                        if (z.Status != MarketStructureContext.ZoneStatus.Used)
-                        {
-                            bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
-                                         || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
-                            if (dirOk)
-                                sessionZone = z;
-                        }
-                    }
-
-                    if (sessionZone != null)
-                    {
-                        candidateZone = sessionZone;
-                        candidateFromTouch = false;
-                        break;
-                    }
-
-                    // Active session: zone should be "pinned" and must not vanish due to ActiveZones fluctuations.
-                    // If we cannot find it in ActiveZones (or it is Used), we fallback to last-known zone bounds and continue.
                     if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
                     {
                         try
                         {
                             LogExplainOnce(
                                 currentSnapshot.Bar,
-                                kv.Key,
+                                activeZoneId,
                                 stage: "Session.ZoneUsed.FallbackPinnedZone",
                                 lines: new[]
                                 {
                                     $"Dir={_direction}",
-                                    $"Zone={kv.Key}",
+                                    $"Zone={activeZoneId}",
                                     $"Reason: SessionActive=true aber Zone.Status=Used → Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
-                                    $"PinnedBounds=[{t.LastKnownZoneLow:F2}..{t.LastKnownZoneHigh:F2}] Type={t.LastKnownZoneType} Confirmed={t.LastKnownZoneConfirmed}"
+                                    $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}"
                                 });
                         }
                         catch { }
@@ -1090,14 +999,14 @@ namespace MyNamespace.Strategies.Orderflow
                         {
                             LogExplainOnce(
                                 currentSnapshot.Bar,
-                                kv.Key,
+                                activeZoneId,
                                 stage: "Session.ZoneMissing.FallbackPinnedZone",
                                 lines: new[]
                                 {
                                     $"Dir={_direction}",
-                                    $"Zone={kv.Key}",
+                                    $"Zone={activeZoneId}",
                                     $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones → Fallback auf gepinnte Zone-Daten.",
-                                    $"PinnedBounds=[{t.LastKnownZoneLow:F2}..{t.LastKnownZoneHigh:F2}] Type={t.LastKnownZoneType} Confirmed={t.LastKnownZoneConfirmed}",
+                                    $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
                                     $"zones.Count={zones.Count}"
                                 });
                         }
@@ -1106,23 +1015,125 @@ namespace MyNamespace.Strategies.Orderflow
 
                     candidateZone = new MarketStructureContext.Zone
                     {
-                        Id = kv.Key,
-                        Type = t.LastKnownZoneType,
-                        Low = t.LastKnownZoneLow,
-                        High = t.LastKnownZoneHigh,
+                        Id = activeZoneId,
+                        Type = activeSessionTracker.LastKnownZoneType,
+                        Low = activeSessionTracker.LastKnownZoneLow,
+                        High = activeSessionTracker.LastKnownZoneHigh,
                         Status = MarketStructureContext.ZoneStatus.Ready,
                         PivotBar = -1,
-                        IsConfirmed = t.LastKnownZoneConfirmed,
+                        IsConfirmed = activeSessionTracker.LastKnownZoneConfirmed,
                         CreatedBar = -1,
                     };
                     candidateFromTouch = false;
-                    break;
+                }
+            }
+            else
+            {
+                // Keine aktive Session → Touch-Kandidaten prüfen
+                var touchedZones = new List<MarketStructureContext.Zone>(4);
+
+                int zoneCountAll = 0;
+                int zoneCountEligibleStatus = 0;
+                int zoneCountDirOk = 0;
+                int zoneCountTouchesAny = 0;
+                int zoneCountTouchesEligible = 0;
+                foreach (var z in zones)
+                {
+                    if (z == null)
+                        continue;
+
+                    zoneCountAll++;
+                    bool statusEligible = (z.Status == MarketStructureContext.ZoneStatus.New || z.Status == MarketStructureContext.ZoneStatus.Ready);
+                    if (statusEligible)
+                        zoneCountEligibleStatus++;
+
+                    bool touchesAny = TouchesZone(currentSnapshot, z);
+                    if (touchesAny)
+                        zoneCountTouchesAny++;
+
+                    if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
+                        continue;
+
+                    bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
+                                 || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
+                    if (!dirOk)
+                        continue;
+
+                    zoneCountDirOk++;
+
+                    if (!TouchesZone(currentSnapshot, z))
+                        continue;
+
+                    zoneCountTouchesEligible++;
+
+                    if (prevClosed != null)
+                    {
+                        decimal tol = tickSize;
+                        bool approachOk = _direction == OrderDirections.Buy
+                            ? prevClosed.Close >= (z.High - tol)
+                            : prevClosed.Close <= (z.Low + tol);
+                        if (!approachOk)
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                z.Id,
+                                stage: "Touch.Blocked.WrongSide",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={z.Id}",
+                                    $"Type={z.Type}",
+                                    $"PrevClose={prevClosed.Close:F2}",
+                                    $"Bounds=[{z.Low:F2}..{z.High:F2}]",
+                                    $"Rule={(z.Type == MarketStructureContext.ZoneType.Support ? "Support nur von oben" : "Resistance nur von unten")}: Touch ignoriert"
+                                });
+                            continue;
+                        }
+                    }
+
+                    touchedZones.Add(z);
                 }
 
-                if (trackersToRemove != null)
+                if (touchedZones.Count == 0)
                 {
-                    for (int i = 0; i < trackersToRemove.Count; i++)
-                        _trackersByZoneId.Remove(trackersToRemove[i]);
+                    try
+                    {
+                        SmartLogger.Instance.LogIfChanged(
+                            category: "ReversalBounceV2",
+                            sourceId: $"V2.{_direction}",
+                            barIndex: currentSnapshot.Bar,
+                            message: $"[ReversalBounceV2:ZoneGate.NoCandidate] Dir={_direction} | zones={zoneCountAll} | eligibleStatus(New/Ready)={zoneCountEligibleStatus} | dirOk={zoneCountDirOk} | touchesAny={zoneCountTouchesAny} | touchesEligible={zoneCountTouchesEligible} | prevClosed={(prevClosed != null ? prevClosed.Close.ToString("F2") : "null")}",
+                            signature: SmartLogger.ComposeSignature(
+                                ("dir", _direction.ToString()),
+                                ("stage", "ZoneGate.NoCandidate"),
+                                ("bar", currentSnapshot.Bar.ToString()),
+                                ("zAll", zoneCountAll.ToString()),
+                                ("zElig", zoneCountEligibleStatus.ToString()),
+                                ("zDir", zoneCountDirOk.ToString()),
+                                ("zTouchAny", zoneCountTouchesAny.ToString()),
+                                ("zTouchElig", zoneCountTouchesEligible.ToString())),
+                            backendLogAction: s => _loggerSource?.LogInfo(s)
+                        );
+                    }
+                    catch { }
+                }
+
+                candidateZone = touchedZones.Count > 0 ? touchedZones[0] : null;
+                candidateFromTouch = candidateZone != null;
+
+                if (touchedZones.Count > 1)
+                {
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        candidateZone?.Id ?? 0,
+                        stage: "ZoneTouched.Multi",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"Mehrere Zonen wurden gleichzeitig berührt.",
+                            $"Berührte Zonen: {string.Join(", ", touchedZones.Select(t => $"#{t.Id} [{t.Low:F2}..{t.High:F2}] ({(t.IsConfirmed ? "bestätigt" : "noch nicht bestätigt")})"))}",
+                            $"Ich prüfe jetzt Zone #{candidateZone?.Id} (die erste in der Liste)."
+                        });
                 }
             }
 
