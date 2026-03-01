@@ -2055,6 +2055,8 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionLastEvalBar == currentSnapshot.Bar)
                 return SessionEvalOutcome.Continue;
 
+            // Session erlaubt Touch-Bar + 3 Folge-Bars = max 4 Bars
+            const int SignalSearchBars = 4;
             int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar + 1;
 
             static DecisionResult CreateExitDecision(string reason)
@@ -2063,7 +2065,7 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     Allowed = false,
                     Entry = false,
-                    Path = AllowPath.MultiFaDefense,
+                    Path = AllowPath.None,
                     BaseScore = 0,
                     TotalScore = 0m,
                     Confidence = 0m,
@@ -2072,11 +2074,11 @@ namespace MyNamespace.Strategies.Orderflow
                 };
             }
 
-            // --- Invalidierung: Session-Dauer ---
-            if (sessionBarNr > maxSessionBars)
+            // --- Invalidierung: Session-Dauer (Touch-Bar + 3 Folge-Bars) ---
+            if (sessionBarNr > SignalSearchBars)
             {
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"Session abgelaufen nach {sessionBarNr} Bars ohne ausreichenden Score (max. {maxSessionBars}).";
+                tracker.SessionEndReason = $"Session abgelaufen nach {sessionBarNr} Bars ohne Signalbar (max. {SignalSearchBars}).";
 
                 var exitDec = CreateExitDecision(tracker.SessionEndReason);
                 decision = exitDec;
@@ -2085,7 +2087,7 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
                 tracker.SessionDecisionHistory.Add(exitDec);
                 tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
+                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
                 return SessionEvalOutcome.Expired;
             }
 
@@ -2102,7 +2104,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.ConsecutiveBadCloses >= maxConsecutiveBadCloses)
             {
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"Session abgebrochen: {tracker.ConsecutiveBadCloses} Bars in Folge mit Close auf der falschen Seite der Zone (Range-Verdacht).";
+                tracker.SessionEndReason = $"Session abgebrochen: {tracker.ConsecutiveBadCloses} Bars in Folge mit Close auf der falschen Seite der Zone.";
 
                 var exitDec = CreateExitDecision(tracker.SessionEndReason);
                 decision = exitDec;
@@ -2111,7 +2113,7 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
                 tracker.SessionDecisionHistory.Add(exitDec);
                 tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
+                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
                 return SessionEvalOutcome.Invalidated;
             }
 
@@ -2128,7 +2130,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionMaxPenetrationTicks > maxSessionPenetrationTicks)
             {
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"Session abgebrochen: Penetration {tracker.SessionMaxPenetrationTicks} Ticks übersteigt Limit ({maxSessionPenetrationTicks} Ticks). Kein Sweep mehr, sondern Durchbruch.";
+                tracker.SessionEndReason = $"Session abgebrochen: Penetration {tracker.SessionMaxPenetrationTicks} Ticks übersteigt Limit ({maxSessionPenetrationTicks} Ticks).";
 
                 var exitDec = CreateExitDecision(tracker.SessionEndReason);
                 decision = exitDec;
@@ -2137,11 +2139,11 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
                 tracker.SessionDecisionHistory.Add(exitDec);
                 tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                tracker.SessionDecisionPhases.Add(tracker.SessionPhase == ReversalPhase.Confirm ? ReversalPhase.Confirm : ReversalPhase.Defense);
+                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
                 return SessionEvalOutcome.Invalidated;
             }
 
-            // --- Scoring ---
+            // --- Touch-Phase: Einmalig beim ersten Bar der Session ---
             tracker.SessionLastEvalBar = currentSnapshot.Bar;
 
             if (tracker.SessionPhase == ReversalPhase.Touch)
@@ -2168,115 +2170,162 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionPhaseStartBar = currentSnapshot.Bar;
             }
 
-            const int MaxAbsorptionBars = 3;
-            const int MaxConfirmBars = 3;
+            // ================================================================
+            // NEUE ENTRY-LOGIK: Signalbar-Prüfung (UF→FA + Close + POC + Absorption)
+            // ================================================================
+            OvSnapshot? prev = null;
+            if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
+                prev = prevF.Snapshot;
+            else
+                prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
 
-            if (tracker.SessionPhase == ReversalPhase.Defense)
+            // --- Bisherige Kriterien weiterhin berechnen und loggen (KEIN Einfluss auf Entry) ---
+            const int AdaptiveLookbackSession = 30;
+            const decimal AbsNetDeltaMedianMultiplierSession = 1.0m;
+            decimal absNetDeltaMinSession = GetAdaptiveAbsNetDeltaMin(history, currentSnapshot, AdaptiveLookbackSession, AbsNetDeltaMedianMultiplierSession);
+
+            var logItems = new List<ScoreItem>(16);
+
+            bool faAtZone = IsFinishedAuction(currentSnapshot, thresholds, _direction) && IsFinishedAuctionAtZone(currentSnapshot, zone, tickSize, _direction);
+            if (faAtZone)
+                tracker.SessionSawFaAtZone = true;
+            logItems.Add(new ScoreItem { Key = "FA", Points = 0m, TextDe = faAtZone ? "Finished Auction an Zone: JA" : "Finished Auction an Zone: NEIN" });
+
+            bool absorptionLog = false;
+            if (prev != null)
+                absorptionLog = ImbalanceNoFollowThrough(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+            var proxEval = absorptionLog
+                ? EvaluateAbsorptionProximity(currentSnapshot, zone, tickSize, _direction)
+                : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
+            decimal absorptionPts = absorptionLog ? (2m * proxEval.Factor) : 0m;
+            logItems.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorptionLog ? $"Absorption: JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
+            if (absorptionLog)
+                tracker.SessionSawAbsorption = true;
+
+            var sweepEval = EvaluateSweepPenetration(history, currentSnapshot, zone, tickSize, _direction);
+            logItems.Add(new ScoreItem { Key = "Sweep", Points = sweepEval.Points, TextDe = sweepEval.TextDe });
+            if (sweepEval.IsSweep)
+                tracker.SessionSawSweep = true;
+
+            if (prev != null)
             {
-                int barsInDefense = (currentSnapshot.Bar - tracker.SessionPhaseStartBar) + 1;
-                if (barsInDefense > MaxAbsorptionBars)
+                bool prevUa = IsUnfinishedAuction(prev, thresholds, _direction);
+                if (prevUa && faAtZone)
                 {
-                    tracker.SessionActive = false;
-                    tracker.SessionEndReason = $"Session abgebrochen: Defense/Absorption nicht bestätigt innerhalb {MaxAbsorptionBars} Bars.";
-
-                    var exitDec = CreateExitDecision(tracker.SessionEndReason);
-                    decision = exitDec;
-                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                    tracker.SessionDecisionBars ??= new List<int>();
-                    tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
-                    tracker.SessionDecisionHistory.Add(exitDec);
-                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                    tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
-                    return SessionEvalOutcome.Expired;
+                    tracker.SessionSawUaToFa = true;
+                    if (tracker.SessionUaToFaBar < 0)
+                        tracker.SessionUaToFaBar = currentSnapshot.Bar;
                 }
+            }
+            logItems.Add(new ScoreItem { Key = "UA→FA", Points = tracker.SessionSawUaToFa ? 1m : 0m, TextDe = tracker.SessionSawUaToFa ? $"UA→FA: JA (Bar {tracker.SessionUaToFaBar}) -> +1" : "UA→FA: NEIN -> +0" });
 
-                OvSnapshot? prev = null;
-                if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
-                    prev = prevF.Snapshot;
-                else
-                    prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
+            int touchesW;
+            int faAtZoneW;
+            bool progressOk;
+            var pathNow = DetermineAllowPath(history, currentSnapshot, prev, zone, thresholds, tickSize, _direction, out touchesW, out faAtZoneW, out progressOk);
+            bool multiFa = pathNow == AllowPath.MultiFaDefense;
+            logItems.Add(new ScoreItem { Key = "MultiFA", Points = multiFa ? 1m : 0m, TextDe = multiFa ? "Multi-FA-Verteidigung: JA -> +1" : "Multi-FA-Verteidigung: NEIN -> +0" });
+            if (multiFa)
+                tracker.SessionSawMultiFaDefense = true;
 
-                DecisionResult dec = EvaluateDefenseDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, tracker);
-                decision = dec;
+            // ================================================================
+            // HARTE ENTRY-KRITERIEN (neu):
+            // 1) UF→FA: Vorgänger-Bar hatte UF, aktuelle Bar hat FA
+            // 2) Close in Traderichtung (Long: Close > Open, Short: Close < Open)
+            // 3) Kerzen-POC: Long → untere Hälfte, Short → obere Hälfte
+            // 4) Absorption im Signalbar
+            // ================================================================
+            bool isSignalBar = false;
+            string signalBlockReason = string.Empty;
 
-                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                tracker.SessionDecisionHistory.Add(dec);
+            // Kriterium 1: UF→FA (Vorgänger hatte UF, dieses Bar hat FA)
+            bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
+            bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
+            bool ufToFaHere = prevHadUf && currHasFa;
+            logItems.Add(new ScoreItem { Key = "Signal_UF→FA", Points = ufToFaHere ? 1m : 0m, TextDe = ufToFaHere ? "Signal UF→FA: JA (Vorgänger=UF, aktuell=FA)" : $"Signal UF→FA: NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa})" });
 
-                tracker.SessionDecisionBars ??= new List<int>();
-                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+            // Kriterium 2: Close in Traderichtung
+            bool closeInDirection = _direction == OrderDirections.Buy
+                ? currentSnapshot.Close > currentSnapshot.Open
+                : currentSnapshot.Close < currentSnapshot.Open;
+            logItems.Add(new ScoreItem { Key = "Signal_Close", Points = closeInDirection ? 1m : 0m, TextDe = closeInDirection ? $"Signal Close in Richtung: JA (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" : $"Signal Close in Richtung: NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" });
 
-                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
-                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
+            // Kriterium 3: Kerzen-POC Position
+            decimal barMid = (currentSnapshot.High + currentSnapshot.Low) / 2m;
+            bool pocPositionOk;
+            string pocPosText;
+            if (_direction == OrderDirections.Buy)
+            {
+                // Long: POC muss in unterer Hälfte liegen (POC <= Mitte)
+                pocPositionOk = currentSnapshot.CandlePocPrice <= barMid;
+                pocPosText = $"POC={currentSnapshot.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+            }
+            else
+            {
+                // Short: POC muss in oberer Hälfte liegen (POC >= Mitte)
+                pocPositionOk = currentSnapshot.CandlePocPrice >= barMid;
+                pocPosText = $"POC={currentSnapshot.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+            }
+            logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocPositionOk ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
 
-                if (dec.TotalScore > tracker.SessionBestScore)
-                {
-                    tracker.SessionBestScore = dec.TotalScore;
-                    tracker.SessionBestScoreItems = dec.Items != null ? new List<ScoreItem>(dec.Items) : null;
-                }
+            // Kriterium 4: Absorption im Signalbar
+            bool absorptionInSignal = false;
+            if (prev != null)
+                absorptionInSignal = ImbalanceNoFollowThrough(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+            logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? "Signal Absorption: JA" : "Signal Absorption: NEIN" });
 
-                if (dec.Allowed)
-                {
-                    tracker.SessionAbsorptionConfirmed = true;
-                    tracker.SessionAbsorptionBar = currentSnapshot.Bar;
-                    tracker.SessionAbsorptionPocPrice = currentSnapshot.CandlePocPrice;
-                    tracker.SessionPhase = ReversalPhase.Confirm;
-                    tracker.SessionPhaseStartBar = currentSnapshot.Bar;
-                }
+            // Alle 4 Kriterien müssen erfüllt sein
+            isSignalBar = ufToFaHere && closeInDirection && pocPositionOk && absorptionInSignal;
 
-                return SessionEvalOutcome.Continue;
+            if (!isSignalBar)
+            {
+                var missing = new List<string>(4);
+                if (!ufToFaHere) missing.Add("UF→FA");
+                if (!closeInDirection) missing.Add("Close in Richtung");
+                if (!pocPositionOk) missing.Add("POC-Position");
+                if (!absorptionInSignal) missing.Add("Absorption");
+                signalBlockReason = $"Kein Signalbar: fehlend [{string.Join(", ", missing)}]";
             }
 
-            if (tracker.SessionPhase == ReversalPhase.Confirm)
+            // Score für Logging (Summe der Info-Punkte, NICHT entry-relevant)
+            decimal logScore = logItems.Sum(x => x.Points);
+            logItems.Add(new ScoreItem { Key = "Signal_Check", Points = isSignalBar ? 1m : 0m, TextDe = isSignalBar ? "★ SIGNALBAR ERKANNT → Entry GO" : signalBlockReason });
+
+            decimal confidence = isSignalBar ? 0.75m : 0m;
+            var dec = new DecisionResult
             {
-                int barsInConfirm = (currentSnapshot.Bar - tracker.SessionPhaseStartBar) + 1;
-                if (barsInConfirm > MaxConfirmBars)
-                {
-                    tracker.SessionActive = false;
-                    tracker.SessionEndReason = $"Session abgebrochen: Confirm ohne GO innerhalb {MaxConfirmBars} Bars.";
+                Allowed = true,
+                Entry = isSignalBar,
+                Path = tracker.SessionSawUaToFa ? AllowPath.UaToFa : AllowPath.None,
+                BaseScore = 0,
+                TotalScore = logScore,
+                Confidence = confidence,
+                BlockReasonDe = isSignalBar ? string.Empty : signalBlockReason,
+                Items = logItems
+            };
+            decision = dec;
 
-                    var exitDec = CreateExitDecision(tracker.SessionEndReason);
-                    decision = exitDec;
-                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                    tracker.SessionDecisionBars ??= new List<int>();
-                    tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
-                    tracker.SessionDecisionHistory.Add(exitDec);
-                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                    tracker.SessionDecisionPhases.Add(ReversalPhase.Confirm);
-                    return SessionEvalOutcome.Expired;
-                }
+            tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+            tracker.SessionDecisionHistory.Add(dec);
+            tracker.SessionDecisionBars ??= new List<int>();
+            tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+            tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+            tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
 
-                OvSnapshot? prev = null;
-                if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
-                    prev = prevF.Snapshot;
-                else
-                    prev = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 20);
+            if (dec.TotalScore > tracker.SessionBestScore)
+            {
+                tracker.SessionBestScore = dec.TotalScore;
+                tracker.SessionBestScoreItems = dec.Items != null ? new List<ScoreItem>(dec.Items) : null;
+            }
 
-                DecisionResult dec = EvaluateConfirmDecision(currentSnapshot, prev, history, zone, thresholds, tickSize, _direction, tracker);
-                decision = dec;
-
-                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                tracker.SessionDecisionHistory.Add(dec);
-
-                tracker.SessionDecisionBars ??= new List<int>();
-                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-
-                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
-                tracker.SessionDecisionPhases.Add(ReversalPhase.Confirm);
-
-                if (dec.TotalScore > tracker.SessionBestScore)
-                {
-                    tracker.SessionBestScore = dec.TotalScore;
-                    tracker.SessionBestScoreItems = dec.Items != null ? new List<ScoreItem>(dec.Items) : null;
-                }
-
-                if (dec.Entry)
-                {
-                    tracker.SessionActive = false;
-                    tracker.SessionEndReason = $"GO – Entry ausgelöst bei Session-Bar {sessionBarNr}.";
-                    return SessionEvalOutcome.EntryGo;
-                }
-
-                return SessionEvalOutcome.Continue;
+            if (isSignalBar)
+            {
+                tracker.SessionAbsorptionConfirmed = true;
+                tracker.SessionAbsorptionBar = currentSnapshot.Bar;
+                tracker.SessionAbsorptionPocPrice = currentSnapshot.CandlePocPrice;
+                tracker.SessionActive = false;
+                tracker.SessionEndReason = $"GO – Signalbar erkannt bei Session-Bar {sessionBarNr}.";
+                return SessionEvalOutcome.EntryGo;
             }
 
             return SessionEvalOutcome.Continue;
@@ -2921,25 +2970,34 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal MinDeltaPerVol = 0.15m;
             const decimal MinExtremeDomRatio = 0.65m;
             const decimal MinExtremeShare = 0.05m;
+            const decimal AbsDeltaMultiplier = 1.50m;
+            const decimal MinRecoveryRatio = 0.40m;
+            const int MaxSweepTicks = 3;
 
             decimal vol = curr.Volume;
             if (vol <= 0m)
                 vol = 1m;
             decimal deltaPerVol = Math.Abs(curr.NetDeltaTotal) / vol;
-            if (deltaPerVol < MinDeltaPerVol)
+            decimal absDelta = Math.Abs(curr.NetDeltaTotal);
+            bool hasStrongDeltaRatio = deltaPerVol >= MinDeltaPerVol;
+            bool hasStrongAbsDelta = absDelta >= (absNetDeltaMin * AbsDeltaMultiplier);
+            if (!hasStrongDeltaRatio && !hasStrongAbsDelta)
                 return false;
+
+            decimal candleHeight = curr.High - curr.Low;
+            if (candleHeight <= 0m)
+                candleHeight = oneTick;
 
             if (dir == OrderDirections.Buy)
             {
                 bool hasSellImb = curr.StackedSellImbBottomCount > 0 && curr.NetDeltaTotal < 0m;
                 if (!hasSellImb)
                     return false;
-                if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
-                    return false;
 
                 decimal exBid = curr.BidAtLow;
                 decimal exAsk = curr.AskAtLow;
                 decimal exTot = exBid + exAsk;
+
                 if (exTot <= 0m)
                     return false;
                 decimal exShare = exTot / vol;
@@ -2949,21 +3007,29 @@ namespace MyNamespace.Strategies.Orderflow
                 if (dom < MinExtremeDomRatio)
                     return false;
 
-                bool noFurtherDown = curr.Low >= prev.Low - oneTick;
-                bool rejection = curr.Close >= z.High;
-                return noFurtherDown && rejection;
+                bool noFurtherDownByPrev = curr.Low >= prev.Low - (oneTick * MaxSweepTicks);
+                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
+                bool noFurtherDown = noFurtherDownByPrev || noFurtherDownByZone;
+
+                bool goodRecovery = ((curr.Close - curr.Low) / candleHeight) >= MinRecoveryRatio;
+
+                decimal zoneHeight = z.High - z.Low;
+                bool rejectionCandle = curr.Close >= (curr.Low + candleHeight * 0.50m);
+                bool rejectionZone = zoneHeight > 0m && curr.Close >= (z.Low + zoneHeight * 0.33m);
+                bool rejection = rejectionCandle || rejectionZone;
+
+                return noFurtherDown && goodRecovery && rejection;
             }
             else
             {
                 bool hasBuyImb = curr.StackedBuyImbTopCount > 0 && curr.NetDeltaTotal > 0m;
                 if (!hasBuyImb)
                     return false;
-                if (Math.Abs(curr.NetDeltaTotal) < absNetDeltaMin)
-                    return false;
 
                 decimal exAsk = curr.AskAtHigh;
                 decimal exBid = curr.BidAtHigh;
                 decimal exTot = exBid + exAsk;
+
                 if (exTot <= 0m)
                     return false;
                 decimal exShare = exTot / vol;
@@ -2973,9 +3039,18 @@ namespace MyNamespace.Strategies.Orderflow
                 if (dom < MinExtremeDomRatio)
                     return false;
 
-                bool noFurtherUp = curr.High <= prev.High + oneTick;
-                bool rejection = curr.Close <= z.Low;
-                return noFurtherUp && rejection;
+                bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
+                bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
+                bool noFurtherUp = noFurtherUpByPrev || noFurtherUpByZone;
+
+                bool goodRecovery = ((curr.High - curr.Close) / candleHeight) >= MinRecoveryRatio;
+
+                decimal zoneHeight = z.High - z.Low;
+                bool rejectionCandle = curr.Close <= (curr.High - candleHeight * 0.50m);
+                bool rejectionZone = zoneHeight > 0m && curr.Close <= (z.High - zoneHeight * 0.33m);
+                bool rejection = rejectionCandle || rejectionZone;
+
+                return noFurtherUp && goodRecovery && rejection;
             }
         }
 

@@ -13499,6 +13499,14 @@ namespace MyNamespace.Strategies
                 string entryTriggerLevelName = string.Empty;
                 decimal entryTriggerLevel = 0;
 
+                var signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
+                if (signalPoc <= 0m)
+                {
+                    this.LogWarn($"[ORDER-LONG] Candle POC nicht verfügbar (ovLastClosed.CandlePocPrice={signalPoc:F2}). Fallback auf Close={c.Close:F2} (Bar={closed}).");
+                    signalPoc = c.Close;
+                }
+                signalPoc = RoundToTick(signalPoc);
+
                 // Sicherstellen, dass levelsSnapshot nicht null ist, bevor darauf zugegriffen wird
                 if (levelsSnapshot == null)
                 {
@@ -13509,9 +13517,9 @@ namespace MyNamespace.Strategies
                 switch (detectedPattern.Type)
                 {
                     case OrderflowPatternType.PotentialLongReversalBounce:
-                        longEntryPrice = c.Close;
-                        entryTriggerLevelName = "CLOSE";
-                        entryTriggerLevel = c.Close;
+                        longEntryPrice = RoundToTick(signalPoc + (2m * tickSize));
+                        entryTriggerLevelName = "CANDLE_POC";
+                        entryTriggerLevel = signalPoc;
 
                         decimal suggestedSlLong = c.Low - tickSize;
                         int slTicksLong = (int)Math.Ceiling((longEntryPrice - suggestedSlLong) / tickSize);
@@ -13529,9 +13537,9 @@ namespace MyNamespace.Strategies
                         break;
 
                     case OrderflowPatternType.PotentialLongTrendContinuation:
-                        longEntryPrice = c.Close;
-                        entryTriggerLevelName = "CLOSE";
-                        entryTriggerLevel = c.Close;
+                        longEntryPrice = RoundToTick(signalPoc + (2m * tickSize));
+                        entryTriggerLevelName = "CANDLE_POC";
+                        entryTriggerLevel = signalPoc;
 
                         decimal suggestedSlLongCont = c.Low - tickSize;
                         int slTicksLongCont = (int)Math.Ceiling((longEntryPrice - suggestedSlLongCont) / tickSize);
@@ -13597,6 +13605,14 @@ namespace MyNamespace.Strategies
                 string entryTriggerLevelName = string.Empty;
                 decimal entryTriggerLevel = 0;
 
+                var signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
+                if (signalPoc <= 0m)
+                {
+                    this.LogWarn($"[ORDER-SHORT] Candle POC nicht verfügbar (ovLastClosed.CandlePocPrice={signalPoc:F2}). Fallback auf Close={c.Close:F2} (Bar={closed}).");
+                    signalPoc = c.Close;
+                }
+                signalPoc = RoundToTick(signalPoc);
+
                 // Sicherstellen, dass levelsSnapshot nicht null ist, bevor darauf zugegriffen wird
                 if (levelsSnapshot == null)
                 {
@@ -13607,9 +13623,9 @@ namespace MyNamespace.Strategies
                 switch (detectedPattern.Type)
                 {
                     case OrderflowPatternType.PotentialShortReversalBounce:
-                        shortEntryPrice = c.Close;
-                        entryTriggerLevelName = "CLOSE";
-                        entryTriggerLevel = c.Close;
+                        shortEntryPrice = RoundToTick(signalPoc - (2m * tickSize));
+                        entryTriggerLevelName = "CANDLE_POC";
+                        entryTriggerLevel = signalPoc;
 
                         decimal suggestedSlShort = c.High + tickSize;
                         int slTicksShort = (int)Math.Ceiling((suggestedSlShort - shortEntryPrice) / tickSize);
@@ -13627,9 +13643,9 @@ namespace MyNamespace.Strategies
                         break;
 
                     case OrderflowPatternType.PotentialShortTrendContinuation:
-                        shortEntryPrice = c.Close;
-                        entryTriggerLevelName = "CLOSE";
-                        entryTriggerLevel = c.Close;
+                        shortEntryPrice = RoundToTick(signalPoc - (2m * tickSize));
+                        entryTriggerLevelName = "CANDLE_POC";
+                        entryTriggerLevel = signalPoc;
 
                         decimal suggestedSlShortCont = c.High + tickSize;
                         int slTicksShortCont = (int)Math.Ceiling((suggestedSlShortCont - shortEntryPrice) / tickSize);
