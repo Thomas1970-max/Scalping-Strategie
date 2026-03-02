@@ -2249,6 +2249,14 @@ namespace MyNamespace.Strategies.Orderflow
             if (history.TryGetByBar(currentSnapshot.Bar - 2, out var prevPrevF) && prevPrevF?.Snapshot != null)
                 prevPrev = prevPrevF.Snapshot;
 
+            OvSnapshot? prev3 = null;
+            if (history.TryGetByBar(currentSnapshot.Bar - 3, out var prev3F) && prev3F?.Snapshot != null)
+                prev3 = prev3F.Snapshot;
+
+            OvSnapshot? prev4 = null;
+            if (history.TryGetByBar(currentSnapshot.Bar - 4, out var prev4F) && prev4F?.Snapshot != null)
+                prev4 = prev4F.Snapshot;
+
             // --- Bisherige Kriterien weiterhin berechnen und loggen (KEIN Einfluss auf Entry) ---
             const int AdaptiveLookbackSession = 30;
             const decimal AbsNetDeltaMedianMultiplierSession = 1.0m;
@@ -2347,8 +2355,21 @@ namespace MyNamespace.Strategies.Orderflow
             AbsorptionPattern absorptionPatternSignal = AbsorptionPattern.None;
             if (prev != null)
             {
-                absorptionPatternSignal = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
-                absorptionInSignal = absorptionPatternSignal != AbsorptionPattern.None;
+                AbsorptionPattern absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+                AbsorptionPattern absPrev = (prevPrev != null && prev3 != null)
+                    ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession)
+                    : AbsorptionPattern.None;
+                AbsorptionPattern absPrevPrev = (prevPrev != null && prev3 != null && prev4 != null)
+                    ? DetectAbsorptionPattern(prev4, prev3, prevPrev, zone, tickSize, _direction, absNetDeltaMinSession)
+                    : AbsorptionPattern.None;
+
+                absorptionPatternSignal = absCurr != AbsorptionPattern.None
+                    ? absCurr
+                    : (absPrev != AbsorptionPattern.None ? absPrev : absPrevPrev);
+
+                absorptionInSignal = (absCurr != AbsorptionPattern.None)
+                    || (absPrev != AbsorptionPattern.None)
+                    || (absPrevPrev != AbsorptionPattern.None);
             }
             logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? $"Signal Absorption({absorptionPatternSignal}): JA" : "Signal Absorption: NEIN" });
 
@@ -3199,9 +3220,9 @@ namespace MyNamespace.Strategies.Orderflow
 
             const decimal AbsDeltaMultiplier = 1.00m;
             const decimal MinRecoveryRatio = 0.35m;
+            const decimal MinRecoveryRatioPenetration = 0.55m;
             const decimal MinExtremeDomRatio = 0.55m;
             const decimal MinExtremeShare = 0.02m;
-            const int MaxSweepTicks = 2;
             const int PushWindowSweepTicks = 2;
 
             decimal vol = curr.Volume;
@@ -3250,17 +3271,18 @@ namespace MyNamespace.Strategies.Orderflow
                         return false;
                 }
 
-                bool noFurtherDownByPrev = curr.Low >= pushBar.Low - (oneTick * MaxSweepTicks);
-                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
-                if (!(noFurtherDownByPrev || noFurtherDownByZone))
-                    return false;
-
                 bool currBullish = curr.Close > curr.Open;
                 if (!currBullish)
                     return false;
 
+                decimal refLow = Math.Max(pushBar.Low, z.Low);
+                bool penetrated = curr.Low < refLow;
+                if (penetrated && curr.Close < refLow)
+                    return false;
+
                 decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
-                if (recoveryRatio < MinRecoveryRatio)
+                decimal minRecovery = penetrated ? MinRecoveryRatioPenetration : MinRecoveryRatio;
+                if (recoveryRatio < minRecovery)
                     return false;
 
                 return true;
@@ -3302,17 +3324,18 @@ namespace MyNamespace.Strategies.Orderflow
                     return false;
             }
 
-            bool noFurtherUpByPrev = curr.High <= pushBarS.High + (oneTick * MaxSweepTicks);
-            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
-            if (!(noFurtherUpByPrev || noFurtherUpByZone))
-                return false;
-
             bool currBearish = curr.Close < curr.Open;
             if (!currBearish)
                 return false;
 
+            decimal refHigh = Math.Min(pushBarS.High, z.High);
+            bool penetratedS = curr.High > refHigh;
+            if (penetratedS && curr.Close > refHigh)
+                return false;
+
             decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
-            if (recoveryRatioS < MinRecoveryRatio)
+            decimal minRecoveryS = penetratedS ? MinRecoveryRatioPenetration : MinRecoveryRatio;
+            if (recoveryRatioS < minRecoveryS)
                 return false;
 
             return true;
@@ -3464,9 +3487,9 @@ namespace MyNamespace.Strategies.Orderflow
 
             const decimal AbsDeltaMultiplier = 1.00m;
             const decimal MinRecoveryRatio = 0.35m;
+            const decimal MinRecoveryRatioPenetration = 0.55m;
             const decimal MinExtremeDomRatio = 0.55m;
             const decimal MinExtremeShare = 0.02m;
-            const int MaxSweepTicks = 2;
             const int PushWindowSweepTicks = 2;
 
             decimal vol = curr.Volume;
@@ -3514,16 +3537,17 @@ namespace MyNamespace.Strategies.Orderflow
                         return "Zwischenbar macht ein neues Tief (zu viel Durchstich)";
                 }
 
-                bool noFurtherDownByPrev = curr.Low >= pushBar.Low - (oneTick * MaxSweepTicks);
-                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
-                if (!(noFurtherDownByPrev || noFurtherDownByZone))
-                    return "Reversal-Bar macht neue Tiefs (kein klarer Stopp)";
-
                 if (!(curr.Close > curr.Open))
                     return "Reversal-Bar ist nicht bullisch (Close nicht über Open)";
 
+                decimal refLow = Math.Max(pushBar.Low, z.Low);
+                bool penetrated = curr.Low < refLow;
+                if (penetrated && curr.Close < refLow)
+                    return "Stich wurde nicht zurückgeholt (Close nicht über Zone/Referenz)";
+
                 decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
-                if (recoveryRatio < MinRecoveryRatio)
+                decimal minRecovery = penetrated ? MinRecoveryRatioPenetration : MinRecoveryRatio;
+                if (recoveryRatio < minRecovery)
                     return "Zu wenig Erholung vom Tief (Rücklauf zu klein)";
 
                 return string.Empty;
@@ -3564,16 +3588,17 @@ namespace MyNamespace.Strategies.Orderflow
                     return "Zwischenbar macht ein neues Hoch (zu viel Durchstich)";
             }
 
-            bool noFurtherUpByPrev = curr.High <= pushBarS.High + (oneTick * MaxSweepTicks);
-            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
-            if (!(noFurtherUpByPrev || noFurtherUpByZone))
-                return "Reversal-Bar macht neue Hochs (kein klarer Stopp)";
-
             if (!(curr.Close < curr.Open))
                 return "Reversal-Bar ist nicht bärisch (Close nicht unter Open)";
 
+            decimal refHigh = Math.Min(pushBarS.High, z.High);
+            bool penetratedS = curr.High > refHigh;
+            if (penetratedS && curr.Close > refHigh)
+                return "Stich wurde nicht zurückgeholt (Close nicht unter Zone/Referenz)";
+
             decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
-            if (recoveryRatioS < MinRecoveryRatio)
+            decimal minRecoveryS = penetratedS ? MinRecoveryRatioPenetration : MinRecoveryRatio;
+            if (recoveryRatioS < minRecoveryS)
                 return "Zu wenig Rücklauf vom Hoch (Erholung zu klein)";
 
             return string.Empty;
