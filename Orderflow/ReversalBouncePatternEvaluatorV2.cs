@@ -2338,34 +2338,18 @@ namespace MyNamespace.Strategies.Orderflow
                 : currentSnapshot.Close < currentSnapshot.Open;
             logItems.Add(new ScoreItem { Key = "Signal_Close", Points = closeInDirection ? 1m : 0m, TextDe = closeInDirection ? $"Signal Close in Richtung: JA (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" : $"Signal Close in Richtung: NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" });
 
-            // Kriterium 3: Kerzen-POC Position
-            decimal barMid = (currentSnapshot.High + currentSnapshot.Low) / 2m;
-            bool pocPositionOk;
-            string pocPosText;
-            if (_direction == OrderDirections.Buy)
-            {
-                // Long: POC muss in unterer Hälfte liegen (POC <= Mitte)
-                pocPositionOk = currentSnapshot.CandlePocPrice <= barMid;
-                pocPosText = $"POC={currentSnapshot.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
-            }
-            else
-            {
-                // Short: POC muss in oberer Hälfte liegen (POC >= Mitte)
-                pocPositionOk = currentSnapshot.CandlePocPrice >= barMid;
-                pocPosText = $"POC={currentSnapshot.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
-            }
-            logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocPositionOk ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
-
-            // Kriterium 4: Absorption im Signalbar
-            bool absorptionInSignal = false;
+            AbsorptionPattern absCurr = AbsorptionPattern.None;
+            AbsorptionPattern absPrev = AbsorptionPattern.None;
+            AbsorptionPattern absPrevPrev = AbsorptionPattern.None;
             AbsorptionPattern absorptionPatternSignal = AbsorptionPattern.None;
+            bool absorptionInSignal = false;
             if (prev != null)
             {
-                AbsorptionPattern absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
-                AbsorptionPattern absPrev = (prevPrev != null && prev3 != null)
+                absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+                absPrev = (prevPrev != null && prev3 != null)
                     ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession)
                     : AbsorptionPattern.None;
-                AbsorptionPattern absPrevPrev = (prevPrev != null && prev3 != null && prev4 != null)
+                absPrevPrev = (prevPrev != null && prev3 != null && prev4 != null)
                     ? DetectAbsorptionPattern(prev4, prev3, prevPrev, zone, tickSize, _direction, absNetDeltaMinSession)
                     : AbsorptionPattern.None;
 
@@ -2377,17 +2361,62 @@ namespace MyNamespace.Strategies.Orderflow
                     || (absPrev != AbsorptionPattern.None)
                     || (absPrevPrev != AbsorptionPattern.None);
             }
+
+            // Kriterium 3: Kerzen-POC Position
+            OvSnapshot pocBar = currentSnapshot;
+            string pocBarText = "curr";
+            bool requireCurrPocDelta = ufToFaHere && (absCurr == AbsorptionPattern.None) && ((absPrev != AbsorptionPattern.None) || (absPrevPrev != AbsorptionPattern.None));
+            if (requireCurrPocDelta)
+            {
+                if (absPrev != AbsorptionPattern.None)
+                {
+                    pocBar = prev!;
+                    pocBarText = "prev";
+                }
+                else if (absPrevPrev != AbsorptionPattern.None && prevPrev != null)
+                {
+                    pocBar = prevPrev;
+                    pocBarText = "prevPrev";
+                }
+            }
+
+            decimal barMid = (pocBar.High + pocBar.Low) / 2m;
+            bool pocPositionOk;
+            bool currPocDeltaOk = _direction == OrderDirections.Buy ? currentSnapshot.PocDelta > 0m : currentSnapshot.PocDelta < 0m;
+            bool pocOkFinal;
+            string pocPosText;
+            if (_direction == OrderDirections.Buy)
+            {
+                // Long: POC muss in unterer Hälfte liegen (POC <= Mitte)
+                pocPositionOk = pocBar.CandlePocPrice <= barMid;
+                pocOkFinal = pocPositionOk && (!requireCurrPocDelta || currPocDeltaOk);
+                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                if (requireCurrPocDelta)
+                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
+            }
+            else
+            {
+                // Short: POC muss in oberer Hälfte liegen (POC >= Mitte)
+                pocPositionOk = pocBar.CandlePocPrice >= barMid;
+                pocOkFinal = pocPositionOk && (!requireCurrPocDelta || currPocDeltaOk);
+                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                if (requireCurrPocDelta)
+                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
+            }
+            logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocOkFinal ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
+
+            // Kriterium 4: Absorption im Signalbar
             logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? $"Signal Absorption({absorptionPatternSignal}): JA" : "Signal Absorption: NEIN" });
 
             // Alle 4 Kriterien müssen erfüllt sein
-            isSignalBar = ufToFaHere && closeInDirection && pocPositionOk && absorptionInSignal;
+            isSignalBar = ufToFaHere && closeInDirection && pocOkFinal && absorptionInSignal;
 
             if (!isSignalBar)
             {
                 var missing = new List<string>(4);
                 if (!ufToFaHere) missing.Add("UF→FA");
                 if (!closeInDirection) missing.Add("Close in Richtung");
-                if (!pocPositionOk) missing.Add("POC-Position");
+                if (!pocOkFinal) missing.Add("POC-Position");
                 if (!absorptionInSignal) missing.Add("Absorption");
                 signalBlockReason = $"Kein Signalbar: fehlend [{string.Join(", ", missing)}]";
             }
