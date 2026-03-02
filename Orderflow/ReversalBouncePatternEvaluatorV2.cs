@@ -2248,14 +2248,20 @@ namespace MyNamespace.Strategies.Orderflow
             OvSnapshot? prevPrev = null;
             if (history.TryGetByBar(currentSnapshot.Bar - 2, out var prevPrevF) && prevPrevF?.Snapshot != null)
                 prevPrev = prevPrevF.Snapshot;
+            else
+                prevPrev = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 80);
 
             OvSnapshot? prev3 = null;
             if (history.TryGetByBar(currentSnapshot.Bar - 3, out var prev3F) && prev3F?.Snapshot != null)
                 prev3 = prev3F.Snapshot;
+            else
+                prev3 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 3, maxLookback: 100);
 
             OvSnapshot? prev4 = null;
             if (history.TryGetByBar(currentSnapshot.Bar - 4, out var prev4F) && prev4F?.Snapshot != null)
                 prev4 = prev4F.Snapshot;
+            else
+                prev4 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 4, maxLookback: 120);
 
             // --- Bisherige Kriterien weiterhin berechnen und loggen (KEIN Einfluss auf Entry) ---
             const int AdaptiveLookbackSession = 30;
@@ -3620,6 +3626,27 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             return best;
+        }
+
+        private static OvSnapshot? GetPreviousClosedSnapshotByOffset(OfFeaturesHistory history, int currentBar, int offset, int maxLookback)
+        {
+            if (history == null || offset <= 0)
+                return null;
+
+            var prevs = new List<OvSnapshot>(offset);
+            for (int i = 0; i < Math.Min(maxLookback, history.Count); i++)
+            {
+                var s = history.GetOfFeatures(i)?.Snapshot;
+                if (s == null)
+                    continue;
+                if (s.Bar >= currentBar)
+                    continue;
+                prevs.Add(s);
+                if (prevs.Count >= offset)
+                    break;
+            }
+
+            return prevs.Count >= offset ? prevs[offset - 1] : null;
         }
 
         private static SwingStructureSignal? ComputeSwingSignalFromHistory(OfFeaturesHistory history, int currentBar, int maxBars)
