@@ -18,6 +18,13 @@ namespace MyNamespace.Strategies.Orderflow
             MultiFaDefense
         }
 
+        private enum AbsorptionPattern
+        {
+            None,
+            A,
+            B
+        }
+
         private enum SessionType
         {
             None,
@@ -38,7 +45,6 @@ namespace MyNamespace.Strategies.Orderflow
             public decimal Points { get; init; }
             public string TextDe { get; init; } = string.Empty;
         }
-
 
         private sealed class DecisionResult
         {
@@ -72,46 +78,46 @@ namespace MyNamespace.Strategies.Orderflow
             public bool MovedAwaySeen;
             public bool EntryTriggered;
             public int LastStoryLoggedBar;
-			public bool StoryPending;
-			public bool StoryEmitted;
-			public int LastTouchedBar;
-			public int StoryExitBar;
+            public bool StoryPending;
+            public bool StoryEmitted;
+            public int LastTouchedBar;
+            public int StoryExitBar;
 
-			// --- Multi-Bar Session ---
-			public bool SessionActive;
-			public SessionType SessionKind;
-			public int SessionStartBar;
-			public int SessionLastEvalBar;
-			public decimal SessionTouchLow;
-			public decimal SessionTouchHigh;
-			public decimal SessionTouchPocPrice;
-			public bool SessionPressureSeen;
-			public ReversalPhase SessionPhase;
-			public int SessionPhaseStartBar;
-			public int SessionStrongDefenseCount;
-			public bool SessionSawAbsorption;
-			public bool SessionSawSweep;
-			public bool SessionSawMultiFaDefense;
-			public bool SessionSawFaAtZone;
-			public bool SessionAbsorptionConfirmed;
-			public int SessionAbsorptionBar;
-			public decimal SessionAbsorptionPocPrice;
-			public bool SessionSawUaToFa;
-			public int SessionUaToFaBar;
-			public bool SessionSawExhaustion;
-			public int ConsecutiveBadCloses;
-			public int SessionMaxPenetrationTicks;
-			public decimal SessionBestScore;
-			public List<ScoreItem>? SessionBestScoreItems;
-			public List<DecisionResult>? SessionDecisionHistory;
-			public List<int>? SessionDecisionBars;
-			public List<ReversalPhase>? SessionDecisionPhases;
-			public string? SessionEndReason;
+            // --- Multi-Bar Session ---
+            public bool SessionActive;
+            public SessionType SessionKind;
+            public int SessionStartBar;
+            public int SessionLastEvalBar;
+            public decimal SessionTouchLow;
+            public decimal SessionTouchHigh;
+            public decimal SessionTouchPocPrice;
+            public bool SessionPressureSeen;
+            public ReversalPhase SessionPhase;
+            public int SessionPhaseStartBar;
+            public int SessionStrongDefenseCount;
+            public bool SessionSawAbsorption;
+            public bool SessionSawSweep;
+            public bool SessionSawMultiFaDefense;
+            public bool SessionSawFaAtZone;
+            public bool SessionAbsorptionConfirmed;
+            public int SessionAbsorptionBar;
+            public decimal SessionAbsorptionPocPrice;
+            public bool SessionSawUaToFa;
+            public int SessionUaToFaBar;
+            public bool SessionSawExhaustion;
+            public int ConsecutiveBadCloses;
+            public int SessionMaxPenetrationTicks;
+            public decimal SessionBestScore;
+            public List<ScoreItem>? SessionBestScoreItems;
+            public List<DecisionResult>? SessionDecisionHistory;
+            public List<int>? SessionDecisionBars;
+            public List<ReversalPhase>? SessionDecisionPhases;
+            public string? SessionEndReason;
 
-			public decimal LastKnownZoneLow;
-			public decimal LastKnownZoneHigh;
-			public MarketStructureContext.ZoneType LastKnownZoneType;
-			public bool LastKnownZoneConfirmed;
+            public decimal LastKnownZoneLow;
+            public decimal LastKnownZoneHigh;
+            public MarketStructureContext.ZoneType LastKnownZoneType;
+            public bool LastKnownZoneConfirmed;
         }
 
         private readonly OrderDirections _direction;
@@ -167,7 +173,6 @@ namespace MyNamespace.Strategies.Orderflow
             }
         }
 
-        
         private static int RoundTicks(decimal priceDelta, decimal tickSize)
         {
             if (tickSize <= 0m)
@@ -562,14 +567,18 @@ namespace MyNamespace.Strategies.Orderflow
             items.Add(new ScoreItem { Key = "FA", Points = 0m, TextDe = faAtZone ? "Finished Auction an Zone: JA" : "Finished Auction an Zone: NEIN" });
 
             bool absorption = false;
+            AbsorptionPattern absorptionPattern = AbsorptionPattern.None;
             if (prev != null)
-                absorption = ImbalanceNoFollowThrough(prev, curr, zone, tickSize, dir, absNetDeltaMin);
+            {
+                absorptionPattern = DetectAbsorptionPattern(prev, curr, zone, tickSize, dir, absNetDeltaMin);
+                absorption = absorptionPattern != AbsorptionPattern.None;
+            }
             var proxEval = absorption
                 ? EvaluateAbsorptionProximity(curr, zone, tickSize, dir)
                 : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
             decimal absorptionPts = absorption ? (2m * proxEval.Factor) : 0m;
             score += absorptionPts;
-            items.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorption ? $"Absorption: JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
+            items.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorption ? $"Absorption({absorptionPattern}): JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
             if (absorption)
                 tracker.SessionSawAbsorption = true;
 
@@ -1300,9 +1309,18 @@ namespace MyNamespace.Strategies.Orderflow
                         }
                         catch { }
 
-                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                            MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                            "GO – Entry ausgelöst", sessionDecision);
+                        LogSessionProtocol(
+                            tracker,
+                            candidateZone,
+                            history,
+                            currentSnapshot,
+                            thresholds,
+                            tickSize,
+                            MaxSessionBars,
+                            MaxConsecutiveBadCloses,
+                            MaxSessionPenetrationTicks,
+                            "GO – Entry ausgelöst",
+                            sessionDecision);
 
                         var reasons = new List<string>
                         {
@@ -1333,9 +1351,18 @@ namespace MyNamespace.Strategies.Orderflow
                         var lastDec = sessionDecision ?? (tracker.SessionDecisionHistory?.Count > 0
                             ? tracker.SessionDecisionHistory[tracker.SessionDecisionHistory.Count - 1]
                             : null);
-                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                            MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                            "ABBRUCH – Session invalidiert", lastDec);
+                        LogSessionProtocol(
+                            tracker,
+                            candidateZone,
+                            history,
+                            currentSnapshot,
+                            thresholds,
+                            tickSize,
+                            MaxSessionBars,
+                            MaxConsecutiveBadCloses,
+                            MaxSessionPenetrationTicks,
+                            "ABBRUCH – Session invalidiert",
+                            lastDec);
 
                         if (tracker.SessionKind == SessionType.Immediate)
                         {
@@ -1352,9 +1379,18 @@ namespace MyNamespace.Strategies.Orderflow
                         var lastDec = sessionDecision ?? (tracker.SessionDecisionHistory?.Count > 0
                             ? tracker.SessionDecisionHistory[tracker.SessionDecisionHistory.Count - 1]
                             : null);
-                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                            MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                            "VERFALL – Session abgelaufen ohne GO", lastDec);
+                        LogSessionProtocol(
+                            tracker,
+                            candidateZone,
+                            history,
+                            currentSnapshot,
+                            thresholds,
+                            tickSize,
+                            MaxSessionBars,
+                            MaxConsecutiveBadCloses,
+                            MaxSessionPenetrationTicks,
+                            "VERFALL – Session abgelaufen ohne GO",
+                            lastDec);
 
                         if (tracker.SessionKind == SessionType.Immediate)
                         {
@@ -1586,9 +1622,18 @@ namespace MyNamespace.Strategies.Orderflow
                             }
                             catch { }
 
-                            LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                                MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                                "GO – Entry ausgelöst", firstDecision);
+                            LogSessionProtocol(
+                                tracker,
+                                candidateZone,
+                                history,
+                                currentSnapshot,
+                                thresholds,
+                                tickSize,
+                                MaxSessionBars,
+                                MaxConsecutiveBadCloses,
+                                MaxSessionPenetrationTicks,
+                                "GO – Entry ausgelöst",
+                                firstDecision);
 
                             var reasonsA = new List<string>
                             {
@@ -1751,9 +1796,18 @@ namespace MyNamespace.Strategies.Orderflow
                                         }
                                         catch { }
 
-                                        LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                                            MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                                            "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)", retestDecisionNow);
+                                        LogSessionProtocol(
+                                            tracker,
+                                            candidateZone,
+                                            history,
+                                            currentSnapshot,
+                                            thresholds,
+                                            tickSize,
+                                            MaxSessionBars,
+                                            MaxConsecutiveBadCloses,
+                                            MaxSessionPenetrationTicks,
+                                            "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)",
+                                            retestDecisionNow);
 
                                         var reasonsNow = new List<string>
                                         {
@@ -1962,9 +2016,18 @@ namespace MyNamespace.Strategies.Orderflow
                 }
                 catch { }
 
-                LogSessionProtocol(tracker, candidateZone, history, currentSnapshot, thresholds, tickSize,
-                    MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
-                    "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)", retestDecision);
+                LogSessionProtocol(
+                    tracker,
+                    candidateZone,
+                    history,
+                    currentSnapshot,
+                    thresholds,
+                    tickSize,
+                    MaxSessionBars,
+                    MaxConsecutiveBadCloses,
+                    MaxSessionPenetrationTicks,
+                    "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)",
+                    retestDecision);
 
                 var reasons = new List<string>
                 {
@@ -2192,13 +2255,17 @@ namespace MyNamespace.Strategies.Orderflow
             logItems.Add(new ScoreItem { Key = "FA", Points = 0m, TextDe = faAtZone ? "Finished Auction an Zone: JA" : "Finished Auction an Zone: NEIN" });
 
             bool absorptionLog = false;
+            AbsorptionPattern absorptionPatternLog = AbsorptionPattern.None;
             if (prev != null)
-                absorptionLog = ImbalanceNoFollowThrough(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+            {
+                absorptionPatternLog = DetectAbsorptionPattern(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+                absorptionLog = absorptionPatternLog != AbsorptionPattern.None;
+            }
             var proxEval = absorptionLog
                 ? EvaluateAbsorptionProximity(currentSnapshot, zone, tickSize, _direction)
                 : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
             decimal absorptionPts = absorptionLog ? (2m * proxEval.Factor) : 0m;
-            logItems.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorptionLog ? $"Absorption: JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
+            logItems.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorptionLog ? $"Absorption({absorptionPatternLog}): JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
             if (absorptionLog)
                 tracker.SessionSawAbsorption = true;
 
@@ -2270,9 +2337,13 @@ namespace MyNamespace.Strategies.Orderflow
 
             // Kriterium 4: Absorption im Signalbar
             bool absorptionInSignal = false;
+            AbsorptionPattern absorptionPatternSignal = AbsorptionPattern.None;
             if (prev != null)
-                absorptionInSignal = ImbalanceNoFollowThrough(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
-            logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? "Signal Absorption: JA" : "Signal Absorption: NEIN" });
+            {
+                absorptionPatternSignal = DetectAbsorptionPattern(prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+                absorptionInSignal = absorptionPatternSignal != AbsorptionPattern.None;
+            }
+            logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? $"Signal Absorption({absorptionPatternSignal}): JA" : "Signal Absorption: NEIN" });
 
             // Alle 4 Kriterien müssen erfüllt sein
             isSignalBar = ufToFaHere && closeInDirection && pocPositionOk && absorptionInSignal;
@@ -2299,7 +2370,7 @@ namespace MyNamespace.Strategies.Orderflow
                 Path = tracker.SessionSawUaToFa ? AllowPath.UaToFa : AllowPath.None,
                 BaseScore = 0,
                 TotalScore = logScore,
-                Confidence = confidence,
+                Confidence = isSignalBar ? confidence : 0m,
                 BlockReasonDe = isSignalBar ? string.Empty : signalBlockReason,
                 Items = logItems
             };
@@ -2408,8 +2479,6 @@ namespace MyNamespace.Strategies.Orderflow
                     : int.MaxValue;
                 bool hasDefenseChapter = endBar >= (startBar + 1);
                 bool hasConfirmChapter = tracker.SessionAbsorptionConfirmed && confirmStartBar <= endBar;
-
-                lines.Add("TOUCH:");
 
                 int green = 0;
                 int red = 0;
@@ -2528,12 +2597,18 @@ namespace MyNamespace.Strategies.Orderflow
                         const int AdaptiveLookback = 30;
                         const decimal AbsNetDeltaMedianMultiplier = 1.0m;
                         decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, s, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
-                        if (ImbalanceNoFollowThrough(prevSnap, s, zone, tickSize, _direction, absNetDeltaMin))
+                        var absPat = DetectAbsorptionPattern(prevSnap, s, zone, tickSize, _direction, absNetDeltaMin);
+                        if (absPat != AbsorptionPattern.None)
                         {
-                            events.Add("🛡️ABS");
+                            events.Add(absPat == AbsorptionPattern.A ? "🛡️ABS(A)" : "🛡️ABS(B)");
                             hasAbsorption = true;
                             if (chartBar > 0) barsAbs.Add(chartBar);
                         }
+                        events.Add(absPat == AbsorptionPattern.None ? "ABS=NONE" : (absPat == AbsorptionPattern.A ? "ABS=A" : "ABS=B"));
+                    }
+                    else
+                    {
+                        events.Add("ABS=NONE");
                     }
 
                     // DeltaFlip (Chunk C): proximity gate + flip-in-window + magnitude
@@ -3052,6 +3127,121 @@ namespace MyNamespace.Strategies.Orderflow
 
                 return noFurtherUp && goodRecovery && rejection;
             }
+        }
+
+        private static AbsorptionPattern DetectAbsorptionPattern(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir,
+            decimal absNetDeltaMin)
+        {
+            if (ImbalanceNoFollowThrough(prev, curr, z, tickSize, dir, absNetDeltaMin))
+                return AbsorptionPattern.A;
+            if (PushFlipAbsorption(prev, curr, z, tickSize, dir, absNetDeltaMin))
+                return AbsorptionPattern.B;
+            return AbsorptionPattern.None;
+        }
+
+        private static bool PushFlipAbsorption(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir,
+            decimal absNetDeltaMin)
+        {
+            decimal oneTick = tickSize;
+            if (absNetDeltaMin < 0m)
+                absNetDeltaMin = 0m;
+
+            const decimal AbsDeltaMultiplier = 1.00m;
+            const decimal MinRecoveryRatio = 0.35m;
+            const decimal MinExtremeDomRatio = 0.55m;
+            const decimal MinExtremeShare = 0.02m;
+            const int MaxSweepTicks = 2;
+
+            decimal vol = curr.Volume;
+            if (vol <= 0m)
+                vol = 1m;
+
+            decimal candleHeight = curr.High - curr.Low;
+            if (candleHeight <= 0m)
+                candleHeight = oneTick;
+
+            if (dir == OrderDirections.Buy)
+            {
+                bool prevBearish = prev.Close < prev.Open;
+                if (!prevBearish)
+                    return false;
+
+                decimal needDelta = absNetDeltaMin * AbsDeltaMultiplier;
+                if (curr.NetDeltaTotal < needDelta)
+                    return false;
+
+                decimal exBid = curr.BidAtLow;
+                decimal exAsk = curr.AskAtLow;
+                decimal exTot = exBid + exAsk;
+                if (exTot <= 0m)
+                    return false;
+                if ((exTot / vol) < MinExtremeShare)
+                    return false;
+
+                decimal dom = exBid / exTot;
+                if (dom < MinExtremeDomRatio)
+                    return false;
+
+                bool noFurtherDownByPrev = curr.Low >= prev.Low - (oneTick * MaxSweepTicks);
+                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
+                if (!(noFurtherDownByPrev || noFurtherDownByZone))
+                    return false;
+
+                bool currBullish = curr.Close > curr.Open;
+                if (!currBullish)
+                    return false;
+
+                decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
+                if (recoveryRatio < MinRecoveryRatio)
+                    return false;
+
+                return true;
+            }
+
+            bool prevBullish = prev.Close > prev.Open;
+            if (!prevBullish)
+                return false;
+
+            decimal needDeltaShort = absNetDeltaMin * AbsDeltaMultiplier;
+            if (curr.NetDeltaTotal > -needDeltaShort)
+                return false;
+
+            decimal exAskS = curr.AskAtHigh;
+            decimal exBidS = curr.BidAtHigh;
+            decimal exTotS = exBidS + exAskS;
+            if (exTotS <= 0m)
+                return false;
+            if ((exTotS / vol) < MinExtremeShare)
+                return false;
+
+            decimal domS = exAskS / exTotS;
+            if (domS < MinExtremeDomRatio)
+                return false;
+
+            bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
+            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
+            if (!(noFurtherUpByPrev || noFurtherUpByZone))
+                return false;
+
+            bool currBearish = curr.Close < curr.Open;
+            if (!currBearish)
+                return false;
+
+            decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
+            if (recoveryRatioS < MinRecoveryRatio)
+                return false;
+
+            return true;
         }
 
         private static OvSnapshot? GetPreviousClosedSnapshot(OfFeaturesHistory history, int currentBar, int maxLookback)
