@@ -4,7 +4,8 @@
 
 ### Aktuelle Setup
 - **Remote Repository**: GitHub (origin)
-- **Lokaler Speicher**: PC unter `c:\Users\User\source\repos\Scalping-Strategie`
+- **Lokaler Speicher PC**: `c:\Users\User\source\repos\Scalping-Strategie`
+- **Lokaler Speicher Laptop**: `C:\Users\DeinUsername\OneDrive\Projekte\Scalping-Strategie`
 - **Cloud Backup**: OneDrive Sync
 
 ### Sync-Workflow zwischen PC und Laptop
