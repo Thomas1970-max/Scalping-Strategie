@@ -1060,23 +1060,54 @@ namespace MyNamespace.Strategies
                 DateTime startTime;
                 try
                 {
-                    var chartEnd = NormalizeToChartTime(endTime);
-                    var chartMidnight = new DateTime(chartEnd.Year, chartEnd.Month, chartEnd.Day, 0, 0, 0, chartEnd.Kind);
-
-                    if (endTime.Kind == DateTimeKind.Utc)
-                        startTime = chartMidnight.Kind == DateTimeKind.Utc ? chartMidnight : DateTime.SpecifyKind(chartMidnight, DateTimeKind.Local).ToUniversalTime();
-                    else if (endTime.Kind == DateTimeKind.Local)
-                        startTime = chartMidnight.Kind == DateTimeKind.Local ? chartMidnight : DateTime.SpecifyKind(chartMidnight, DateTimeKind.Local);
-                    else
-                        startTime = DateTime.SpecifyKind(chartMidnight, DateTimeKind.Unspecified);
+                    // Anchor Tick900 backfill to the current trading session start.
+                    // Using the full chart history start can create very large requests in live mode,
+                    // delaying/aborting response processing and preventing debug candle rendering.
+                    startTime = NormalizeToChartTime(GetSessionStartTimeForSwingSeed(endTime));
                 }
                 catch
                 {
-                    startTime = new DateTime(endTime.Year, endTime.Month, endTime.Day, 0, 0, 0, endTime.Kind);
+                    startTime = endTime;
                 }
 
                 if (startTime == default)
-                    startTime = new DateTime(endTime.Year, endTime.Month, endTime.Day, 0, 0, 0, endTime.Kind);
+                    startTime = endTime;
+
+                if (startTime == default)
+                    startTime = endTime;
+
+                // Atomic in-flight gate: prevent duplicate parallel requests (same instance/thread races).
+                // Without this, OnCalculate can dispatch multiple identical CT requests before the bool flags settle.
+                if (Interlocked.CompareExchange(ref _msTick900BackfillInFlight, 1, 0) != 0)
+                {
+                    LogGateOnce("backfill-in-flight-atomic");
+                    return;
+                }
+
+                // Process-wide in-flight gate: prevent duplicate requests from parallel instances/appdomains.
+                if (Interlocked.CompareExchange(ref _msGlobalTick900BackfillInFlight, 1, 0) != 0)
+                {
+                    LogGateOnce("global-backfill-in-flight-atomic");
+                    Interlocked.Exchange(ref _msTick900BackfillInFlight, 0);
+                    return;
+                }
+
+                // OS-wide gate (named semaphore): protects against duplicate requests across parallel AppDomains
+                // where static fields are not shared reliably. Semaphore is intentionally non-reentrant.
+                if (_msBackfillRequestSemaphore != null)
+                {
+                    bool gotGate = false;
+                    try { gotGate = _msBackfillRequestSemaphore.WaitOne(0); } catch { gotGate = false; }
+                    if (!gotGate)
+                    {
+                        LogGateOnce("global-backfill-semaphore-busy");
+                        Interlocked.Exchange(ref _msTick900BackfillInFlight, 0);
+                        Interlocked.Exchange(ref _msGlobalTick900BackfillInFlight, 0);
+                        return;
+                    }
+
+                    _msBackfillRequestSemaphoreOwned = true;
+                }
 
                 var request = new CumulativeTradesRequest(startTime, endTime, 0, 0);
                 _msTick900BackfillRequested = true;
@@ -1107,6 +1138,14 @@ namespace MyNamespace.Strategies
             catch (Exception ex)
             {
                 //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Request failed: {ex.GetType().Name}: {ex.Message}");
+                _msTick900BackfillRequested = false;
+                Interlocked.Exchange(ref _msTick900BackfillInFlight, 0);
+                Interlocked.Exchange(ref _msGlobalTick900BackfillInFlight, 0);
+                if (_msBackfillRequestSemaphoreOwned)
+                {
+                    try { _msBackfillRequestSemaphore?.Release(); } catch { }
+                    _msBackfillRequestSemaphoreOwned = false;
+                }
             }
         }
 
@@ -1128,6 +1167,11 @@ namespace MyNamespace.Strategies
             {
                 var globalEndTicks = Volatile.Read(ref _msGlobalBackfillRequestedEndTimeTicks);
                 if (globalEndTicks != 0 && request != null && request.EndTime.Ticks < globalEndTicks)
+                    return;
+
+                // Duplicate responses for the same end-time can arrive (cache/server pipeline).
+                // Reprocessing them causes long freezes and can desync Tick900 state.
+                if (request != null && _msTick900LastProcessedBackfillEndTime != default && request.EndTime <= _msTick900LastProcessedBackfillEndTime)
                     return;
             }
             catch { }
@@ -1163,9 +1207,15 @@ namespace MyNamespace.Strategies
                 _msTick900ClosedCandles.Clear();
                 _msChartTimeKind = null;
 
+                int backfillTickCount = 0;
+                DateTime backfillStartTime = default;
+                var backfillEndTime = request != null ? NormalizeToChartTime(request.EndTime) : default;
+
                 var list = cumulativeTrades?.ToList() ?? new List<CumulativeTrade>();
                 if (list.Count > 1)
                     list.Sort((a, b) => a.Time.CompareTo(b.Time));
+                if (list.Count > 0)
+                    backfillStartTime = NormalizeToChartTime(list[0].Time);
 
                 bool processedAllTicks = false;
                 try
@@ -1190,7 +1240,9 @@ namespace MyNamespace.Strategies
 
                     if (allTicks.Count > 0)
                     {
+                        backfillTickCount = allTicks.Count;
                         _msTick900BackfillSawTicks = true;
+
                         List<(DateTime T, MarketDataArg A)> allTicksByChartTime;
                         DateTime maxTickChartTime = default;
                         try
@@ -1582,14 +1634,64 @@ namespace MyNamespace.Strategies
 
                 //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Completed. Trades={list.Count} tickBars={_msTick900Bar}");
 
+                try
+                {
+                    if (backfillTickCount > 0 && backfillStartTime != default && backfillEndTime != default)
+                    {
+                        int chartClosedBarsInRange = 0;
+                        for (int i = 0; i < CurrentBar; i++)
+                        {
+                            var c = GetCandle(i);
+                            if (c == null)
+                                continue;
+
+                            var lt = NormalizeToChartTime(c.LastTime != default ? c.LastTime : c.Time);
+                            if (lt > backfillStartTime && lt <= backfillEndTime)
+                                chartClosedBarsInRange++;
+                        }
+
+                        int formingRemainder = backfillTickCount % 900;
+                        int lower = (900 * chartClosedBarsInRange) - backfillTickCount;
+                        int upper = (900 * (chartClosedBarsInRange + 1) - 1) - backfillTickCount;
+                        bool carryRangeValid = upper >= 0 && lower <= 899;
+                        if (carryRangeValid)
+                        {
+                            if (lower < 0) lower = 0;
+                            if (upper > 899) upper = 899;
+                            this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Tick phase diag: range={backfillStartTime:O}..{backfillEndTime:O} ticks={backfillTickCount} chartClosedBars={chartClosedBarsInRange} formingRemainder={formingRemainder} estimatedInitialCarryTicks={lower}..{upper}");
+                        }
+                        else
+                        {
+                            this.LogInfo($"[Tick900Backfill:{_msInstanceId}] Tick phase diag: range={backfillStartTime:O}..{backfillEndTime:O} ticks={backfillTickCount} chartClosedBars={chartClosedBarsInRange} formingRemainder={formingRemainder} estimatedInitialCarryTicks=unknown (insufficient chart range overlap)");
+                        }
+                    }
+                }
+                catch { }
+
                 // Backfill fertig: In-Flight Flag zurücksetzen, damit ein späteres "Nachziehen" möglich ist.
                 _msTick900BackfillRequested = false;
                 _msTick900BackfillCompleted = true;
+                if (request != null)
+                    _msTick900LastProcessedBackfillEndTime = request.EndTime;
+                Interlocked.Exchange(ref _msTick900BackfillInFlight, 0);
+                Interlocked.Exchange(ref _msGlobalTick900BackfillInFlight, 0);
+                if (_msBackfillRequestSemaphoreOwned)
+                {
+                    try { _msBackfillRequestSemaphore?.Release(); } catch { }
+                    _msBackfillRequestSemaphoreOwned = false;
+                }
             }
             catch (Exception ex)
             {
                 //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] Response processing failed: {ex.GetType().Name}: {ex.Message}");
                 _msTick900BackfillRequested = false;
+                Interlocked.Exchange(ref _msTick900BackfillInFlight, 0);
+                Interlocked.Exchange(ref _msGlobalTick900BackfillInFlight, 0);
+                if (_msBackfillRequestSemaphoreOwned)
+                {
+                    try { _msBackfillRequestSemaphore?.Release(); } catch { }
+                    _msBackfillRequestSemaphoreOwned = false;
+                }
             }
         }
 
@@ -1673,14 +1775,11 @@ namespace MyNamespace.Strategies
                 _msIsLeaderInstance = _msLeaderMutex.WaitOne(0);
                 if (!_msIsLeaderInstance)
                 {
-                    // Fallback: within a single ATAS process we still want the newest instance to be able to run.
-                    // A stale instance may hold the mutex forever; in that case, prefer generation leader.
+                    // If a stale instance keeps the mutex, allow the newest generation to proceed.
+                    // This prevents the visible/current chart instance from becoming permanently passive.
                     var latest = _msGeneration == Volatile.Read(ref _msGlobalGeneration);
                     if (latest)
-                    {
                         _msIsLeaderInstance = true;
-                        //this.LogWarn($"[Tick900Backfill:{_msInstanceId}] LeaderMutex busy -> fallback leader=true (latest generation). msGen={_msGeneration} globalGen={Volatile.Read(ref _msGlobalGeneration)}");
-                    }
                 }
 
                 if (_msIsLeaderInstance && !_msZonesSnapshotClearedByLeader)
@@ -2109,7 +2208,7 @@ namespace MyNamespace.Strategies
                 if (_msZonesMmf == null || _marketStructureContext == null)
                     return;
 
-                var zones = _marketStructureContext.ActiveZones;
+                var zones = _marketStructureContext.GetActiveZonesSnapshot();
                 using var stream = _msZonesMmf.CreateViewStream(0, 0, MemoryMappedFileAccess.Write);
                 using var bw = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
                 bw.Write(DateTime.UtcNow.Ticks);
@@ -4709,9 +4808,12 @@ namespace MyNamespace.Strategies
         private const bool UseTick900ForMarketStructure = true;
         private static int _msGlobalGeneration;
         private static long _msGlobalBackfillRequestedEndTimeTicks;
+        private static int _msGlobalTick900BackfillInFlight;
         private readonly int _msGeneration;
         private readonly string _msInstanceId = Guid.NewGuid().ToString("N").Substring(0, 6);
         private Mutex? _msLeaderMutex;
+        private Semaphore? _msBackfillRequestSemaphore;
+        private bool _msBackfillRequestSemaphoreOwned;
         private bool _msIsLeaderInstance;
         private bool _msLeaderElectionAttempted;
         private bool _msLeaderLogOnce;
@@ -4730,8 +4832,10 @@ namespace MyNamespace.Strategies
         private int _msTick900Bar;
         private DateTime _msTick900BucketSessionStart;
         private bool _msTick900BackfillRequested;
+        private int _msTick900BackfillInFlight;
         private bool _msTick900BackfillCompleted;
         private DateTime _msTick900BackfillRequestedEndTime;
+        private DateTime _msTick900LastProcessedBackfillEndTime;
         private DateTime _msTick900BackfillCandidateFirstTime;
         private DateTime _msTick900BackfillCandidateEndTime;
         private int _msTick900BackfillCandidateStableCount;
@@ -6290,6 +6394,10 @@ namespace MyNamespace.Strategies
                 try { pid = Process.GetCurrentProcess().Id; } catch { pid = 0; }
                 var mutexName = $"Local\\Goldfluss3_3_Tick900MS_{instrumentName}_P{pid}";
                 _msLeaderMutex = new Mutex(false, mutexName);
+
+                var backfillSemaphoreName = $"Local\\Goldfluss3_3_Tick900BackfillReq_{instrumentName}";
+                _msBackfillRequestSemaphore = new Semaphore(1, 1, backfillSemaphoreName);
+                _msBackfillRequestSemaphoreOwned = false;
                 _msIsLeaderInstance = false;
                 _msLeaderElectionAttempted = false;
                 //this.LogInfo($"[Tick900Backfill:{_msInstanceId}] LeaderMutex created='{mutexName}' (acquire deferred to OnCalculate)");
@@ -6799,7 +6907,7 @@ namespace MyNamespace.Strategies
                 }
                 catch (Exception ex)
                 {
-                    this.LogWarn($"[Tick900->MarketStructure] Update failed: {ex.GetType().Name}: {ex.Message}");
+                    this.LogWarn($"[Tick900->MarketStructure] Update failed: {ex}");
                 }
             }
 
@@ -16188,9 +16296,9 @@ namespace MyNamespace.Strategies
                         if (bar < 0)
                             continue;
 
-                        // Skip if we already drew a candle for this chart bar.
-                        if (!seenBars.Add(bar))
+                        if (seenBars.Contains(bar))
                             continue;
+                        seenBars.Add(bar);
 
                         int x = GetXByBarSafe(bar);
                         int yHigh = (int)ChartInfo.GetYByPrice(c.High, false);

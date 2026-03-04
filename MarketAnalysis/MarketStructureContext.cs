@@ -108,11 +108,12 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private int _zzCandidateLowBar;
         private int _nextZoneId = 1;
 
-        private int _lastConfirmedSwingHighBar = -1;
-        private decimal? _lastConfirmedSwingHigh;
-        private int _lastConfirmedSwingLowBar = -1;
-        private decimal? _lastConfirmedSwingLow;
         private ZigZagDir _lastConfirmedSwingDir = ZigZagDir.Unknown;
+        private decimal? _lastConfirmedSwingHigh;
+        private decimal? _lastConfirmedSwingLow;
+        private readonly object _updateSync = new();
+        private int _lastConfirmedSwingHighBar = -1;
+        private int _lastConfirmedSwingLowBar = -1;
 
         private int _currentUpdateBar;
         public int CurrentBar => _currentUpdateBar;
@@ -130,6 +131,17 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         public List<Zone> ActiveZones { get; } = new List<Zone>();
         public EntrySignal? LastSignal { get; private set; }
+
+        public List<Zone> GetActiveZonesSnapshot()
+        {
+            lock (_updateSync)
+            {
+                if (ActiveZones.Count == 0)
+                    return new List<Zone>(0);
+
+                return ActiveZones.Where(z => z != null).ToList();
+            }
+        }
 
         public int WickZoneMinTicks { get; set; } = 3;
         public bool ZigZagIgnoreWicks { get; set; } = true;
@@ -151,65 +163,74 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         public bool IsInAnyActiveZone(decimal price, decimal tickSize, int bufferTicks = 0)
         {
-            if (ActiveZones == null || ActiveZones.Count == 0)
-                return false;
-
-            if (tickSize <= 0m)
-                tickSize = 0.25m;
-
-            var buffer = Math.Max(0, bufferTicks) * tickSize;
-            for (int i = 0; i < ActiveZones.Count; i++)
+            lock (_updateSync)
             {
-                var z = ActiveZones[i];
-                if (z == null)
-                    continue;
+                if (ActiveZones == null || ActiveZones.Count == 0)
+                    return false;
 
-                if (price >= (z.Low - buffer) && price <= (z.High + buffer))
-                    return true;
+                if (tickSize <= 0m)
+                    tickSize = 0.25m;
+
+                var buffer = Math.Max(0, bufferTicks) * tickSize;
+                for (int i = 0; i < ActiveZones.Count; i++)
+                {
+                    var z = ActiveZones[i];
+                    if (z == null)
+                        continue;
+
+                    if (price >= (z.Low - buffer) && price <= (z.High + buffer))
+                        return true;
+                }
+
+                return false;
             }
-
-            return false;
         }
 
         public HtfZoneType GetHtfZoneType(decimal price, decimal tickSize, int bufferTicks = 0)
         {
-            if (ActiveZones == null || ActiveZones.Count == 0)
-                return HtfZoneType.None;
-
-            if (tickSize <= 0m)
-                tickSize = 0.25m;
-
-            var buffer = Math.Max(0, bufferTicks) * tickSize;
-            for (int i = 0; i < ActiveZones.Count; i++)
+            lock (_updateSync)
             {
-                var z = ActiveZones[i];
-                if (z == null)
-                    continue;
+                if (ActiveZones == null || ActiveZones.Count == 0)
+                    return HtfZoneType.None;
 
-                if (price >= (z.Low - buffer) && price <= (z.High + buffer))
-                    return z.Type == ZoneType.Support ? HtfZoneType.Support : HtfZoneType.Resistance;
+                if (tickSize <= 0m)
+                    tickSize = 0.25m;
+
+                var buffer = Math.Max(0, bufferTicks) * tickSize;
+                for (int i = 0; i < ActiveZones.Count; i++)
+                {
+                    var z = ActiveZones[i];
+                    if (z == null)
+                        continue;
+
+                    if (price >= (z.Low - buffer) && price <= (z.High + buffer))
+                        return z.Type == ZoneType.Support ? HtfZoneType.Support : HtfZoneType.Resistance;
+                }
+
+                return HtfZoneType.None;
             }
-
-            return HtfZoneType.None;
         }
 
         public void Reset()
         {
-            ActiveZones.Clear();
-            _recentCandles.Clear();
-            _zzDir = ZigZagDir.Unknown;
-            _zzCandidateHigh = 0m;
-            _zzCandidateHighBar = 0;
-            _zzCandidateLow = 0m;
-            _zzCandidateLowBar = 0;
-            _nextZoneId = 1;
-            _lastConfirmedSwingHighBar = -1;
-            _lastConfirmedSwingHigh = null;
-            _lastConfirmedSwingLowBar = -1;
-            _lastConfirmedSwingLow = null;
-            _lastConfirmedSwingDir = ZigZagDir.Unknown;
-            _archivedZones.Clear();
-            LastSignal = null;
+            lock (_updateSync)
+            {
+                ActiveZones.Clear();
+                _recentCandles.Clear();
+                _zzDir = ZigZagDir.Unknown;
+                _zzCandidateHigh = 0m;
+                _zzCandidateHighBar = 0;
+                _zzCandidateLow = 0m;
+                _zzCandidateLowBar = 0;
+                _nextZoneId = 1;
+                _lastConfirmedSwingHighBar = -1;
+                _lastConfirmedSwingHigh = null;
+                _lastConfirmedSwingLowBar = -1;
+                _lastConfirmedSwingLow = null;
+                _lastConfirmedSwingDir = ZigZagDir.Unknown;
+                _archivedZones.Clear();
+                LastSignal = null;
+            }
         }
 
         public void Update(
@@ -223,21 +244,24 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (candle == null)
                 return;
 
-            _currentUpdateBar = bar;
-
-            if (tickSize <= 0m)
-                tickSize = 0.25m;
-            if (allowZoneCreation)
+            lock (_updateSync)
             {
-                EnqueueRecentCandle(bar, candle);
-                TryUpdateZigZagAndCreateZones(bar, tickSize, vwap);
-            }
+                _currentUpdateBar = bar;
 
-            if (allowZoneLifecycle)
-            {
-                var readyDist = Math.Max(0, ZoneReadyDistanceTicks) * tickSize;
-                var breakDist = Math.Max(0, ZoneBreakDistanceTicks) * tickSize;
-                UpdateZoneLifecycle(bar, candle, tickSize, readyDist, breakDist);
+                if (tickSize <= 0m)
+                    tickSize = 0.25m;
+                if (allowZoneCreation)
+                {
+                    EnqueueRecentCandle(bar, candle);
+                    TryUpdateZigZagAndCreateZones(bar, tickSize, vwap);
+                }
+
+                if (allowZoneLifecycle)
+                {
+                    var readyDist = Math.Max(0, ZoneReadyDistanceTicks) * tickSize;
+                    var breakDist = Math.Max(0, ZoneBreakDistanceTicks) * tickSize;
+                    UpdateZoneLifecycle(bar, candle, tickSize, readyDist, breakDist);
+                }
             }
         }
 
@@ -251,6 +275,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             bool allowZoneCreation,
             bool allowZoneLifecycle)
         {
+            // keep one synchronization boundary for all update entry points
             Update(
                 bar: bar,
                 candle: candle,
@@ -300,50 +325,62 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         public void MarkZoneUsed(int zoneId)
         {
-            var z = ActiveZones.FirstOrDefault(x => x.Id == zoneId);
-            if (z == null)
-                return;
+            lock (_updateSync)
+            {
+                var z = ActiveZones.FirstOrDefault(x => x.Id == zoneId);
+                if (z == null)
+                    return;
 
-            z.Status = ZoneStatus.Used;
+                z.Status = ZoneStatus.Used;
+            }
         }
 
         public void ConsumeZoneOnEntry(int zoneId)
         {
-            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
-            if (z == null)
-                return;
+            lock (_updateSync)
+            {
+                var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+                if (z == null)
+                    return;
 
-            z.ConsumedBar = _currentUpdateBar;
-            z.ConsumedReason = ZoneConsumeReason.Entry;
-            MarkZoneUsed(zoneId);
+                z.ConsumedBar = _currentUpdateBar;
+                z.ConsumedReason = ZoneConsumeReason.Entry;
+                z.Status = ZoneStatus.Used;
+            }
         }
 
         public void ConsumeZoneOnExpiry(int zoneId)
         {
-            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
-            if (z == null)
-                return;
+            lock (_updateSync)
+            {
+                var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+                if (z == null)
+                    return;
 
-            z.ConsumedBar = _currentUpdateBar;
-            z.ConsumedReason = ZoneConsumeReason.Expiry;
-            MarkZoneUsed(zoneId);
+                z.ConsumedBar = _currentUpdateBar;
+                z.ConsumedReason = ZoneConsumeReason.Expiry;
+                z.Status = ZoneStatus.Used;
+            }
         }
 
         public void ConsumeZoneOnInvalidation(int zoneId)
         {
-            var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
-            if (z == null)
-                return;
-
-            if (z.IsConfirmed && z.HasRetestTouch)
+            lock (_updateSync)
             {
-                z.LastInvalidationBar = _currentUpdateBar;
-                return;
-            }
+                var z = ActiveZones.FirstOrDefault(x => x != null && x.Id == zoneId);
+                if (z == null)
+                    return;
 
-            z.ConsumedBar = _currentUpdateBar;
-            z.ConsumedReason = ZoneConsumeReason.Invalidation;
-            MarkZoneUsed(zoneId);
+                if (z.IsConfirmed && z.HasRetestTouch)
+                {
+                    z.LastInvalidationBar = _currentUpdateBar;
+                    return;
+                }
+
+                z.ConsumedBar = _currentUpdateBar;
+                z.ConsumedReason = ZoneConsumeReason.Invalidation;
+                z.Status = ZoneStatus.Used;
+            }
         }
 
         private void EnqueueRecentCandle(int bar, IMarketCandle candle)

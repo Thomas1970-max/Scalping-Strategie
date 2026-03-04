@@ -17,6 +17,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private decimal _netDelta;
         private DateTime _time;
         private DateTime _lastTime;
+        private bool _primedWithoutPrice;
 
         public int CurrentCount => _count;
         public DateTime CurrentTime => _time;
@@ -64,6 +65,17 @@ namespace MyNamespace.Strategies.MarketAnalysis
             _netDelta = 0m;
             _time = default;
             _lastTime = default;
+            _primedWithoutPrice = false;
+        }
+
+        public void PrimeCarry(int carryTicks)
+        {
+            Reset();
+            if (carryTicks <= 0)
+                return;
+
+            _count = Math.Min(carryTicks, _tradesPerBar - 1);
+            _primedWithoutPrice = _count > 0;
         }
 
         public bool AddTrade(MarketDataArg trade, out TickCandle? closedCandle)
@@ -75,7 +87,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             var price = trade.Price;
             var vol = trade.Volume;
 
-            if (_count == 0)
+            if (_count == 0 || _primedWithoutPrice)
             {
                 _open = price;
                 _high = price;
@@ -85,6 +97,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _netDelta = 0m;
                 _time = trade.Time;
                 _lastTime = trade.Time;
+                _primedWithoutPrice = false;
             }
             else
             {
@@ -188,7 +201,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         {
             closedCandle = null;
 
-            if (_count == 0)
+            if (_count == 0 || _primedWithoutPrice)
             {
                 _open = price;
                 _high = price;
@@ -198,6 +211,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _netDelta = 0m;
                 _time = time;
                 _lastTime = time;
+                _primedWithoutPrice = false;
             }
             else
             {
