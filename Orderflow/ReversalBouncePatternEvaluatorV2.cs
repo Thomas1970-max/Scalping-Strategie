@@ -2483,7 +2483,6 @@ namespace MyNamespace.Strategies.Orderflow
                 if (_loggerSource == null)
                     return;
 
-                const decimal EntryThreshold = 6m;
                 var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
                 int endBarForReport = currentSnapshot.Bar;
@@ -2502,28 +2501,6 @@ namespace MyNamespace.Strategies.Orderflow
                     lines.Add($"UA→FA: gesehen in Session (Latch) bei Bar {tracker.SessionUaToFaBar}");
                 lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
 
-                decimal bestDefenseOverall = 0m;
-                decimal bestConfirmOverall = 0m;
-                if (tracker.SessionDecisionHistory != null && tracker.SessionDecisionBars != null)
-                {
-                    int minCount = Math.Min(tracker.SessionDecisionHistory.Count, tracker.SessionDecisionBars.Count);
-                    if (tracker.SessionDecisionPhases != null)
-                        minCount = Math.Min(minCount, tracker.SessionDecisionPhases.Count);
-
-                    for (int i = 0; i < minCount; i++)
-                    {
-                        var d = tracker.SessionDecisionHistory[i];
-                        if (d == null) continue;
-                        var ph = (tracker.SessionDecisionPhases != null && i < tracker.SessionDecisionPhases.Count)
-                            ? tracker.SessionDecisionPhases[i]
-                            : ReversalPhase.Defense;
-                        if (ph == ReversalPhase.Defense && d.TotalScore > bestDefenseOverall)
-                            bestDefenseOverall = d.TotalScore;
-                        if (ph == ReversalPhase.Confirm && d.TotalScore > bestConfirmOverall)
-                            bestConfirmOverall = d.TotalScore;
-                    }
-                }
-                lines.Add($"BESTSCORE: Verteidigung {bestDefenseOverall:0.0}/4.0 | Confirm {bestConfirmOverall:0.0}/6.0");
                 if (tracker.SessionAbsorptionConfirmed)
                     lines.Add($"ABSORPTION: bestätigt bei Bar {tracker.SessionAbsorptionBar} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
@@ -2543,25 +2520,6 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasDefenseChapter = endBar >= (startBar + 1);
                 bool hasConfirmChapter = tracker.SessionAbsorptionConfirmed && confirmStartBar <= endBar;
 
-                int green = 0;
-                int red = 0;
-                int posDeltaBars = 0;
-                int negDeltaBars = 0;
-                bool hasAbsorption = false;
-                bool hasDeltaFlip = false;
-                OvSnapshot? firstBarSnap = null;
-                OvSnapshot? lastBarSnap = null;
-                bool hasFA = false;
-
-                var barsFA = new List<int>();
-                var barsAbs = new List<int>();
-                var barsFlip = new List<int>();
-
-                decimal cumulativeScore = 0m;
-                decimal lastDefenseScore = 0m;
-                decimal lastConfirmScore = 0m;
-                var lastDefenseItemPoints = new Dictionary<string, decimal>(StringComparer.Ordinal);
-                var lastConfirmItemPoints = new Dictionary<string, decimal>(StringComparer.Ordinal);
 
                 for (int b = startBar; b <= endBar; b++)
                 {
@@ -2589,9 +2547,6 @@ namespace MyNamespace.Strategies.Orderflow
                     if (s == null)
                         continue;
 
-                    if (firstBarSnap == null)
-                        firstBarSnap = s;
-                    lastBarSnap = s;
 
                     string color = s.Close >= s.Open ? "↑" : "↓";
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
@@ -2599,9 +2554,6 @@ namespace MyNamespace.Strategies.Orderflow
 
                     int chartBar = s.ChartBarNumber;
 
-                    if (s.Close >= s.Open) green++; else red++;
-                    if (s.PocDelta > 0m) posDeltaBars++;
-                    else if (s.PocDelta < 0m) negDeltaBars++;
 
                     bool hasDecision = false;
                     decimal barScore = 0m;
@@ -2640,241 +2592,55 @@ namespace MyNamespace.Strategies.Orderflow
                             pos = s.Close < zone.Low ? "AUSBRUCH" : "ÜBER Zone";
                     }
 
-                    var events = new List<string>(6);
-                    bool faHere = IsFinishedAuction(s, thresholds, _direction) && IsFinishedAuctionAtZone(s, zone, tickSize, _direction);
-                    bool uaToFaHere = prevSnap != null
-                        && IsUnfinishedAuction(prevSnap, thresholds, _direction)
-                        && faHere;
-                    if (uaToFaHere)
-                        events.Add("UA→FA");
-                    if (faHere)
-                    {
-                        events.Add("★STOPP(FA)");
-                        hasFA = true;
-                        if (chartBar > 0) barsFA.Add(chartBar);
-                    }
+                    string phaseLabel = hasDecision
+                        ? (barPhase == ReversalPhase.Confirm
+                            ? "[Bestätigung]"
+                            : (b == tracker.SessionStartBar ? "[TouchVerteidigung]" : "[Verteidigung]"))
+                        : (barNumber == 1 ? "[Touch]" : "");
 
-                    // Absorption (Chunk B): anchored imbalance + adaptive magnitude + zone-edge rejection
-                    if (prevSnap != null)
+                    var checkedParts = new List<string>(8);
+                    if (hasDecision && barDecision?.Items != null)
                     {
-                        const int AdaptiveLookback = 30;
-                        const decimal AbsNetDeltaMedianMultiplier = 1.0m;
-                        decimal absNetDeltaMin = GetAdaptiveAbsNetDeltaMin(history, s, AdaptiveLookback, AbsNetDeltaMedianMultiplier);
-                        var absPat = DetectAbsorptionPattern(prevPrevSnap, prevSnap, s, zone, tickSize, _direction, absNetDeltaMin);
-                        if (absPat != AbsorptionPattern.None)
+                        foreach (var it in barDecision.Items)
                         {
-                            events.Add(absPat == AbsorptionPattern.A ? "🛡️ABS(A)" : "🛡️ABS(B)");
-                            hasAbsorption = true;
-                            if (chartBar > 0) barsAbs.Add(chartBar);
-                        }
-                        if (absPat == AbsorptionPattern.None)
-                        {
-                            events.Add("ABS=NONE");
-                            string dbg = GetAbsorptionDebugText(prevPrevSnap, prevSnap, s, zone, tickSize, _direction, absNetDeltaMin);
-                            if (!string.IsNullOrEmpty(dbg))
-                                events.Add(dbg);
-                        }
-                        else
-                        {
-                            events.Add(absPat == AbsorptionPattern.A ? "ABS=A" : "ABS=B");
-                        }
-                    }
-                    else
-                    {
-                        events.Add("ABS=NONE");
-                    }
+                            if (it == null) continue;
+                            if (string.IsNullOrEmpty(it.Key)) continue;
+                            if (!it.Key.StartsWith("Signal_", StringComparison.Ordinal)) continue;
 
-                    // DeltaFlip (Chunk C): proximity gate + flip-in-window + magnitude
-                    if (prevSnap != null)
-                    {
-                        const decimal ProximityMinFactor = 0.5m;
-                        const decimal DeltaShiftMin = 20m;
-                        var dfProx = EvaluateAbsorptionProximity(s, zone, tickSize, _direction);
-                        if (dfProx.Factor >= ProximityMinFactor)
-                        {
-                            bool deltaFlipRaw = HasDeltaFlipWithinWindow(history, s, windowBars: 3, dir: _direction);
-                            if (deltaFlipRaw)
+                            if (it.Key == "Signal_Check")
                             {
-                                bool currSignOk = _direction == OrderDirections.Buy ? s.PocDelta > 0m : s.PocDelta < 0m;
-                                bool prevSignOk = _direction == OrderDirections.Buy ? prevSnap.PocDelta > 0m : prevSnap.PocDelta < 0m;
-                                bool persistenceOk = currSignOk && prevSignOk;
-
-                                OvSnapshot? flipFrom = prevPrevSnap;
-                                if (flipFrom != null)
-                                {
-                                    bool flipFromOpp = _direction == OrderDirections.Buy ? flipFrom.PocDelta < 0m : flipFrom.PocDelta > 0m;
-                                    if (!flipFromOpp)
-                                        flipFrom = null;
-                                }
-
-                                decimal shift = flipFrom != null ? Math.Abs(s.PocDelta - flipFrom.PocDelta) : 0m;
-                                if (persistenceOk && flipFrom != null && shift >= DeltaShiftMin)
-                                {
-                                    events.Add("🔄FLIP");
-                                    hasDeltaFlip = true;
-                                    if (chartBar > 0) barsFlip.Add(chartBar);
-                                }
+                                if (barDecision.Entry)
+                                    checkedParts.Add("SIGNAL");
+                                continue;
                             }
+
+                            string shortKey = it.Key.Replace("Signal_", string.Empty, StringComparison.Ordinal);
+                            checkedParts.Add($"{shortKey}({(it.Points > 0m ? "+" : "0")})");
                         }
                     }
 
-                    string eventStr = events.Count > 0 ? ("| " + string.Join(" ", events)) : string.Empty;
-                    string phaseLabel;
-                    string scoreText;
-                    string cumText = string.Empty;
-                    string itemText = string.Empty;
-                    if (hasDecision)
-                    {
-                        const decimal DefenseThreshold = 4m;
-                        const decimal ConfirmThreshold = 6m;
-
-                        bool isConfirmBar = barPhase == ReversalPhase.Confirm;
-                        decimal prevScore = isConfirmBar ? lastConfirmScore : lastDefenseScore;
-                        decimal deltaScore = barScore - prevScore;
-                        if (deltaScore < 0m)
-                            deltaScore = 0m;
-                        cumulativeScore += deltaScore;
-                        cumText = $"Cum: {cumulativeScore:0.0}";
-                        if (isConfirmBar)
-                            lastConfirmScore = barScore;
-                        else
-                            lastDefenseScore = barScore;
-
-                        if (barDecision?.Items != null && barDecision.Items.Count > 0)
-                        {
-                            var parts = new List<string>(barDecision.Items.Count);
-                            var lastPoints = isConfirmBar ? lastConfirmItemPoints : lastDefenseItemPoints;
-                            foreach (var it in barDecision.Items)
-                            {
-                                if (it == null) continue;
-                                if (it.Points == 0m) continue;
-                                if (string.IsNullOrEmpty(it.Key)) continue;
-                                if (it.Key == "Defense" || it.Key == "Total") continue;
-
-                                decimal prevPts = 0m;
-                                if (lastPoints.TryGetValue(it.Key, out var p))
-                                    prevPts = p;
-                                decimal deltaPts = it.Points - prevPts;
-                                if (deltaPts > 0m)
-                                    parts.Add($"{it.Key}({deltaPts:+0.0;-0.0;0.0})");
-                                lastPoints[it.Key] = it.Points;
-                            }
-                            if (parts.Count > 0)
-                                itemText = "| " + string.Join(" ", parts);
-                        }
-
-                        if (barPhase == ReversalPhase.Confirm)
-                        {
-                            phaseLabel = "[Bestätigung]";
-                            scoreText = $"{barScore:0.0}/{ConfirmThreshold:0.0}";
-                        }
-                        else
-                        {
-                            phaseLabel = (b == tracker.SessionStartBar) ? "[Touch→Verteidigung]" : "[Verteidigung]";
-                            scoreText = $"{barScore:0.0}/{DefenseThreshold:0.0}";
-                        }
-                    }
-                    else
-                    {
-                        phaseLabel = barNumber == 1 ? "[Touch]" : "";
-                        scoreText = "n/v";
-                    }
-                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel} Score: {scoreText} {cumText} {eventStr} {itemText}".TrimEnd());
+                    string checks = checkedParts.Count > 0 ? " | " + string.Join(" ", checkedParts) : string.Empty;
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}".TrimEnd());
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
                 }
 
                 lines.Add(string.Empty);
-                lines.Add("SZENARIEN-ANALYSE:");
-                bool isLong = _direction == OrderDirections.Buy;
-
-                string FormatBars(List<int> bars)
-                {
-                    if (bars == null || bars.Count == 0)
-                        return string.Empty;
-                    var distinct = bars.Distinct().ToList();
-                    distinct.Sort();
-                    return $" (in K{string.Join(", K", distinct)})";
-                }
-
-                string WithTag(string text, string tag, List<int> bars)
-                {
-                    var kb = FormatBars(bars);
-                    return string.IsNullOrEmpty(kb)
-                        ? $"{text} {tag}."
-                        : $"{text} {tag}{kb}.";
-                }
-
-                var barsImpact = new List<int>();
-                if (firstBarSnap != null && firstBarSnap.ChartBarNumber > 0)
-                    barsImpact.Add(firstBarSnap.ChartBarNumber);
-
-                var barsBreakout = new List<int>();
-                if (lastBarSnap != null && lastBarSnap.ChartBarNumber > 0)
-                    barsBreakout.Add(lastBarSnap.ChartBarNumber);
-
-                if (isLong && firstBarSnap != null && firstBarSnap.PocDelta < -50m)
-                    lines.Add(WithTag("  • ⚡ Aufprall: Verkäufer kamen mit Wucht rein, wurden aber gestoppt", "DELTACHG", barsImpact));
-                else if (!isLong && firstBarSnap != null && firstBarSnap.PocDelta > 50m)
-                    lines.Add(WithTag("  • ⚡ Aufprall: Käufer stürmten vor, prallten aber ab", "DELTACHG", barsImpact));
-
-                if (hasAbsorption)
-                    lines.Add(WithTag("  • 🛡️ Absorption: Die Gegenseite wurde förmlich 'aufgesogen'. Kein Durchkommen", "ABS", barsAbs));
-                if (hasDeltaFlip)
-                    lines.Add(WithTag("  • 🔄 Stimmungsumschwung: Die Initiative hat mitten in der Zone gewechselt", "DELTAFLIP", barsFlip));
-                if (hasFA)
-                    lines.Add(WithTag("  • ✅ Stop-Signal: Finished Auction (FA) zeigte einen sauberen Stopp an der Zone", "FA@ZONE", barsFA));
-
-                if (lastBarSnap != null)
-                {
-                    bool breakout = isLong ? lastBarSnap.Close > zone.High : lastBarSnap.Close < zone.Low;
-                    if (breakout && ((isLong && lastBarSnap.PocDelta > 0m) || (!isLong && lastBarSnap.PocDelta < 0m)))
-                        lines.Add(WithTag("  • ✅ Bestätigung: Aggressiver Ausbruch aus der Zone bestätigt das Reversal", "CONF", barsBreakout));
-                    else if (breakout)
-                        lines.Add(WithTag("  • ⚠ Warnung: Preis bricht aus, aber der Orderflow passt (noch) nicht sauber", "BRK", barsBreakout));
-                }
-
-                if (lastBarSnap != null)
-                {
-                    if (isLong)
-                    {
-                        int awayTicks = RoundTicks(Math.Max(0m, (lastBarSnap.Close - zone.High)), tickSize);
-                        bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta >= 0m;
-                        if (awayTicks >= 1 && intentOk)
-                            lines.Add(WithTag("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Kaufdruck", "CONF", barsBreakout));
-                        else if (awayTicks >= 1 && !intentOk)
-                            lines.Add(WithTag($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Verkaufsdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})", "BRK", barsBreakout));
-                    }
-                    else
-                    {
-                        int awayTicks = RoundTicks(Math.Max(0m, (zone.Low - lastBarSnap.Close)), tickSize);
-                        bool intentOk = awayTicks <= 0 || lastBarSnap.PocDelta <= 0m;
-                        if (awayTicks >= 1 && intentOk)
-                            lines.Add(WithTag("  • ✅ Bestätigung: Preis bewegt sich weg von der Zone mit Verkaufsdruck", "CONF", barsBreakout));
-                        else if (awayTicks >= 1 && !intentOk)
-                            lines.Add(WithTag($"  • ⚠ Bestätigung: Preis bewegt sich weg von der Zone, aber Kaufdruck (POCΔ {lastBarSnap.PocDelta:+0;-0;0})", "BRK", barsBreakout));
-                    }
-                }
-
-                lines.Add(string.Empty);
-
                 string emoji = (finalDecision?.Entry == true) ? "🟢 GO" : "🔴 NO-GO";
-                string fazitPhase = tracker.SessionPhase == ReversalPhase.Confirm
-                    ? $"Confirm-Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}"
-                    : (tracker.SessionAbsorptionConfirmed
-                        ? $"Verteidigung bestätigt, Confirm-Score {tracker.SessionBestScore:0.0}/{EntryThreshold:0.0}"
-                        : $"Verteidigung-Score {tracker.SessionBestScore:0.0}/4.0 (Confirm nicht erreicht)");
-                lines.Add($"FAZIT: {emoji} ({fazitPhase})");
+                lines.Add($"FAZIT: {emoji}");
 
                 if (finalDecision?.Entry != true)
                 {
                     string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Zu wenig Bestätigung";
+                    if (!string.IsNullOrEmpty(grund) && grund.StartsWith("Session abgelaufen", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var lastMissing = tracker.SessionDecisionHistory?
+                            .LastOrDefault(x => x != null && !string.IsNullOrEmpty(x.BlockReasonDe) && x.BlockReasonDe.StartsWith("Kein Signalbar", StringComparison.Ordinal));
+                        if (!string.IsNullOrEmpty(lastMissing?.BlockReasonDe))
+                            grund = lastMissing!.BlockReasonDe;
+                    }
                     lines.Add($"GRUND FÜR ABLEHNUNG: {grund}");
-
-                    var allowItemText = finalDecision?.Items?.FirstOrDefault(x => x.Key == "Allow")?.TextDe;
-                    if (!string.IsNullOrWhiteSpace(allowItemText))
-                        lines.Add(allowItemText);
                 }
                 else
                 {
