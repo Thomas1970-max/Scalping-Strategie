@@ -110,6 +110,7 @@ namespace MyNamespace.Strategies.Orderflow
             public int SessionLatchUfToFaBar;
             public bool SessionLatchClose;
             public int SessionLatchCloseBar;
+            public int SessionLatchCloseBrokenBar;
             public bool SessionLatchPoc;
             public int SessionLatchPocBar;
             public bool SessionLatchAbsorption;
@@ -2099,6 +2100,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionLatchUfToFaBar = -1;
             tracker.SessionLatchClose = false;
             tracker.SessionLatchCloseBar = -1;
+            tracker.SessionLatchCloseBrokenBar = -1;
             tracker.SessionLatchPoc = false;
             tracker.SessionLatchPocBar = -1;
             tracker.SessionLatchAbsorption = false;
@@ -2381,6 +2383,15 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionLatchClose = closeInDirection;
                 tracker.SessionLatchCloseBar = currentSnapshot.Bar;
             }
+            else
+            {
+                if (tracker.SessionLatchClose && !closeInDirection)
+                {
+                    tracker.SessionLatchClose = false;
+                    if (tracker.SessionLatchCloseBrokenBar < 0)
+                        tracker.SessionLatchCloseBrokenBar = currentSnapshot.Bar;
+                }
+            }
 
             bool closeLatchOk = tracker.SessionLatchClose;
             logItems.Add(new ScoreItem
@@ -2389,7 +2400,9 @@ namespace MyNamespace.Strategies.Orderflow
                 Points = closeLatchOk ? 1m : 0m,
                 TextDe = closeLatchOk
                     ? $"Signal Close in Richtung (Latch): JA (Bar {tracker.SessionLatchCloseBar})"
-                    : $"Signal Close in Richtung (Latch): NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})"
+                    : (tracker.SessionLatchCloseBrokenBar >= 0
+                        ? $"Signal Close in Richtung (Latch): NEIN (gebrochen bei Bar {tracker.SessionLatchCloseBrokenBar})"
+                        : $"Signal Close in Richtung (Latch): NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})")
             });
 
             AbsorptionPattern absCurr = AbsorptionPattern.None;
@@ -2810,9 +2823,10 @@ namespace MyNamespace.Strategies.Orderflow
             t = new ZoneTracker
             {
                 ZoneId = zoneId,
+                FirstRealTouchBar = bar,
                 FirstTouchBar = bar,
-                FirstTouchTime = DateTime.MinValue,
                 LastTouchBar = -999,
+                FirstTouchTime = DateTime.MinValue,
                 Confirmed = false,
                 ConfirmedBar = -1,
                 ImmediateAttempted = false,
@@ -2856,6 +2870,7 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionLatchUfToFaBar = -1,
                 SessionLatchClose = false,
                 SessionLatchCloseBar = -1,
+                SessionLatchCloseBrokenBar = -1,
                 SessionLatchPoc = false,
                 SessionLatchPocBar = -1,
                 SessionLatchAbsorption = false,
