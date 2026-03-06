@@ -111,8 +111,6 @@ namespace MyNamespace.Strategies.Orderflow
             public bool SessionLatchClose;
             public int SessionLatchCloseBar;
             public int SessionLatchCloseBrokenBar;
-            public bool SessionApproachCandleKnown;
-            public bool SessionApproachCandleBullish;
             public bool SessionLatchPoc;
             public int SessionLatchPocBar;
             public bool SessionLatchAbsorption;
@@ -1212,7 +1210,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                         foreach (var z in zones)
                         {
-                            if (z == null || z.Id == candidateZone.Id || !z.IsConfirmed)
+                            if (z == null || z.Id == candidateZone.Id)
                                 continue;
 
                             bool strongOpp = z.IsMultiTouch || z.MultiTouchScore >= 2;
@@ -2399,21 +2397,11 @@ namespace MyNamespace.Strategies.Orderflow
                 ? currentSnapshot.Close > currentSnapshot.Open
                 : currentSnapshot.Close < currentSnapshot.Open;
 
-            // IMPORTANT: Close darf nach Umkehrbar nicht mehr wechseln.
-            // Umkehrbar in der Zone ist die Bar, in der der Preis wechselt:
-            // Wenn der Markt bullisch in die Zone kommt, ist die erste bärische Kerze die Umkehrbar (und umgekehrt).
-            // Das Close-Latch wird daher erst initialisiert, wenn (1) eine Candle-Flip-Bar vs. Anlauf erkannt wird
-            // und (2) diese Flip-Bar in Traderichtung schließt.
-            if (!tracker.SessionApproachCandleKnown && prev != null)
-            {
-                tracker.SessionApproachCandleBullish = prev.Close > prev.Open;
-                tracker.SessionApproachCandleKnown = true;
-            }
-
-            bool currBullishCandle = currentSnapshot.Close > currentSnapshot.Open;
-            bool reversalCandle = tracker.SessionApproachCandleKnown && (currBullishCandle != tracker.SessionApproachCandleBullish);
-
-            if (tracker.SessionLatchCloseBar < 0 && reversalCandle && closeInDirection)
+            // Vereinfachte Definition: Umkehrbar ist in Widerstandszone die 1. bärische Bar,
+            // in Unterstützungszone die 1. bullische Bar.
+            // Praktisch: wir initialisieren das Close-Latch auf der ersten Bar, die die Zone berührt
+            // UND in Traderichtung schließt.
+            if (tracker.SessionLatchCloseBar < 0 && TouchesZone(currentSnapshot, zone) && closeInDirection)
             {
                 tracker.SessionLatchClose = closeInDirection;
                 tracker.SessionLatchCloseBar = currentSnapshot.Bar;
@@ -2906,8 +2894,6 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionLatchClose = false,
                 SessionLatchCloseBar = -1,
                 SessionLatchCloseBrokenBar = -1,
-                SessionApproachCandleKnown = false,
-                SessionApproachCandleBullish = false,
                 SessionLatchPoc = false,
                 SessionLatchPocBar = -1,
                 SessionLatchAbsorption = false,
