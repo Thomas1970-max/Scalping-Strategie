@@ -111,6 +111,8 @@ namespace MyNamespace.Strategies.Orderflow
             public bool SessionLatchClose;
             public int SessionLatchCloseBar;
             public int SessionLatchCloseBrokenBar;
+            public bool SessionApproachCandleKnown;
+            public bool SessionApproachCandleBullish;
             public bool SessionLatchPoc;
             public int SessionLatchPocBar;
             public bool SessionLatchAbsorption;
@@ -2303,9 +2305,30 @@ namespace MyNamespace.Strategies.Orderflow
             AbsorptionPattern absorptionPatternLog = AbsorptionPattern.None;
             if (prev != null)
             {
-                absorptionPatternLog = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
-                absorptionLog = absorptionPatternLog != AbsorptionPattern.None;
+                absorptionPatternLog = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: true);
+
+                // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
+                AbsorptionPattern absorptionPatternLogPrev = (prevPrev != null && prev3 != null)
+                    ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
+                    : AbsorptionPattern.None;
+                AbsorptionPattern absorptionPatternLogPrevPrev = (prevPrev != null && prev3 != null && prev4 != null)
+                    ? DetectAbsorptionPattern(prev4, prev3, prevPrev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
+                    : AbsorptionPattern.None;
+
+                bool hasAbsorptionInCurr = absorptionPatternLog != AbsorptionPattern.None;
+
+                // Bestand (1 Bar): Wenn Pattern C auf der Umkehrkerze true war,
+                // dann darf die restliche Signal-Logik im nächsten Bar nachziehen.
+                bool hasCarryOverFromPatternC = tracker.SessionLastPatternCBar >= 0
+                    && currentSnapshot.Bar == tracker.SessionLastPatternCBar + 1;
+
+                absorptionPatternLog = hasAbsorptionInCurr
+                    ? absorptionPatternLog
+                    : (hasCarryOverFromPatternC ? AbsorptionPattern.C : (absorptionPatternLogPrev != AbsorptionPattern.None ? absorptionPatternLogPrev : absorptionPatternLogPrevPrev));
+
+                absorptionLog = hasAbsorptionInCurr || hasCarryOverFromPatternC;
             }
+
             var proxEval = absorptionLog
                 ? EvaluateAbsorptionProximity(currentSnapshot, zone, tickSize, _direction)
                 : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
@@ -2344,7 +2367,7 @@ namespace MyNamespace.Strategies.Orderflow
             // HARTE ENTRY-KRITERIEN (neu):
             // 1) UF→FA: Vorgänger-Bar hatte UF, aktuelle Bar hat FA
             // 2) Close in Traderichtung (Long: Close > Open, Short: Close < Open)
-            // 3) Kerzen-POC: Long → untere Hälfte, Short → obere Hälfte
+            // 3) Kerzen-POC Position
             // 4) Absorption im Signalbar
             // ================================================================
             bool isSignalBar = false;
@@ -2377,10 +2400,20 @@ namespace MyNamespace.Strategies.Orderflow
                 : currentSnapshot.Close < currentSnapshot.Open;
 
             // IMPORTANT: Close darf nach Umkehrbar nicht mehr wechseln.
-            // Die Umkehr-/Touch-Bar setzt die Richtung, danach muss jedes Folge-Bar in Richtung schließen.
-            // In der Session ist Bar #1 die Touch-Bar. Die Umkehrbar ist i.d.R. die erste Defense-Bar (Bar #2).
-            // Daher initialisieren wir das Close-Latch erst ab Session-Bar #2.
-            if (tracker.SessionLatchCloseBar < 0 && sessionBarNr >= 2)
+            // Umkehrbar in der Zone ist die Bar, in der der Preis wechselt:
+            // Wenn der Markt bullisch in die Zone kommt, ist die erste bärische Kerze die Umkehrbar (und umgekehrt).
+            // Das Close-Latch wird daher erst initialisiert, wenn (1) eine Candle-Flip-Bar vs. Anlauf erkannt wird
+            // und (2) diese Flip-Bar in Traderichtung schließt.
+            if (!tracker.SessionApproachCandleKnown && prev != null)
+            {
+                tracker.SessionApproachCandleBullish = prev.Close > prev.Open;
+                tracker.SessionApproachCandleKnown = true;
+            }
+
+            bool currBullishCandle = currentSnapshot.Close > currentSnapshot.Open;
+            bool reversalCandle = tracker.SessionApproachCandleKnown && (currBullishCandle != tracker.SessionApproachCandleBullish);
+
+            if (tracker.SessionLatchCloseBar < 0 && reversalCandle && closeInDirection)
             {
                 tracker.SessionLatchClose = closeInDirection;
                 tracker.SessionLatchCloseBar = currentSnapshot.Bar;
@@ -2873,6 +2906,8 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionLatchClose = false,
                 SessionLatchCloseBar = -1,
                 SessionLatchCloseBrokenBar = -1,
+                SessionApproachCandleKnown = false,
+                SessionApproachCandleBullish = false,
                 SessionLatchPoc = false,
                 SessionLatchPocBar = -1,
                 SessionLatchAbsorption = false,
