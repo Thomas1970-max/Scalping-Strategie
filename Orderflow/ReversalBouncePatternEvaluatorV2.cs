@@ -2345,6 +2345,7 @@ namespace MyNamespace.Strategies.Orderflow
             AbsorptionPattern absPrevPrev = AbsorptionPattern.None;
             AbsorptionPattern absorptionPatternSignal = AbsorptionPattern.None;
             bool absorptionInSignal = false;
+            bool rejectionWickAtZone = false;
             if (prev != null)
             {
                 // Pattern C wird nur auf der Umkehrkerze (curr) akzeptiert.
@@ -2376,6 +2377,9 @@ namespace MyNamespace.Strategies.Orderflow
 
                 absorptionInSignal = hasAbsorptionInCurr || hasCarryOverFromPatternC;
             }
+
+            rejectionWickAtZone = IsRejectWickAtZone(currentSnapshot, zone, tickSize, _direction);
+            absorptionInSignal = absorptionInSignal || rejectionWickAtZone;
 
             // Kriterium 3: Kerzen-POC Position
             OvSnapshot pocBar = currentSnapshot;
@@ -2459,7 +2463,19 @@ namespace MyNamespace.Strategies.Orderflow
             logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocOkFinal ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
 
             // Kriterium 4: Absorption im Signalbar
-            logItems.Add(new ScoreItem { Key = "Signal_Absorption", Points = absorptionInSignal ? 1m : 0m, TextDe = absorptionInSignal ? $"Signal Absorption({absorptionPatternSignal}): JA" : "Signal Absorption: NEIN" });
+            string absDbg = string.Empty;
+            if (!absorptionInSignal && prev != null)
+                absDbg = GetAbsorptionDebugText(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+            logItems.Add(new ScoreItem
+            {
+                Key = "Signal_Absorption",
+                Points = absorptionInSignal ? 1m : 0m,
+                TextDe = absorptionInSignal
+                    ? (rejectionWickAtZone && absorptionPatternSignal == AbsorptionPattern.None
+                        ? "Signal Absorption: JA (Reject-Wick an Zone)"
+                        : $"Signal Absorption({absorptionPatternSignal}): JA")
+                    : (string.IsNullOrEmpty(absDbg) ? "Signal Absorption: NEIN" : $"Signal Absorption: NEIN | {absDbg}")
+            });
 
             // Alle 4 Kriterien müssen erfüllt sein
             isSignalBar = ufToFaHere && closeInDirection && pocOkFinal && absorptionInSignal;
@@ -2919,6 +2935,57 @@ namespace MyNamespace.Strategies.Orderflow
             return s.Close <= z.High;
         }
 
+        private static bool IsRejectWickAtZone(OvSnapshot s, MarketStructureContext.Zone z, decimal tickSize, OrderDirections dir)
+        {
+            decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
+
+            decimal range = s.High - s.Low;
+            if (range <= 0m)
+                return false;
+
+            decimal body = Math.Abs(s.Close - s.Open);
+            decimal upperWick = s.High - Math.Max(s.Open, s.Close);
+            decimal lowerWick = Math.Min(s.Open, s.Close) - s.Low;
+
+            const decimal MinWickFrac = 0.50m;
+            const decimal MaxBodyFrac = 0.35m;
+
+            bool bodyOk = (body / range) <= MaxBodyFrac;
+            if (!bodyOk)
+                return false;
+
+            if (dir == OrderDirections.Buy)
+            {
+                bool touches = s.Low <= z.High && s.Low >= (z.Low - (oneTick * 3m));
+                if (!touches)
+                    return false;
+
+                bool wickOk = (lowerWick / range) >= MinWickFrac;
+                if (!wickOk)
+                    return false;
+
+                bool reclaimed = s.Close >= z.Low;
+                if (!reclaimed)
+                    return false;
+
+                return true;
+            }
+
+            bool touchesS = s.High >= z.Low && s.High <= (z.High + (oneTick * 3m));
+            if (!touchesS)
+                return false;
+
+            bool wickOkS = (upperWick / range) >= MinWickFrac;
+            if (!wickOkS)
+                return false;
+
+            bool reclaimedS = s.Close <= z.High;
+            if (!reclaimedS)
+                return false;
+
+            return true;
+        }
+
         private static bool ImbalanceNoFollowThrough(
             OvSnapshot prev,
             OvSnapshot curr,
@@ -2928,8 +2995,6 @@ namespace MyNamespace.Strategies.Orderflow
             decimal absNetDeltaMin)
         {
             decimal oneTick = tickSize;
-            if (absNetDeltaMin < 0m)
-                absNetDeltaMin = 0m;
 
             const decimal MinDeltaPerVol = 0.15m;
             const decimal MinExtremeDomRatio = 0.65m;
@@ -2941,6 +3006,7 @@ namespace MyNamespace.Strategies.Orderflow
             decimal vol = curr.Volume;
             if (vol <= 0m)
                 vol = 1m;
+
             decimal deltaPerVol = Math.Abs(curr.NetDeltaTotal) / vol;
             decimal absDelta = Math.Abs(curr.NetDeltaTotal);
             bool hasStrongDeltaRatio = deltaPerVol >= MinDeltaPerVol;
@@ -2961,7 +3027,6 @@ namespace MyNamespace.Strategies.Orderflow
                 decimal exBid = curr.BidAtLow;
                 decimal exAsk = curr.AskAtLow;
                 decimal exTot = exBid + exAsk;
-
                 if (exTot <= 0m)
                     return false;
                 decimal exShare = exTot / vol;
@@ -2984,38 +3049,35 @@ namespace MyNamespace.Strategies.Orderflow
 
                 return noFurtherDown && goodRecovery && rejection;
             }
-            else
-            {
-                bool hasBuyImb = curr.StackedBuyImbTopCount > 0 && curr.NetDeltaTotal > 0m;
-                if (!hasBuyImb)
-                    return false;
 
-                decimal exAskS = curr.AskAtHigh;
-                decimal exBidS = curr.BidAtHigh;
-                decimal exTotS = exBidS + exAskS;
+            bool hasBuyImb = curr.StackedBuyImbTopCount > 0 && curr.NetDeltaTotal > 0m;
+            if (!hasBuyImb)
+                return false;
 
-                if (exTotS <= 0m)
-                    return false;
-                decimal exShareS = exTotS / vol;
-                if (exShareS < MinExtremeShare)
-                    return false;
-                decimal domS = exAskS / exTotS;
-                if (domS < MinExtremeDomRatio)
-                    return false;
+            decimal exAskS = curr.AskAtHigh;
+            decimal exBidS = curr.BidAtHigh;
+            decimal exTotS = exBidS + exAskS;
+            if (exTotS <= 0m)
+                return false;
+            decimal exShareS = exTotS / vol;
+            if (exShareS < MinExtremeShare)
+                return false;
+            decimal domS = exAskS / exTotS;
+            if (domS < MinExtremeDomRatio)
+                return false;
 
-                bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
-                bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
-                bool noFurtherUp = noFurtherUpByPrev || noFurtherUpByZone;
+            bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
+            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
+            bool noFurtherUp = noFurtherUpByPrev || noFurtherUpByZone;
 
-                bool goodRecoveryS = ((curr.High - curr.Close) / candleHeight) >= MinRecoveryRatio;
+            bool goodRecoveryS = ((curr.High - curr.Close) / candleHeight) >= MinRecoveryRatio;
 
-                decimal zoneHeightS = z.High - z.Low;
-                bool rejectionCandleS = curr.Close <= (curr.High - candleHeight * 0.50m);
-                bool rejectionZoneS = zoneHeightS > 0m && curr.Close <= (z.High - zoneHeightS * 0.33m);
-                bool rejectionS = rejectionCandleS || rejectionZoneS;
+            decimal zoneHeightS = z.High - z.Low;
+            bool rejectionCandleS = curr.Close <= (curr.High - candleHeight * 0.50m);
+            bool rejectionZoneS = zoneHeightS > 0m && curr.Close <= (z.High - zoneHeightS * 0.33m);
+            bool rejectionS = rejectionCandleS || rejectionZoneS;
 
-                return noFurtherUp && goodRecoveryS && rejectionS;
-            }
+            return noFurtherUp && goodRecoveryS && rejectionS;
         }
 
         private static AbsorptionPattern DetectAbsorptionPattern(
@@ -3305,14 +3367,100 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 string a = GetAbsorptionDebugTextA(prev, curr, z, tickSize, dir, absNetDeltaMin);
                 string b = GetAbsorptionDebugTextB(prevPrev, prev, curr, z, tickSize, dir, absNetDeltaMin);
-                if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b))
+                string c = GetAbsorptionDebugTextC(prev, curr, z, tickSize, dir);
+                if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b) && string.IsNullOrEmpty(c))
                     return string.Empty;
-                return $"ABSDBG(A:{a}|B:{b})";
+                return $"ABSDBG(A:{a}|B:{b}|C:{c})";
             }
             catch
             {
                 return string.Empty;
             }
+        }
+
+        private static string GetAbsorptionDebugTextC(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir)
+        {
+            decimal oneTick = tickSize;
+
+            const decimal MinBidDomAtExtreme = 0.58m;
+            const decimal MinRecoveryRatio = 0.35m;
+            const decimal MinExtremeShare = 0.03m;
+            const int MaxSweepTicks = 2;
+            const int MinPrevRangeTicks = 3;
+
+            decimal vol = curr.Volume;
+            if (vol <= 0m)
+                vol = 1m;
+
+            decimal candleHeight = curr.High - curr.Low;
+            if (candleHeight <= 0m)
+                candleHeight = oneTick;
+
+            int prevRangeTicks = RoundTicks(prev.High - prev.Low, oneTick);
+
+            if (dir == OrderDirections.Buy)
+            {
+                bool prevBearishPush = prev.Close < prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+                if (!prevBearishPush)
+                    return "Prev kein ausreichender Push (bearish/range zu klein)";
+
+                decimal exBid = curr.BidAtLow;
+                decimal exAsk = curr.AskAtLow;
+                decimal exTot = exBid + exAsk;
+                if (exTot <= 0m)
+                    return "Extrem (Low): Bid/Ask fehlt";
+
+                decimal dom = exBid / exTot;
+                if (dom < MinBidDomAtExtreme)
+                    return "Extrem (Low): Bid-Dominanz zu klein";
+
+                if ((exTot / vol) < MinExtremeShare)
+                    return "Extrem (Low): Extrem-Share zu klein";
+
+                bool noFurtherDownByPrev = curr.Low >= prev.Low - (oneTick * MaxSweepTicks);
+                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
+                if (!(noFurtherDownByPrev || noFurtherDownByZone))
+                    return "Low: zu viel Sweep (weiter runter)";
+
+                decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
+                if (recoveryRatio < MinRecoveryRatio)
+                    return "Close-Recovery zu klein";
+
+                return string.Empty;
+            }
+
+            bool prevBullishPush = prev.Close > prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+            if (!prevBullishPush)
+                return "Prev kein ausreichender Push (bullish/range zu klein)";
+
+            decimal exAskS = curr.AskAtHigh;
+            decimal exBidS = curr.BidAtHigh;
+            decimal exTotS = exBidS + exAskS;
+            if (exTotS <= 0m)
+                return "Extrem (High): Bid/Ask fehlt";
+
+            decimal domS = exAskS / exTotS;
+            if (domS < MinBidDomAtExtreme)
+                return "Extrem (High): Ask-Dominanz zu klein";
+
+            if ((exTotS / vol) < MinExtremeShare)
+                return "Extrem (High): Extrem-Share zu klein";
+
+            bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
+            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
+            if (!(noFurtherUpByPrev || noFurtherUpByZone))
+                return "High: zu viel Sweep (weiter hoch)";
+
+            decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
+            if (recoveryRatioS < MinRecoveryRatio)
+                return "Close-Recovery zu klein";
+
+            return string.Empty;
         }
 
         private static string GetAbsorptionDebugTextA(
