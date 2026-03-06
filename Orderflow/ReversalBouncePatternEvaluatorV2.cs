@@ -106,6 +106,14 @@ namespace MyNamespace.Strategies.Orderflow
             public int SessionLastPatternCBar;
             public bool SessionSawUaToFa;
             public int SessionUaToFaBar;
+            public bool SessionLatchUfToFa;
+            public int SessionLatchUfToFaBar;
+            public bool SessionLatchClose;
+            public int SessionLatchCloseBar;
+            public bool SessionLatchPoc;
+            public int SessionLatchPocBar;
+            public bool SessionLatchAbsorption;
+            public int SessionLatchAbsorptionBar;
             public bool SessionSawExhaustion;
             public int ConsecutiveBadCloses;
             public int SessionMaxPenetrationTicks;
@@ -1505,6 +1513,7 @@ namespace MyNamespace.Strategies.Orderflow
                         });
                     currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
+
                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired waiting for retest (minutes={wait.TotalMinutes:F1})");
                 }
             }
@@ -1529,6 +1538,7 @@ namespace MyNamespace.Strategies.Orderflow
                     });
                 currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
+
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: expired (barsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar})");
             }
 
@@ -2068,6 +2078,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionKind = kind;
             tracker.SessionStartBar = snap.Bar;
             tracker.SessionLastEvalBar = -1;
+
             tracker.SessionTouchLow = snap.Low;
             tracker.SessionTouchHigh = snap.High;
             tracker.SessionTouchPocPrice = snap.CandlePocPrice;
@@ -2084,11 +2095,20 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionAbsorptionPocPrice = 0m;
             tracker.SessionSawUaToFa = false;
             tracker.SessionUaToFaBar = -1;
+            tracker.SessionLatchUfToFa = false;
+            tracker.SessionLatchUfToFaBar = -1;
+            tracker.SessionLatchClose = false;
+            tracker.SessionLatchCloseBar = -1;
+            tracker.SessionLatchPoc = false;
+            tracker.SessionLatchPocBar = -1;
+            tracker.SessionLatchAbsorption = false;
+            tracker.SessionLatchAbsorptionBar = -1;
             tracker.SessionSawExhaustion = false;
             tracker.ConsecutiveBadCloses = 0;
             tracker.SessionMaxPenetrationTicks = 0;
             tracker.SessionBestScore = 0m;
             tracker.SessionBestScoreItems = null;
+
             tracker.SessionDecisionHistory = new List<DecisionResult>();
             tracker.SessionDecisionBars = new List<int>();
             tracker.SessionDecisionPhases = new List<ReversalPhase>();
@@ -2332,13 +2352,45 @@ namespace MyNamespace.Strategies.Orderflow
             bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
             bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
             bool ufToFaHere = prevHadUf && currHasFa;
-            logItems.Add(new ScoreItem { Key = "Signal_UF→FA", Points = ufToFaHere ? 1m : 0m, TextDe = ufToFaHere ? "Signal UF→FA: JA (Vorgänger=UF, aktuell=FA)" : $"Signal UF→FA: NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa})" });
+
+            if (ufToFaHere && !tracker.SessionLatchUfToFa)
+            {
+                tracker.SessionLatchUfToFa = true;
+                tracker.SessionLatchUfToFaBar = currentSnapshot.Bar;
+            }
+
+            bool ufToFaLatchOk = tracker.SessionLatchUfToFa;
+            logItems.Add(new ScoreItem
+            {
+                Key = "Signal_UF→FA",
+                Points = ufToFaLatchOk ? 1m : 0m,
+                TextDe = ufToFaLatchOk
+                    ? $"Signal UF→FA (Latch): JA (Bar {tracker.SessionLatchUfToFaBar})"
+                    : $"Signal UF→FA (Latch): NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa})"
+            });
 
             // Kriterium 2: Close in Traderichtung
             bool closeInDirection = _direction == OrderDirections.Buy
                 ? currentSnapshot.Close > currentSnapshot.Open
                 : currentSnapshot.Close < currentSnapshot.Open;
-            logItems.Add(new ScoreItem { Key = "Signal_Close", Points = closeInDirection ? 1m : 0m, TextDe = closeInDirection ? $"Signal Close in Richtung: JA (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" : $"Signal Close in Richtung: NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})" });
+
+            // IMPORTANT: Close darf nach Umkehrbar nicht mehr wechseln.
+            // Wir frieren das Close-Kriterium auf der ersten Session-Bar (Touch/Umkehrbar) ein.
+            if (tracker.SessionLatchCloseBar < 0)
+            {
+                tracker.SessionLatchClose = closeInDirection;
+                tracker.SessionLatchCloseBar = currentSnapshot.Bar;
+            }
+
+            bool closeLatchOk = tracker.SessionLatchClose;
+            logItems.Add(new ScoreItem
+            {
+                Key = "Signal_Close",
+                Points = closeLatchOk ? 1m : 0m,
+                TextDe = closeLatchOk
+                    ? $"Signal Close in Richtung (Latch): JA (Bar {tracker.SessionLatchCloseBar})"
+                    : $"Signal Close in Richtung (Latch): NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})"
+            });
 
             AbsorptionPattern absCurr = AbsorptionPattern.None;
             AbsorptionPattern absPrev = AbsorptionPattern.None;
@@ -2380,6 +2432,14 @@ namespace MyNamespace.Strategies.Orderflow
 
             rejectionWickAtZone = IsRejectWickAtZone(currentSnapshot, zone, tickSize, _direction);
             absorptionInSignal = absorptionInSignal || rejectionWickAtZone;
+
+            if (absorptionInSignal && !tracker.SessionLatchAbsorption)
+            {
+                tracker.SessionLatchAbsorption = true;
+                tracker.SessionLatchAbsorptionBar = currentSnapshot.Bar;
+            }
+
+            bool absorptionLatchOk = tracker.SessionLatchAbsorption;
 
             // Kriterium 3: Kerzen-POC Position
             OvSnapshot pocBar = currentSnapshot;
@@ -2462,6 +2522,23 @@ namespace MyNamespace.Strategies.Orderflow
             }
             logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocOkFinal ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
 
+            if (pocOkFinal && !tracker.SessionLatchPoc)
+            {
+                tracker.SessionLatchPoc = true;
+                tracker.SessionLatchPocBar = currentSnapshot.Bar;
+            }
+
+            bool pocLatchOk = tracker.SessionLatchPoc;
+            if (pocLatchOk)
+            {
+                logItems.Add(new ScoreItem
+                {
+                    Key = "Signal_POC_Latch",
+                    Points = 0m,
+                    TextDe = $"Signal POC (Latch): JA (Bar {tracker.SessionLatchPocBar})"
+                });
+            }
+
             // Kriterium 4: Absorption im Signalbar
             string absDbg = string.Empty;
             if (!absorptionInSignal && prev != null)
@@ -2469,24 +2546,22 @@ namespace MyNamespace.Strategies.Orderflow
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_Absorption",
-                Points = absorptionInSignal ? 1m : 0m,
-                TextDe = absorptionInSignal
-                    ? (rejectionWickAtZone && absorptionPatternSignal == AbsorptionPattern.None
-                        ? "Signal Absorption: JA (Reject-Wick an Zone)"
-                        : $"Signal Absorption({absorptionPatternSignal}): JA")
+                Points = absorptionLatchOk ? 1m : 0m,
+                TextDe = absorptionLatchOk
+                    ? $"Signal Absorption (Latch): JA (Bar {tracker.SessionLatchAbsorptionBar})"
                     : (string.IsNullOrEmpty(absDbg) ? "Signal Absorption: NEIN" : $"Signal Absorption: NEIN | {absDbg}")
             });
 
             // Alle 4 Kriterien müssen erfüllt sein
-            isSignalBar = ufToFaHere && closeInDirection && pocOkFinal && absorptionInSignal;
+            isSignalBar = ufToFaLatchOk && closeLatchOk && pocLatchOk && absorptionLatchOk;
 
             if (!isSignalBar)
             {
                 var missing = new List<string>(4);
-                if (!ufToFaHere) missing.Add("UF→FA");
-                if (!closeInDirection) missing.Add("Close in Richtung");
-                if (!pocOkFinal) missing.Add("POC-Position");
-                if (!absorptionInSignal) missing.Add("Absorption");
+                if (!ufToFaLatchOk) missing.Add("UF→FA");
+                if (!closeLatchOk) missing.Add("Close in Richtung");
+                if (!pocLatchOk) missing.Add("POC-Position");
+                if (!absorptionLatchOk) missing.Add("Absorption");
                 signalBlockReason = $"Kein Signalbar: fehlend [{string.Join(", ", missing)}]";
             }
 
@@ -2770,6 +2845,22 @@ namespace MyNamespace.Strategies.Orderflow
                 LastKnownZoneHigh = 0m,
                 LastKnownZoneType = MarketStructureContext.ZoneType.Support,
                 LastKnownZoneConfirmed = false,
+                SessionSawFaAtZone = false,
+                SessionAbsorptionConfirmed = false,
+                SessionAbsorptionBar = -1,
+                SessionAbsorptionPocPrice = 0m,
+                SessionLastPatternCBar = -1,
+                SessionSawUaToFa = false,
+                SessionUaToFaBar = -1,
+                SessionLatchUfToFa = false,
+                SessionLatchUfToFaBar = -1,
+                SessionLatchClose = false,
+                SessionLatchCloseBar = -1,
+                SessionLatchPoc = false,
+                SessionLatchPocBar = -1,
+                SessionLatchAbsorption = false,
+                SessionLatchAbsorptionBar = -1,
+                SessionSawExhaustion = false,
             };
 
             _trackersByZoneId[zoneId] = t;
