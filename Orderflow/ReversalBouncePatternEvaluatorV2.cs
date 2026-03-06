@@ -22,7 +22,8 @@ namespace MyNamespace.Strategies.Orderflow
         {
             None,
             A,
-            B
+            B,
+            C
         }
 
         private enum SessionType
@@ -102,6 +103,7 @@ namespace MyNamespace.Strategies.Orderflow
             public bool SessionAbsorptionConfirmed;
             public int SessionAbsorptionBar;
             public decimal SessionAbsorptionPocPrice;
+            public int SessionLastPatternCBar;
             public bool SessionSawUaToFa;
             public int SessionUaToFaBar;
             public bool SessionSawExhaustion;
@@ -2345,21 +2347,34 @@ namespace MyNamespace.Strategies.Orderflow
             bool absorptionInSignal = false;
             if (prev != null)
             {
-                absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+                // Pattern C wird nur auf der Umkehrkerze (curr) akzeptiert.
+                absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: true);
+
+                // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
                 absPrev = (prevPrev != null && prev3 != null)
-                    ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession)
+                    ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
                     : AbsorptionPattern.None;
                 absPrevPrev = (prevPrev != null && prev3 != null && prev4 != null)
-                    ? DetectAbsorptionPattern(prev4, prev3, prevPrev, zone, tickSize, _direction, absNetDeltaMinSession)
+                    ? DetectAbsorptionPattern(prev4, prev3, prevPrev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
                     : AbsorptionPattern.None;
 
-                absorptionPatternSignal = absCurr != AbsorptionPattern.None
-                    ? absCurr
-                    : (absPrev != AbsorptionPattern.None ? absPrev : absPrevPrev);
+                bool hasAbsorptionInCurr = absCurr != AbsorptionPattern.None;
 
-                absorptionInSignal = (absCurr != AbsorptionPattern.None)
-                    || (absPrev != AbsorptionPattern.None)
-                    || (absPrevPrev != AbsorptionPattern.None);
+                // Bestand (1 Bar): Wenn Pattern C auf der Umkehrkerze true war,
+                // dann darf die restliche Signal-Logik im nächsten Bar nachziehen.
+                bool hasCarryOverFromPatternC = tracker.SessionLastPatternCBar >= 0
+                    && currentSnapshot.Bar == tracker.SessionLastPatternCBar + 1;
+
+                if (absCurr == AbsorptionPattern.C)
+                    tracker.SessionLastPatternCBar = currentSnapshot.Bar;
+                else if (currentSnapshot.Bar > tracker.SessionLastPatternCBar + 1)
+                    tracker.SessionLastPatternCBar = -1;
+
+                absorptionPatternSignal = hasAbsorptionInCurr
+                    ? absCurr
+                    : (hasCarryOverFromPatternC ? AbsorptionPattern.C : (absPrev != AbsorptionPattern.None ? absPrev : absPrevPrev));
+
+                absorptionInSignal = hasAbsorptionInCurr || hasCarryOverFromPatternC;
             }
 
             // Kriterium 3: Kerzen-POC Position
@@ -2558,7 +2573,6 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasDefenseChapter = endBar >= (startBar + 1);
                 bool hasConfirmChapter = tracker.SessionAbsorptionConfirmed && confirmStartBar <= endBar;
 
-
                 for (int b = startBar; b <= endBar; b++)
                 {
                     barNumber++;
@@ -2585,13 +2599,11 @@ namespace MyNamespace.Strategies.Orderflow
                     if (s == null)
                         continue;
 
-
                     string color = s.Close >= s.Open ? "↑" : "↓";
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
 
                     int chartBar = s.ChartBarNumber;
-
 
                     bool hasDecision = false;
                     decimal barScore = 0m;
@@ -3026,11 +3038,111 @@ namespace MyNamespace.Strategies.Orderflow
             OrderDirections dir,
             decimal absNetDeltaMin)
         {
+            return DetectAbsorptionPattern(prevPrev, prev, curr, z, tickSize, dir, absNetDeltaMin, allowPatternC: true);
+        }
+
+        private static AbsorptionPattern DetectAbsorptionPattern(
+            OvSnapshot? prevPrev,
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir,
+            decimal absNetDeltaMin,
+            bool allowPatternC)
+        {
             if (ImbalanceNoFollowThrough(prev, curr, z, tickSize, dir, absNetDeltaMin))
                 return AbsorptionPattern.A;
             if (PushFlipAbsorption(prevPrev, prev, curr, z, tickSize, dir, absNetDeltaMin))
                 return AbsorptionPattern.B;
+            if (allowPatternC && BidAbsorptionWithoutDeltaFlip(prev, curr, z, tickSize, dir))
+                return AbsorptionPattern.C;
             return AbsorptionPattern.None;
+        }
+
+        private static bool BidAbsorptionWithoutDeltaFlip(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir)
+        {
+            decimal oneTick = tickSize;
+
+            const decimal MinBidDomAtExtreme = 0.58m;
+            const decimal MinRecoveryRatio = 0.35m;
+            const decimal MinExtremeShare = 0.03m;
+            const int MaxSweepTicks = 2;
+            const int MinPrevRangeTicks = 3;
+
+            decimal vol = curr.Volume;
+            if (vol <= 0m)
+                vol = 1m;
+
+            decimal candleHeight = curr.High - curr.Low;
+            if (candleHeight <= 0m)
+                candleHeight = oneTick;
+
+            int prevRangeTicks = RoundTicks(prev.High - prev.Low, oneTick);
+
+            if (dir == OrderDirections.Buy)
+            {
+                bool prevBearishPush = prev.Close < prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+                if (!prevBearishPush)
+                    return false;
+
+                decimal exBid = curr.BidAtLow;
+                decimal exAsk = curr.AskAtLow;
+                decimal exTot = exBid + exAsk;
+                if (exTot <= 0m)
+                    return false;
+
+                decimal dom = exBid / exTot;
+                if (dom < MinBidDomAtExtreme)
+                    return false;
+
+                if ((exTot / vol) < MinExtremeShare)
+                    return false;
+
+                bool noFurtherDownByPrev = curr.Low >= prev.Low - (oneTick * MaxSweepTicks);
+                bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
+                if (!(noFurtherDownByPrev || noFurtherDownByZone))
+                    return false;
+
+                decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
+                if (recoveryRatio < MinRecoveryRatio)
+                    return false;
+
+                return true;
+            }
+
+            bool prevBullishPush = prev.Close > prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+            if (!prevBullishPush)
+                return false;
+
+            decimal exAskS = curr.AskAtHigh;
+            decimal exBidS = curr.BidAtHigh;
+            decimal exTotS = exBidS + exAskS;
+            if (exTotS <= 0m)
+                return false;
+
+            decimal domS = exAskS / exTotS;
+            if (domS < MinBidDomAtExtreme)
+                return false;
+
+            if ((exTotS / vol) < MinExtremeShare)
+                return false;
+
+            bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
+            bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
+            if (!(noFurtherUpByPrev || noFurtherUpByZone))
+                return false;
+
+            decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
+            if (recoveryRatioS < MinRecoveryRatio)
+                return false;
+
+            return true;
         }
 
         private static bool PushFlipAbsorption(
