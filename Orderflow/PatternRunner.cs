@@ -14,33 +14,42 @@ namespace MyNamespace.Strategies.Orderflow
         private readonly ILoggerSource? _loggerSource;
         private readonly decimal _tickSize;
         private readonly OrderflowThresholds _uiThresholds;
-        private readonly IPatternEvaluator _reversalLong;
-        private readonly IPatternEvaluator _reversalShort;
-        private readonly IPatternEvaluator _continuationLong;
-        private readonly IPatternEvaluator _continuationShort;
+        private readonly IPatternEvaluator? _reversalLong;
+        private readonly IPatternEvaluator? _reversalShort;
+        private readonly IPatternEvaluator? _continuationLong;
+        private readonly IPatternEvaluator? _continuationShort;
 
         private int? _lastPullbackLikePhaseBar;
 
         public IReadOnlyList<IPatternEvaluator> Evaluators { get; }
 
         public PatternRunner(
-            IPatternEvaluator reversalLong,
-            IPatternEvaluator reversalShort,
-            IPatternEvaluator continuationLong,
-            IPatternEvaluator continuationShort,
+            IPatternEvaluator? reversalLong,
+            IPatternEvaluator? reversalShort,
+            IPatternEvaluator? continuationLong,
+            IPatternEvaluator? continuationShort,
             OrderflowThresholds uiThresholds,
             ILoggerSource? loggerSource,
             decimal tickSize)
         {
-            _reversalLong = reversalLong ?? throw new ArgumentNullException(nameof(reversalLong));
-            _reversalShort = reversalShort ?? throw new ArgumentNullException(nameof(reversalShort));
-            _continuationLong = continuationLong ?? throw new ArgumentNullException(nameof(continuationLong));
-            _continuationShort = continuationShort ?? throw new ArgumentNullException(nameof(continuationShort));
+            _reversalLong = reversalLong;
+            _reversalShort = reversalShort;
+            _continuationLong = continuationLong;
+            _continuationShort = continuationShort;
             _uiThresholds = uiThresholds ?? throw new ArgumentNullException(nameof(uiThresholds));
             _loggerSource = loggerSource;
             _tickSize = tickSize > 0m ? tickSize : 0.25m;
 
-            Evaluators = new List<IPatternEvaluator> { _reversalLong, _reversalShort, _continuationLong, _continuationShort };
+            Evaluators = new[]
+            {
+                _reversalLong,
+                _reversalShort,
+                _continuationLong,
+                _continuationShort
+            }
+            .Where(x => x != null)
+            .Select(x => x!)
+            .ToList();
         }
 
         public DetectedOrderflowPattern DetectDominantOrderflowPattern(
@@ -81,10 +90,13 @@ namespace MyNamespace.Strategies.Orderflow
 
             var evals = new List<(IPatternEvaluator ev, PatternEvaluationResult res)>(4);
 
-            PatternEvaluationResult? TryEval(IPatternEvaluator ev)
+            PatternEvaluationResult? TryEval(IPatternEvaluator? ev)
             {
                 try
                 {
+                    if (ev == null)
+                        return null;
+
                     return ev.Evaluate(
                         currentFeatures.Snapshot,
                         currentFeatures,
@@ -107,14 +119,14 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             var r1 = TryEval(_reversalLong);
-            if (r1 != null) evals.Add((_reversalLong, r1));
+            if (r1 != null && _reversalLong != null) evals.Add((_reversalLong, r1));
             var r2 = TryEval(_reversalShort);
-            if (r2 != null) evals.Add((_reversalShort, r2));
+            if (r2 != null && _reversalShort != null) evals.Add((_reversalShort, r2));
 
             var c1 = TryEval(_continuationLong);
-            if (c1 != null) evals.Add((_continuationLong, c1));
+            if (c1 != null && _continuationLong != null) evals.Add((_continuationLong, c1));
             var c2 = TryEval(_continuationShort);
-            if (c2 != null) evals.Add((_continuationShort, c2));
+            if (c2 != null && _continuationShort != null) evals.Add((_continuationShort, c2));
 
             var detected = evals
                 .Where(x => x.res != null && x.res.IsDetected)

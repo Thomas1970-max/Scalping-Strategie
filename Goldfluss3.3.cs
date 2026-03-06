@@ -4689,6 +4689,21 @@ namespace MyNamespace.Strategies
         }
 
 
+        [OFTParameter]
+        [Category("Reversal Settings")]
+        [DisplayName("Reversal Evaluator aktiv")]
+        [Description("Aktiviert/deaktiviert den ReversalBouncePatternEvaluator.")]
+        [DefaultValue(true)]
+        public bool EnableReversalEvaluator { get; set; } = true;
+
+        [OFTParameter]
+        [Category("Continuation Settings")]
+        [DisplayName("Pullback Evaluator aktiv")]
+        [Description("Aktiviert/deaktiviert den ContinuationPullbackEvaluator.")]
+        [DefaultValue(false)]
+        public bool EnablePullbackEvaluator { get; set; } = false;
+
+
         [Display(Name = "Noisy Orderflow-Logs unterdrücken",
                  GroupName = "Orderflow - Logging",
                  Description = "Unterdrückt sehr ausführliche Debug/Info-Logs aus Orderflow-Modulen (z.B. FeatureCalculator/Thresholds/AddBar/ImbalanceScore), damit Backtests übersichtlicher werden.",
@@ -6489,10 +6504,22 @@ namespace MyNamespace.Strategies
             }
             catch { }
 
-            var reversalEvaluatorLong = new ReversalBouncePatternEvaluatorV2(OrderDirections.Buy, this, ReversalCompressionGapTicks);
-            var reversalEvaluatorShort = new ReversalBouncePatternEvaluatorV2(OrderDirections.Sell, this, ReversalCompressionGapTicks);
-            var continuationEvaluatorLong = new ContinuationPullbackEvaluatorV2(OrderDirections.Buy, this, ContinuationCompressionGapTicks);
-            var continuationEvaluatorShort = new ContinuationPullbackEvaluatorV2(OrderDirections.Sell, this, ContinuationCompressionGapTicks);
+            ReversalBouncePatternEvaluatorV2? reversalEvaluatorLong = null;
+            ReversalBouncePatternEvaluatorV2? reversalEvaluatorShort = null;
+            ContinuationPullbackEvaluatorV2? continuationEvaluatorLong = null;
+            ContinuationPullbackEvaluatorV2? continuationEvaluatorShort = null;
+
+            if (EnableReversalEvaluator)
+            {
+                reversalEvaluatorLong = new ReversalBouncePatternEvaluatorV2(OrderDirections.Buy, this, ReversalCompressionGapTicks);
+                reversalEvaluatorShort = new ReversalBouncePatternEvaluatorV2(OrderDirections.Sell, this, ReversalCompressionGapTicks);
+            }
+
+            if (EnablePullbackEvaluator)
+            {
+                continuationEvaluatorLong = new ContinuationPullbackEvaluatorV2(OrderDirections.Buy, this, ContinuationCompressionGapTicks);
+                continuationEvaluatorShort = new ContinuationPullbackEvaluatorV2(OrderDirections.Sell, this, ContinuationCompressionGapTicks);
+            }
             _patternRunner = new PatternRunner(
                 reversalEvaluatorLong,
                 reversalEvaluatorShort,
