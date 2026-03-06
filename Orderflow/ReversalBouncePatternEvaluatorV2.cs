@@ -2377,15 +2377,17 @@ namespace MyNamespace.Strategies.Orderflow
                 : currentSnapshot.Close < currentSnapshot.Open;
 
             // IMPORTANT: Close darf nach Umkehrbar nicht mehr wechseln.
-            // Wir frieren das Close-Kriterium auf der ersten Session-Bar (Touch/Umkehrbar) ein.
-            if (tracker.SessionLatchCloseBar < 0)
+            // Die Umkehr-/Touch-Bar setzt die Richtung, danach muss jedes Folge-Bar in Richtung schließen.
+            // In der Session ist Bar #1 die Touch-Bar. Die Umkehrbar ist i.d.R. die erste Defense-Bar (Bar #2).
+            // Daher initialisieren wir das Close-Latch erst ab Session-Bar #2.
+            if (tracker.SessionLatchCloseBar < 0 && sessionBarNr >= 2)
             {
                 tracker.SessionLatchClose = closeInDirection;
                 tracker.SessionLatchCloseBar = currentSnapshot.Bar;
             }
             else
             {
-                if (tracker.SessionLatchClose && !closeInDirection)
+                if (tracker.SessionLatchCloseBar >= 0 && tracker.SessionLatchClose && !closeInDirection)
                 {
                     tracker.SessionLatchClose = false;
                     if (tracker.SessionLatchCloseBrokenBar < 0)
