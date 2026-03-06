@@ -2396,36 +2396,13 @@ namespace MyNamespace.Strategies.Orderflow
             bool closeInDirection = _direction == OrderDirections.Buy
                 ? currentSnapshot.Close > currentSnapshot.Open
                 : currentSnapshot.Close < currentSnapshot.Open;
-
-            // Vereinfachte Definition: Umkehrbar ist in Widerstandszone die 1. bärische Bar,
-            // in Unterstützungszone die 1. bullische Bar.
-            // Praktisch: wir initialisieren das Close-Latch auf der ersten Bar, die die Zone berührt
-            // UND in Traderichtung schließt.
-            if (tracker.SessionLatchCloseBar < 0 && TouchesZone(currentSnapshot, zone) && closeInDirection)
-            {
-                tracker.SessionLatchClose = closeInDirection;
-                tracker.SessionLatchCloseBar = currentSnapshot.Bar;
-            }
-            else
-            {
-                if (tracker.SessionLatchCloseBar >= 0 && tracker.SessionLatchClose && !closeInDirection)
-                {
-                    tracker.SessionLatchClose = false;
-                    if (tracker.SessionLatchCloseBrokenBar < 0)
-                        tracker.SessionLatchCloseBrokenBar = currentSnapshot.Bar;
-                }
-            }
-
-            bool closeLatchOk = tracker.SessionLatchClose;
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_Close",
-                Points = closeLatchOk ? 1m : 0m,
-                TextDe = closeLatchOk
-                    ? $"Signal Close in Richtung (Latch): JA (Bar {tracker.SessionLatchCloseBar})"
-                    : (tracker.SessionLatchCloseBrokenBar >= 0
-                        ? $"Signal Close in Richtung (Latch): NEIN (gebrochen bei Bar {tracker.SessionLatchCloseBrokenBar})"
-                        : $"Signal Close in Richtung (Latch): NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})")
+                Points = closeInDirection ? 1m : 0m,
+                TextDe = closeInDirection
+                    ? "Signal Close in Richtung: JA"
+                    : $"Signal Close in Richtung: NEIN (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})"
             });
 
             AbsorptionPattern absCurr = AbsorptionPattern.None;
@@ -2570,7 +2547,7 @@ namespace MyNamespace.Strategies.Orderflow
                 logItems.Add(new ScoreItem
                 {
                     Key = "Signal_POC_Latch",
-                    Points = 0m,
+                    Points = 1m,
                     TextDe = $"Signal POC (Latch): JA (Bar {tracker.SessionLatchPocBar})"
                 });
             }
@@ -2589,13 +2566,13 @@ namespace MyNamespace.Strategies.Orderflow
             });
 
             // Alle 4 Kriterien müssen erfüllt sein
-            isSignalBar = ufToFaLatchOk && closeLatchOk && pocLatchOk && absorptionLatchOk;
+            isSignalBar = ufToFaLatchOk && pocLatchOk && absorptionLatchOk && closeInDirection;
 
             if (!isSignalBar)
             {
                 var missing = new List<string>(4);
                 if (!ufToFaLatchOk) missing.Add("UF→FA");
-                if (!closeLatchOk) missing.Add("Close in Richtung");
+                if (!closeInDirection) missing.Add("Close in Richtung");
                 if (!pocLatchOk) missing.Add("POC-Position");
                 if (!absorptionLatchOk) missing.Add("Absorption");
                 signalBlockReason = $"Kein Signalbar: fehlend [{string.Join(", ", missing)}]";
