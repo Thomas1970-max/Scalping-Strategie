@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
@@ -2385,12 +2385,35 @@ namespace MyNamespace.Strategies.Orderflow
             bool currPocDeltaOk = _direction == OrderDirections.Buy ? currentSnapshot.PocDelta > 0m : currentSnapshot.PocDelta < 0m;
             bool pocOkFinal;
             string pocPosText;
+            decimal pocRange = pocBar.High - pocBar.Low;
+            decimal pocBody = Math.Abs(pocBar.Close - pocBar.Open);
+            decimal pocUpperWick = pocBar.High - Math.Max(pocBar.Open, pocBar.Close);
+            decimal pocLowerWick = Math.Min(pocBar.Open, pocBar.Close) - pocBar.Low;
+            const decimal RejBodyFrac = 0.30m;
+            const decimal RejCloseFrac = 0.35m;
+            const decimal RejWickFrac = 0.50m;
+            const decimal RejPocMinFrac = 0.35m;
             if (_direction == OrderDirections.Buy)
             {
                 // Long: POC muss in unterer Hälfte liegen (POC <= Mitte)
                 pocPositionOk = pocBar.CandlePocPrice <= barMid;
-                pocOkFinal = pocPositionOk && (!requireCurrPocDelta || currPocDeltaOk);
+                bool rejectionLong = false;
+                bool pocOverrideOk = false;
+                if (pocRange > 0m)
+                {
+                    bool isBull = pocBar.Close > pocBar.Open;
+                    bool bodyOk = pocBody <= (RejBodyFrac * pocRange);
+                    bool closeOk = (pocBar.High - pocBar.Close) <= (RejCloseFrac * pocRange);
+                    bool wickOk = pocLowerWick >= (RejWickFrac * pocRange);
+                    rejectionLong = isBull && bodyOk && closeOk && wickOk;
+                    pocOverrideOk = rejectionLong && (pocBar.CandlePocPrice <= (pocBar.High - (RejPocMinFrac * pocRange)));
+                }
+
+                bool pocOk = pocPositionOk || pocOverrideOk;
+                pocOkFinal = pocOk && (!requireCurrPocDelta || currPocDeltaOk);
                 pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                if (!pocPositionOk && pocOverrideOk)
+                    pocPosText += $" | Override=RejectionLong (Body={pocBody:F2}, Range={pocRange:F2}, WickL={pocLowerWick:F2})";
                 if (requireCurrPocDelta)
                     pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
             }
@@ -2398,8 +2421,23 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 // Short: POC muss in oberer Hälfte liegen (POC >= Mitte)
                 pocPositionOk = pocBar.CandlePocPrice >= barMid;
-                pocOkFinal = pocPositionOk && (!requireCurrPocDelta || currPocDeltaOk);
+                bool rejectionShort = false;
+                bool pocOverrideOk = false;
+                if (pocRange > 0m)
+                {
+                    bool isBear = pocBar.Close < pocBar.Open;
+                    bool bodyOk = pocBody <= (RejBodyFrac * pocRange);
+                    bool closeOk = (pocBar.Close - pocBar.Low) <= (RejCloseFrac * pocRange);
+                    bool wickOk = pocUpperWick >= (RejWickFrac * pocRange);
+                    rejectionShort = isBear && bodyOk && closeOk && wickOk;
+                    pocOverrideOk = rejectionShort && (pocBar.CandlePocPrice >= (pocBar.Low + (RejPocMinFrac * pocRange)));
+                }
+
+                bool pocOk = pocPositionOk || pocOverrideOk;
+                pocOkFinal = pocOk && (!requireCurrPocDelta || currPocDeltaOk);
                 pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                if (!pocPositionOk && pocOverrideOk)
+                    pocPosText += $" | Override=RejectionShort (Body={pocBody:F2}, Range={pocRange:F2}, WickU={pocUpperWick:F2})";
                 if (requireCurrPocDelta)
                     pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
             }
