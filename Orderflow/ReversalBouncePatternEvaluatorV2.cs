@@ -88,6 +88,7 @@ namespace MyNamespace.Strategies.Orderflow
             public bool SessionActive;
             public SessionType SessionKind;
             public int SessionStartBar;
+            public int SessionStartChartBar;
             public int SessionLastEvalBar;
             public decimal SessionTouchLow;
             public decimal SessionTouchHigh;
@@ -2079,6 +2080,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionActive = true;
             tracker.SessionKind = kind;
             tracker.SessionStartBar = snap.Bar;
+            tracker.SessionStartChartBar = snap.ChartBarNumber > 0 ? snap.ChartBarNumber : snap.Bar;
             tracker.SessionLastEvalBar = -1;
 
             tracker.SessionTouchLow = snap.Low;
@@ -2149,7 +2151,9 @@ namespace MyNamespace.Strategies.Orderflow
 
             // Session erlaubt Touch-Bar + 3 Folge-Bars = max 4 Bars
             const int SignalSearchBars = 4;
-            int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar + 1;
+            int currChartBar = currentSnapshot.ChartBarNumber > 0 ? currentSnapshot.ChartBarNumber : currentSnapshot.Bar;
+            int startChartBar = tracker.SessionStartChartBar >= 0 ? tracker.SessionStartChartBar : tracker.SessionStartBar;
+            int sessionBarNr = currChartBar - startChartBar + 1;
 
             bool closeInDirectionNow = _direction == OrderDirections.Buy
                 ? currentSnapshot.Close > currentSnapshot.Open
@@ -2187,12 +2191,12 @@ namespace MyNamespace.Strategies.Orderflow
                 return SessionEvalOutcome.Expired;
             }
 
-            // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der nächste Bar (Bar #2) Umkehrbar sein ---
-            if (sessionBarNr == 1)
+            // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der nächste Chart-Bar Umkehrbar sein ---
+            if (currChartBar == startChartBar)
             {
                 tracker.SessionTouchWasReversal = closeInDirectionNow;
             }
-            else if (sessionBarNr == 2 && !tracker.SessionTouchWasReversal && !closeInDirectionNow)
+            else if (currChartBar == startChartBar + 1 && !tracker.SessionTouchWasReversal && !closeInDirectionNow)
             {
                 tracker.SessionActive = false;
                 tracker.SessionEndReason = _direction == OrderDirections.Buy
@@ -2875,6 +2879,7 @@ namespace MyNamespace.Strategies.Orderflow
                 SessionActive = false,
                 SessionKind = SessionType.None,
                 SessionStartBar = -1,
+                SessionStartChartBar = -1,
                 SessionLastEvalBar = -1,
                 SessionTouchLow = 0m,
                 SessionTouchHigh = 0m,
