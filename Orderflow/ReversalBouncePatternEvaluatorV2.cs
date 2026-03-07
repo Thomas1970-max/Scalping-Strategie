@@ -124,6 +124,7 @@ namespace MyNamespace.Strategies.Orderflow
             public List<int>? SessionDecisionBars;
             public List<ReversalPhase>? SessionDecisionPhases;
             public string? SessionEndReason;
+            public bool SessionTouchWasReversal;
 
             public decimal LastKnownZoneLow;
             public decimal LastKnownZoneHigh;
@@ -2115,6 +2116,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionDecisionBars = new List<int>();
             tracker.SessionDecisionPhases = new List<ReversalPhase>();
             tracker.SessionEndReason = null;
+            tracker.SessionTouchWasReversal = false;
         }
 
         private enum SessionEvalOutcome
@@ -2149,6 +2151,10 @@ namespace MyNamespace.Strategies.Orderflow
             const int SignalSearchBars = 4;
             int sessionBarNr = currentSnapshot.Bar - tracker.SessionStartBar + 1;
 
+            bool closeInDirectionNow = _direction == OrderDirections.Buy
+                ? currentSnapshot.Close > currentSnapshot.Open
+                : currentSnapshot.Close < currentSnapshot.Open;
+
             static DecisionResult CreateExitDecision(string reason)
             {
                 return new DecisionResult
@@ -2179,6 +2185,29 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
                 tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
                 return SessionEvalOutcome.Expired;
+            }
+
+            // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der nächste Bar (Bar #2) Umkehrbar sein ---
+            if (sessionBarNr == 1)
+            {
+                tracker.SessionTouchWasReversal = closeInDirectionNow;
+            }
+            else if (sessionBarNr == 2 && !tracker.SessionTouchWasReversal && !closeInDirectionNow)
+            {
+                tracker.SessionActive = false;
+                tracker.SessionEndReason = _direction == OrderDirections.Buy
+                    ? $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und der Folge-Bar schließt nicht bullisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})."
+                    : $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und der Folge-Bar schließt nicht bärisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2}).";
+
+                var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                decision = exitDec;
+                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                tracker.SessionDecisionBars ??= new List<int>();
+                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                tracker.SessionDecisionHistory.Add(exitDec);
+                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
+                return SessionEvalOutcome.Invalidated;
             }
 
             // --- Invalidierung: Konsekutive Bad-Closes ---

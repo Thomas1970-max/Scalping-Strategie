@@ -11305,17 +11305,28 @@ namespace MyNamespace.Strategies
 
 
                     this.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                        "[OnCalculate_SNAP] 🆕 Bar={0} Time={1:O} High={2:F2} Low={3:F2} Close={4:F2} Volume={5:F2} Delta={6:F2} Ask={7:F2} Bid={8:F2} " +
-                        "MaxBull={9:F4} MaxBear={10:F4} VolBurstZ={11:F4} CvdImpulse={12:F4} CvdCoherence={13:F4} AggPressure={14:F4} TradeRateZ={15:F4} Efficiency={16:F4} " +
-                        "BuyTrades={17} SellTrades={18} TotalTrades={19} IttZ={20:F4} SweepUp={21} SweepDn={22} " +
-                        "StackedBuyCount={23} StackedSellCount={24} StackedBuyTop={25} StackedSellBottom={26} StackedImbRatioPct={27:F4} StackedImbMinVolPerLevel={28} StackedImbRangeMin={29} StackedImbMaxDepthTicks={30} " +
-                        "CandleDuration={31:F4} VolPerSecond={32:F4} EmaVolPerSecond={33:F4} EmaVolPerSecondStd={34:F4} CumulativeDelta={35:F4} CumulativeVolume={36:F4} BarDeltaPerVolume={37:F6}",
-                        ovSnapshot.Bar, ovSnapshot.Time,
-                        ovSnapshot.High, ovSnapshot.Low, ovSnapshot.Close, ovSnapshot.Volume, ovSnapshot.Delta, ovSnapshot.Ask, ovSnapshot.Bid,
+                        "[OnCalculate_SNAP] 🆕 Bar={0} ChartBarNumber={1} SessionBarNumber={2} Time={3:O} MarketRegime={4} " +
+                        "Open={5:F2} High={6:F2} Low={7:F2} Close={8:F2} Volume={9:F2} Delta={10:F2} Ask={11:F2} Bid={12:F2} " +
+                        "CandlePocPrice={13:F2} PocDelta={14:F4} PocVolume={15:F2} BidAtLow={16:F2} AskAtLow={17:F2} BidAtHigh={18:F2} AskAtHigh={19:F2} " +
+                        "MaxBull={20:F4} MaxBear={21:F4} VolBurstZ={22:F4} CvdImpulse={23:F4} CvdCoherence={24:F4} AggPressure={25:F4} TradeRateZ={26:F4} Efficiency={27:F4} " +
+                        "BuyTrades={28} SellTrades={29} TotalTrades={30} IttZ={31:F4} SweepUp={32} SweepDn={33} " +
+                        "ImbalanceScore={34:F4} ImbalanceScoreLabel={35} " +
+                        "StackedBuyCount={36} StackedSellCount={37} StackedBuyTop={38} StackedSellBottom={39} StackedImbRatioPct={40:F4} StackedImbMinVolPerLevel={41} StackedImbRangeMin={42} StackedImbMaxDepthTicks={43} " +
+                        "CandleDuration={44:F4} VolPerSecond={45:F4} EmaVolPerSecond={46:F4} EmaVolPerSecondStd={47:F4} CumulativeDelta={48:F4} CumulativeVolume={49:F4} BarDeltaPerVolume={50:F6} " +
+                        "TopDeltaRatio={51:F4} BottomDeltaRatio={52:F4} TopDominance={53} BottomDominance={54} NetDeltaTotal={55:F4} " +
+                        "IsPerfectLongSetup={56} IsPerfectShortSetup={57} PerfectSetupReason={58} " +
+                        "UpperWickDeltaRatio={59:F4} LowerWickDeltaRatio={60:F4} UpperWickDominance={61} LowerWickDominance={62} UpperWickAbsDeltaTotal={63:F4} LowerWickAbsDeltaTotal={64:F4}",
+                        ovSnapshot.Bar, ovSnapshot.ChartBarNumber, ovSnapshot.SessionBarNumber, ovSnapshot.Time, ovSnapshot.MarketRegime,
+                        ovSnapshot.Open, ovSnapshot.High, ovSnapshot.Low, ovSnapshot.Close, ovSnapshot.Volume, ovSnapshot.Delta, ovSnapshot.Ask, ovSnapshot.Bid,
+                        ovSnapshot.CandlePocPrice, ovSnapshot.PocDelta, ovSnapshot.PocVolume, ovSnapshot.BidAtLow, ovSnapshot.AskAtLow, ovSnapshot.BidAtHigh, ovSnapshot.AskAtHigh,
                         ovSnapshot.MaxCounterShareBull, ovSnapshot.MaxCounterShareBear, ovSnapshot.VolBurstZ, ovSnapshot.CvdImpulse, ovSnapshot.CvdCoherence, ovSnapshot.AggPressure, ovSnapshot.TradeRateZ, ovSnapshot.Efficiency,
                         ovSnapshot.BuyTrades, ovSnapshot.SellTrades, ovSnapshot.TotalTrades, ovSnapshot.IttZ, ovSnapshot.SweepUpClosed, ovSnapshot.SweepDnClosed,
+                        ovSnapshot.ImbalanceScore, ovSnapshot.ImbalanceScoreLabel,
                         ovSnapshot.StackedBuyImbCount, ovSnapshot.StackedSellImbCount, ovSnapshot.StackedBuyImbTopCount, ovSnapshot.StackedSellImbBottomCount, ovSnapshot.StackedImbRatioPct, ovSnapshot.StackedImbMinVolPerLevel, ovSnapshot.StackedImbRangeMin, ovSnapshot.StackedImbMaxDepthTicks,
-                        ovSnapshot.CandleDuration, ovSnapshot.VolPerSecond, ovSnapshot.EmaVolPerSecond, ovSnapshot.EmaVolPerSecondStd, ovSnapshot.CumulativeDelta, ovSnapshot.CumulativeVolume, ovSnapshot.BarDeltaPerVolume
+                        ovSnapshot.CandleDuration, ovSnapshot.VolPerSecond, ovSnapshot.EmaVolPerSecond, ovSnapshot.EmaVolPerSecondStd, ovSnapshot.CumulativeDelta, ovSnapshot.CumulativeVolume, ovSnapshot.BarDeltaPerVolume,
+                        ovSnapshot.TopDeltaRatio, ovSnapshot.BottomDeltaRatio, ovSnapshot.TopDominance, ovSnapshot.BottomDominance, ovSnapshot.NetDeltaTotal,
+                        ovSnapshot.IsPerfectLongSetup, ovSnapshot.IsPerfectShortSetup, ovSnapshot.PerfectSetupReason,
+                        ovSnapshot.UpperWickDeltaRatio, ovSnapshot.LowerWickDeltaRatio, ovSnapshot.UpperWickDominance, ovSnapshot.LowerWickDominance, ovSnapshot.UpperWickAbsDeltaTotal, ovSnapshot.LowerWickAbsDeltaTotal
                     ));
 
 
