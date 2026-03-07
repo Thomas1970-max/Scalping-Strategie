@@ -13664,7 +13664,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLong,
-                            BreakEvenLevelsTrendConfig = "5:1",
+                            BreakEvenLevelsTrendConfig = "5:1;7:5",
                             SuggestedStopLossPrice = suggestedSlLong,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -13770,7 +13770,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
-                            BreakEvenLevelsTrendConfig = "5:1",
+                            BreakEvenLevelsTrendConfig = "5:1;7:5",
                             SuggestedStopLossPrice = suggestedSlShort,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,

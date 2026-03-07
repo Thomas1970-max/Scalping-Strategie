@@ -3056,13 +3056,16 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal MinWickFrac = 0.50m;
             const decimal MaxBodyFrac = 0.35m;
 
+            const int MaxPenetrationTicks = 6;
+            const int MinReclaimTicks = 2;
+
             bool bodyOk = (body / range) <= MaxBodyFrac;
             if (!bodyOk)
                 return false;
 
             if (dir == OrderDirections.Buy)
             {
-                bool touches = s.Low <= z.High && s.Low >= (z.Low - (oneTick * 3m));
+                bool touches = s.Low <= z.High && s.Low >= (z.Low - (oneTick * MaxPenetrationTicks));
                 if (!touches)
                     return false;
 
@@ -3070,14 +3073,14 @@ namespace MyNamespace.Strategies.Orderflow
                 if (!wickOk)
                     return false;
 
-                bool reclaimed = s.Close >= z.Low;
+                bool reclaimed = s.Close >= (z.Low + (oneTick * MinReclaimTicks));
                 if (!reclaimed)
                     return false;
 
                 return true;
             }
 
-            bool touchesS = s.High >= z.Low && s.High <= (z.High + (oneTick * 3m));
+            bool touchesS = s.High >= z.Low && s.High <= (z.High + (oneTick * MaxPenetrationTicks));
             if (!touchesS)
                 return false;
 
@@ -3085,7 +3088,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (!wickOkS)
                 return false;
 
-            bool reclaimedS = s.Close <= z.High;
+            bool reclaimedS = s.Close <= (z.High - (oneTick * MinReclaimTicks));
             if (!reclaimedS)
                 return false;
 
