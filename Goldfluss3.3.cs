@@ -5587,7 +5587,7 @@ namespace MyNamespace.Strategies
                  GroupName = "VWAP",
                  Description = "Blockiert Einstiege bei Annäherung an VWAP aus Richtung",
                  Order = 2)]
-        public bool EnableVwapProximityBlocker { get; set; } = false;
+        public bool EnableVwapProximityBlocker { get; set; } = true;
 
         [Display(Name = "VWAP Abstand (Ticks)",
                  GroupName = "VWAP",
@@ -13153,6 +13153,11 @@ namespace MyNamespace.Strategies
             string wegFreiLongBlocker = string.Empty;
             string wegFreiShortBlocker = string.Empty;
 
+            bool vwapBlockedLong = false;
+            bool vwapBlockedShort = false;
+            string vwapBlockedLongReason = string.Empty;
+            string vwapBlockedShortReason = string.Empty;
+
             bool wegFreiLongMC = true;
             bool wegFreiShortMC = true;
             string wegFreiLongBlockerMC = string.Empty;
@@ -13267,20 +13272,41 @@ namespace MyNamespace.Strategies
             {
                 decimal proximityDistance = VwapProximityTicks * tickSize;
 
-                // Long Entry: Blockieren wenn Preis von OBEN nach UNTEN zum VWAP tendiert
-                if (c.Close < currentVwap && currentVwap - c.Close <= proximityDistance)
+                var prevCandle = closed > 0 ? GetCandle(closed - 1) : null;
+                decimal prevClose = prevCandle?.Close ?? c.Close;
+                decimal prevVwap = 0m;
+
+                try
                 {
-                    wegFreiLong = false;
-                    wegFreiLongBlocker = $"VWAP-Nähe Long: Preis {c.Close:F4} nähert sich VWAP {currentVwap:F4} von oben (Abstand: {(currentVwap - c.Close) / tickSize:F1} < {VwapProximityTicks} Ticks)";
-                    this.LogInfo($"[VWAP Blocker] LONG blockiert: Preis nähert sich VWAP von oben");
+                    if (closed > 0)
+                        prevVwap = ReadVwapSeriesSafely(0, closed - 1);
+                }
+                catch
+                {
+                    prevVwap = 0m;
                 }
 
-                // Short Entry: Blockieren wenn Preis von UNTEN nach OBEN zum VWAP tendiert
-                if (c.Close > currentVwap && c.Close - currentVwap <= proximityDistance)
+                if (prevVwap <= 0m)
+                    prevVwap = currentVwap;
+
+                decimal absDist = Math.Abs(c.Close - currentVwap);
+                if (absDist <= proximityDistance)
                 {
-                    wegFreiShort = false;
-                    wegFreiShortBlocker = $"VWAP-Nähe Short: Preis {c.Close:F4} nähert sich VWAP {currentVwap:F4} von unten (Abstand: {(c.Close - currentVwap) / tickSize:F1} < {VwapProximityTicks} Ticks)";
-                    this.LogInfo($"[VWAP Blocker] SHORT blockiert: Preis nähert sich VWAP von unten");
+                    bool cameFromAbove = (prevClose > prevVwap && c.Close <= currentVwap)
+                                        || (c.Open > currentVwap && c.Close <= currentVwap);
+                    bool cameFromBelow = (prevClose < prevVwap && c.Close >= currentVwap)
+                                        || (c.Open < currentVwap && c.Close >= currentVwap);
+
+                    if (cameFromAbove)
+                    {
+                        vwapBlockedShort = true;
+                        vwapBlockedShortReason = $"VWAP-Nähe Short: Preis {c.Close:F4} nahe VWAP {currentVwap:F4} (Abstand: {absDist / tickSize:F1} <= {VwapProximityTicks} Ticks), Richtung=von oben";
+                    }
+                    else if (cameFromBelow)
+                    {
+                        vwapBlockedLong = true;
+                        vwapBlockedLongReason = $"VWAP-Nähe Long: Preis {c.Close:F4} nahe VWAP {currentVwap:F4} (Abstand: {absDist / tickSize:F1} <= {VwapProximityTicks} Ticks), Richtung=von unten";
+                    }
                 }
             }
 
@@ -13542,6 +13568,22 @@ namespace MyNamespace.Strategies
                 {
                     isShortSetupValid = false; // Blockiert das Short-Setup
                     this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert, da 'isBlockedShort' TRUE ist (ProximityTicksForEntry: {ProximityTicksForEntry}).");
+                }
+            }
+
+            // ========== ZUSÄTZLICHER CHECK: VWAP-Nähe Blocker (unabhängig von MC) ==========
+            if (EnableVwapProximityBlocker)
+            {
+                if (isLongSetupValid && vwapBlockedLong)
+                {
+                    isLongSetupValid = false;
+                    this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert durch VWAP-Blocker (VwapProximityTicks: {VwapProximityTicks}). {vwapBlockedLongReason}");
+                }
+
+                if (isShortSetupValid && vwapBlockedShort)
+                {
+                    isShortSetupValid = false;
+                    this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert durch VWAP-Blocker (VwapProximityTicks: {VwapProximityTicks}). {vwapBlockedShortReason}");
                 }
             }
 
