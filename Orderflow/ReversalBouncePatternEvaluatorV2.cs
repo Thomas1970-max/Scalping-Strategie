@@ -2149,8 +2149,8 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionLastEvalBar == currentSnapshot.Bar)
                 return SessionEvalOutcome.Continue;
 
-            // Session erlaubt Touch-Bar + 3 Folge-Bars = max 4 Bars
-            const int SignalSearchBars = 4;
+            // Session erlaubt Touch-Bar + 2 Folge-Bars = max 3 Bars
+            const int SignalSearchBars = 3;
             int currChartBar = currentSnapshot.ChartBarNumber > 0 ? currentSnapshot.ChartBarNumber : currentSnapshot.Bar;
             int startChartBar = tracker.SessionStartChartBar >= 0 ? tracker.SessionStartChartBar : tracker.SessionStartBar;
             int sessionBarNr = currChartBar - startChartBar + 1;
@@ -2174,7 +2174,7 @@ namespace MyNamespace.Strategies.Orderflow
                 };
             }
 
-            // --- Invalidierung: Session-Dauer (Touch-Bar + 3 Folge-Bars) ---
+            // --- Invalidierung: Session-Dauer (Touch-Bar + 2 Folge-Bars) ---
             if (sessionBarNr > SignalSearchBars)
             {
                 tracker.SessionActive = false;
@@ -2376,7 +2376,11 @@ namespace MyNamespace.Strategies.Orderflow
             if (prev != null)
             {
                 bool prevUa = IsUnfinishedAuction(prev, thresholds, _direction);
-                if (prevUa && faAtZone)
+                bool priceProgressOk = _direction == OrderDirections.Buy
+                    ? prev.Low > currentSnapshot.Low
+                    : prev.High < currentSnapshot.High;
+
+                if (prevUa && faAtZone && priceProgressOk)
                 {
                     tracker.SessionSawUaToFa = true;
                     if (tracker.SessionUaToFaBar < 0)
@@ -2407,7 +2411,10 @@ namespace MyNamespace.Strategies.Orderflow
             // Kriterium 1: UF→FA (Vorgänger hatte UF, dieses Bar hat FA)
             bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
             bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
-            bool ufToFaHere = prevHadUf && currHasFa;
+            bool priceProgressOkUfToFa = prev != null && (_direction == OrderDirections.Buy
+                ? prev.Low > currentSnapshot.Low
+                : prev.High < currentSnapshot.High);
+            bool ufToFaHere = prevHadUf && currHasFa && priceProgressOkUfToFa;
 
             if (ufToFaHere && !tracker.SessionLatchUfToFa)
             {
@@ -2422,7 +2429,7 @@ namespace MyNamespace.Strategies.Orderflow
                 Points = ufToFaLatchOk ? 1m : 0m,
                 TextDe = ufToFaLatchOk
                     ? $"Signal UF→FA (Latch): JA (Bar {tracker.SessionLatchUfToFaBar})"
-                    : $"Signal UF→FA (Latch): NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa})"
+                    : $"Signal UF→FA (Latch): NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa}, PriceProgress={priceProgressOkUfToFa})"
             });
 
             // Kriterium 2: Close in Traderichtung
