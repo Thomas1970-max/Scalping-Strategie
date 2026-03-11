@@ -143,6 +143,50 @@ namespace MyNamespace.Strategies.MarketAnalysis
             }
         }
 
+        public int UpsertExternalZone(
+            int existingZoneId,
+            ZoneType initialType,
+            decimal low,
+            decimal high,
+            int createdBar,
+            ZoneStatus initialStatus = ZoneStatus.Ready,
+            bool confirmed = true)
+        {
+            lock (_updateSync)
+            {
+                Zone? z = null;
+                if (existingZoneId > 0)
+                    z = ActiveZones.FirstOrDefault(x => x != null && x.Id == existingZoneId);
+
+                if (z != null)
+                {
+                    z.Low = low;
+                    z.High = high;
+                    return z.Id;
+                }
+
+                var newZone = new Zone
+                {
+                    Id = _nextZoneId++,
+                    Type = initialType,
+                    Low = low,
+                    High = high,
+                    Status = initialStatus,
+                    PivotBar = createdBar,
+                    IsConfirmed = confirmed,
+                    CreatedBar = createdBar,
+                    ReadyBar = createdBar,
+                    LastTouchedBar = -1,
+                    TouchCount = 0,
+                    BreakCloseCount = 0,
+                    FlipCount = 0
+                };
+
+                ActiveZones.Add(newZone);
+                return newZone.Id;
+            }
+        }
+
         public int WickZoneMinTicks { get; set; } = 3;
         public bool ZigZagIgnoreWicks { get; set; } = true;
         public int ZigZagMinMoveTicks { get; set; } = 10;

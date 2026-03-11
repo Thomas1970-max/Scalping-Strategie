@@ -831,6 +831,62 @@ namespace MyNamespace.Strategies
             return Math.Max(1, eff);
         }
 
+        private void EnsurePreviousDayLevelZonesInMarketStructure(
+            MyNamespace.Strategies.MarketAnalysis.MarketStructureContext ctx,
+            OvSnapshot currentSnapshot,
+            int createdBar,
+            DateTime currentDay)
+        {
+            if (ctx == null || currentSnapshot == null)
+                return;
+
+            if (_tickSize <= 0m)
+                return;
+
+            if (_pdZoneDay != currentDay)
+            {
+                _pdOpenZoneId = 0;
+                _pdCloseZoneId = 0;
+                _pdZoneDay = currentDay;
+            }
+
+            const int ZoneTicks = 4;
+            decimal pad = ZoneTicks * _tickSize;
+
+            void Upsert(ref int zoneId, decimal levelValue)
+            {
+                if (levelValue <= 0m)
+                    return;
+
+                decimal low = levelValue - pad;
+                decimal high = levelValue + pad;
+                decimal mid = (low + high) * 0.5m;
+
+                var type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
+                if (zoneId <= 0)
+                {
+                    decimal px = currentSnapshot.Close;
+                    if (px > high) type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
+                    else if (px < low) type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Resistance;
+                    else type = px >= mid
+                        ? MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support
+                        : MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Resistance;
+                }
+
+                zoneId = ctx.UpsertExternalZone(
+                    existingZoneId: zoneId,
+                    initialType: type,
+                    low: low,
+                    high: high,
+                    createdBar: createdBar,
+                    initialStatus: MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready,
+                    confirmed: true);
+            }
+
+            Upsert(ref _pdOpenZoneId, _previousDayOpen);
+            Upsert(ref _pdCloseZoneId, _previousDayClose);
+        }
+
         private void EnsureTick900BackfillRequested(int bar)
         {
             void LogGateOnce(string reason)
@@ -2535,6 +2591,10 @@ namespace MyNamespace.Strategies
         private decimal _currentDayHigh;
         private decimal _currentDayLow;
         private decimal _currentDayClose;
+
+        private int _pdOpenZoneId;
+        private int _pdCloseZoneId;
+        private DateTime _pdZoneDay = DateTime.MinValue;
 
         private int _lastSessionStartBar = -1;
 
@@ -10703,6 +10763,10 @@ namespace MyNamespace.Strategies
                 _currentDayLow = c.Low;
                 _currentDayOpen = c.Open;
 
+                _pdOpenZoneId = 0;
+                _pdCloseZoneId = 0;
+                _pdZoneDay = c.Time.Date;
+
             }
             else
             {
@@ -11628,6 +11692,13 @@ namespace MyNamespace.Strategies
                                         recentOf: null,
                                         allowZoneCreation: !UseTick900ForMarketStructure,
                                         allowZoneLifecycle: true);
+
+                                    try
+                                    {
+                                        if (_marketStructureContext != null && ovSnapshot != null)
+                                            EnsurePreviousDayLevelZonesInMarketStructure(_marketStructureContext, ovSnapshot, createdBar: closed, currentDay: c.Time.Date);
+                                    }
+                                    catch { }
                                 }
                             }
                             catch (Exception exMs)
