@@ -946,6 +946,155 @@ namespace MyNamespace.Strategies.Orderflow
 
             var prevClosed = GetPreviousClosedSnapshot(history, currentSnapshot.Bar, maxLookback: 12);
 
+            // ============================================================
+            // RETRO-SEED (PENDING ZONE): Zone entsteht in dieser Bar, Touch-Bar war ggf. schon in Bar-1/Bar-2.
+            // ============================================================
+            try
+            {
+                // Nur wenn keine aktive Session läuft (harte Regel: max 1 Session).
+                bool anyActiveSession = false;
+                foreach (var kv in _trackersByZoneId)
+                {
+                    if (kv.Value != null && kv.Value.SessionActive)
+                    {
+                        anyActiveSession = true;
+                        break;
+                    }
+                }
+
+                if (!anyActiveSession)
+                {
+                    OvSnapshot? snapBarMinus1 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 1, maxLookback: 30);
+                    OvSnapshot? snapBarMinus2 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 60);
+
+                    MarketStructureContext.Zone? retroZone = null;
+                    OvSnapshot? retroTouchSnap = null;
+                    OvSnapshot? retroReversalSnap = null;
+
+                    foreach (var z in zones)
+                    {
+                        if (z == null)
+                            continue;
+                        if (z.IsConfirmed)
+                            continue;
+                        if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
+                            continue;
+                        bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
+                                     || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
+                        if (!dirOk)
+                            continue;
+                        if (z.CreatedBar != currentSnapshot.Bar)
+                            continue;
+
+                        // Touch-Bar rückwirkend finden (bar-1 bevorzugt).
+                        OvSnapshot? touchCandidate = null;
+                        if (snapBarMinus1 != null && TouchesZone(snapBarMinus1, z))
+                            touchCandidate = snapBarMinus1;
+                        else if (snapBarMinus2 != null && TouchesZone(snapBarMinus2, z))
+                            touchCandidate = snapBarMinus2;
+
+                        if (touchCandidate == null)
+                            continue;
+
+                        retroZone = z;
+                        retroTouchSnap = touchCandidate;
+                        retroReversalSnap = touchCandidate == snapBarMinus2 ? snapBarMinus1 : null;
+                        break;
+                    }
+
+                    if (retroZone != null && retroTouchSnap != null)
+                    {
+                        var retroTracker = GetOrCreateTracker(retroZone.Id, currentSnapshot.Bar);
+                        if (!retroTracker.EntryTriggered && !retroTracker.SessionActive)
+                        {
+                            if (retroTracker.FirstTouchTime == DateTime.MinValue)
+                                retroTracker.FirstTouchTime = retroTouchSnap.Time;
+                            if (retroTracker.FirstTouchBar > retroTouchSnap.Bar)
+                                retroTracker.FirstTouchBar = retroTouchSnap.Bar;
+
+                            retroTracker.MovedAwaySeen = true;
+                            retroTracker.ImmediateDisabled = true;
+                            retroTracker.ImmediateAttempted = true;
+
+                            retroTracker.RetestAttempted = true;
+                            retroTracker.RetestBar = retroTouchSnap.Bar;
+                            retroTracker.RetestAttemptTime = retroTouchSnap.Time;
+
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                retroZone.Id,
+                                stage: "Retest.RetroSeed.Start",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={retroZone.Id}",
+                                    $"State=PENDING (CreatedBar={retroZone.CreatedBar})",
+                                    $"Bounds=[{retroZone.Low:F2}..{retroZone.High:F2}]",
+                                    $"RetroTouchBar={retroTouchSnap.Bar} Time={retroTouchSnap.Time:O}"
+                                });
+
+                            StartSession(retroTracker, SessionType.Retest, retroTouchSnap);
+
+                            // Falls Umkehrbar bereits geschlossen vorhanden (Touch war bar-2): historisch prüfen.
+                            if (retroReversalSnap != null)
+                            {
+                                var out1 = EvaluateActiveSession(
+                                    retroTracker, retroReversalSnap, history, retroZone, thresholds, tickSize,
+                                    MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
+                                    out var dec1);
+
+                                if (out1 == SessionEvalOutcome.EntryGo && dec1 != null)
+                                {
+                                    bool stillNear = TouchesZone(currentSnapshot, retroZone) || IsRejectWickAtZone(currentSnapshot, retroZone, tickSize, _direction);
+                                    if (!stillNear)
+                                    {
+                                        retroTracker.SessionActive = false;
+                                        retroTracker.SessionEndReason = "Retro-GO in bar-1, aber aktueller Bar nicht mehr zonennah → kein Entry.";
+                                        return PatternEvaluationResult.NotDetected(Type, $"Zone {retroZone.Id}: retro signal missed (price moved away)");
+                                    }
+
+                                    LogSessionProtocol(
+                                        retroTracker,
+                                        retroZone,
+                                        history,
+                                        currentSnapshot,
+                                        thresholds,
+                                        tickSize,
+                                        MaxSessionBars,
+                                        MaxConsecutiveBadCloses,
+                                        MaxSessionPenetrationTicks,
+                                        "GO – Entry ausgelöst (Retro: Signalbar war bar-1)",
+                                        dec1);
+
+                                    var reasons = new List<string>
+                                    {
+                                        $"ZoneRetestRetro id={retroZone.Id}",
+                                        $"Path={(dec1.Path == AllowPath.UaToFa ? "UAtoFA" : "MultiFA")}",
+                                        $"Score={dec1.TotalScore:0.0}",
+                                        $"Confidence={dec1.Confidence:0.00}"
+                                    };
+
+                                    retroTracker.EntryTriggered = true;
+                                    _lastValidReversalBarIndex = currentSnapshot.Bar;
+                                    _lastValidReversalDirection = _direction;
+
+                                    currentMarketStructureContext.ConsumeZoneOnEntry(retroZone.Id);
+                                    _trackersByZoneId.Remove(retroZone.Id);
+
+                                    if (_loggerSource != null)
+                                        LoggerHelper.LogInfo(_loggerSource,
+                                            $"[ReversalBounceV2] DETECTED (RetestRetro): zone={retroZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={dec1.TotalScore:0.0} conf={dec1.Confidence:0.00}");
+
+                                    return PatternEvaluationResult.Detected(Type, dec1.Confidence, reasons,
+                                        new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
             // --- Candidate Selection ---
             // Harte Regel: maximal eine aktive Session insgesamt.
             // Solange irgendeine Session aktiv ist, wird ausschließlich diese Session weiter evaluiert.
@@ -1001,6 +1150,31 @@ namespace MyNamespace.Strategies.Orderflow
                 }
                 else
                 {
+                    if (!activeSessionTracker.LastKnownZoneConfirmed)
+                    {
+                        try
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                activeZoneId,
+                                stage: "Session.Abort.PendingZoneGone",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={activeZoneId}",
+                                    $"Reason: Pending-Session und Zone ist nicht mehr live/eligible (missing oder Used) → Session wird sofort abgebrochen.",
+                                    $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
+                                    $"zones.Count={zones.Count}"
+                                });
+                        }
+                        catch { }
+
+                        activeSessionTracker.SessionActive = false;
+                        activeSessionTracker.SessionEndReason = "Pending zone discarded/used/missing -> abort";
+                        _trackersByZoneId.Remove(activeZoneId);
+                        return PatternEvaluationResult.NotDetected(Type, $"Zone {activeZoneId}: pending session aborted (zone gone/used)");
+                    }
+
                     if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
                     {
                         try

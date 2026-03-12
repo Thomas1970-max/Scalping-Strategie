@@ -883,8 +883,8 @@ namespace MyNamespace.Strategies
                     confirmed: true);
             }
 
-            Upsert(ref _pdOpenZoneId, _previousDayOpen);
-            Upsert(ref _pdCloseZoneId, _previousDayClose);
+            Upsert(ref _pdOpenZoneId, _previousDayHigh);
+            Upsert(ref _pdCloseZoneId, _previousDayLow);
         }
 
         private void EnsureTick900BackfillRequested(int bar)
