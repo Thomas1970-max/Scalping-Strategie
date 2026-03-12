@@ -13224,11 +13224,6 @@ namespace MyNamespace.Strategies
             string wegFreiLongBlocker = string.Empty;
             string wegFreiShortBlocker = string.Empty;
 
-            bool vwapBlockedLong = false;
-            bool vwapBlockedShort = false;
-            string vwapBlockedLongReason = string.Empty;
-            string vwapBlockedShortReason = string.Empty;
-
             bool wegFreiLongMC = true;
             bool wegFreiShortMC = true;
             string wegFreiLongBlockerMC = string.Empty;
@@ -13338,48 +13333,7 @@ namespace MyNamespace.Strategies
                     wegFreiShortBlocker = string.IsNullOrWhiteSpace(wegFreiShortBlocker) ? wegFreiShortBlockerD : (wegFreiShortBlocker + " | " + wegFreiShortBlockerD);
             }
 
-            // VWAP-Nähe Blocker - richtungsabhängig
-            if (EnableVwapProximityBlocker)
-            {
-                decimal proximityDistance = VwapProximityTicks * tickSize;
-
-                var prevCandle = closed > 0 ? GetCandle(closed - 1) : null;
-                decimal prevClose = prevCandle?.Close ?? c.Close;
-                decimal prevVwap = 0m;
-
-                try
-                {
-                    if (closed > 0)
-                        prevVwap = ReadVwapSeriesSafely(0, closed - 1);
-                }
-                catch
-                {
-                    prevVwap = 0m;
-                }
-
-                if (prevVwap <= 0m)
-                    prevVwap = currentVwap;
-
-                decimal absDist = Math.Abs(c.Close - currentVwap);
-                if (absDist <= proximityDistance)
-                {
-                    bool cameFromAbove = (prevClose > prevVwap && c.Close <= currentVwap)
-                                        || (c.Open > currentVwap && c.Close <= currentVwap);
-                    bool cameFromBelow = (prevClose < prevVwap && c.Close >= currentVwap)
-                                        || (c.Open < currentVwap && c.Close >= currentVwap);
-
-                    if (cameFromAbove)
-                    {
-                        vwapBlockedShort = true;
-                        vwapBlockedShortReason = $"VWAP-Nähe Short: Preis {c.Close:F4} nahe VWAP {currentVwap:F4} (Abstand: {absDist / tickSize:F1} <= {VwapProximityTicks} Ticks), Richtung=von oben";
-                    }
-                    else if (cameFromBelow)
-                    {
-                        vwapBlockedLong = true;
-                        vwapBlockedLongReason = $"VWAP-Nähe Long: Preis {c.Close:F4} nahe VWAP {currentVwap:F4} (Abstand: {absDist / tickSize:F1} <= {VwapProximityTicks} Ticks), Richtung=von unten";
-                    }
-                }
-            }
+            // VWAP-Blocker wird an der tatsächlichen Entry-Preislogik geprüft (siehe Order-Platzierung)
 
 
 
@@ -13639,22 +13593,6 @@ namespace MyNamespace.Strategies
                 {
                     isShortSetupValid = false; // Blockiert das Short-Setup
                     this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert, da 'isBlockedShort' TRUE ist (ProximityTicksForEntry: {ProximityTicksForEntry}).");
-                }
-            }
-
-            // ========== ZUSÄTZLICHER CHECK: VWAP-Nähe Blocker (unabhängig von MC) ==========
-            if (EnableVwapProximityBlocker)
-            {
-                if (isLongSetupValid && vwapBlockedLong)
-                {
-                    isLongSetupValid = false;
-                    this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert durch VWAP-Blocker (VwapProximityTicks: {VwapProximityTicks}). {vwapBlockedLongReason}");
-                }
-
-                if (isShortSetupValid && vwapBlockedShort)
-                {
-                    isShortSetupValid = false;
-                    this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert durch VWAP-Blocker (VwapProximityTicks: {VwapProximityTicks}). {vwapBlockedShortReason}");
                 }
             }
 
@@ -16615,6 +16553,55 @@ namespace MyNamespace.Strategies
             //this.LogInfo($"[DBG-ORDER] PlaceEntry called for bar={bar}, price={price}, time={DateTime.UtcNow:O}");
             // Logge den Versuch, eine Entry Order zu platzieren
             //this.LogInfo($"[PlaceEntry] Versuche, Entry Order zu platzieren: Direction={direction}, Price={price:F5}, SL/TP Ticks={ticks}, Bar={bar}.");
+
+            if (EnableVwapProximityBlocker)
+            {
+                decimal tickSize = InstrumentInfo?.TickSize ?? _tickSize;
+                if (tickSize > 0m && VwapProximityTicks > 0)
+                {
+                    decimal proximityDistance = VwapProximityTicks * tickSize;
+                    decimal vwap = 0m;
+
+                    try
+                    {
+                        vwap = ReadVwapSeriesSafely(0, bar);
+                    }
+                    catch
+                    {
+                        vwap = 0m;
+                    }
+
+                    if (vwap > 0m)
+                    {
+                        decimal entryDist = Math.Abs(price - vwap);
+                        var c = GetCandle(bar);
+                        bool crossedDown = false;
+                        bool crossedUp = false;
+                        if (c != null)
+                        {
+                            crossedDown = (c.Open > vwap && c.Close < vwap) || (c.High > vwap && c.Low < vwap && c.Close <= vwap);
+                            crossedUp = (c.Open < vwap && c.Close > vwap) || (c.High > vwap && c.Low < vwap && c.Close >= vwap);
+                        }
+
+                        if (direction == OrderDirections.Sell)
+                        {
+                            if ((price > vwap && entryDist <= proximityDistance) || crossedDown)
+                            {
+                                this.LogInfo($"[PlaceEntry-BLOCKED] VWAP-Blocker: SHORT blockiert. Entry={price:F4}, VWAP={vwap:F4}, distTicks={(entryDist / tickSize):F1}, limit={VwapProximityTicks}, crossedDown={crossedDown} (Bar={bar}).");
+                                return;
+                            }
+                        }
+                        else if (direction == OrderDirections.Buy)
+                        {
+                            if ((price < vwap && entryDist <= proximityDistance) || crossedUp)
+                            {
+                                this.LogInfo($"[PlaceEntry-BLOCKED] VWAP-Blocker: LONG blockiert. Entry={price:F4}, VWAP={vwap:F4}, distTicks={(entryDist / tickSize):F1}, limit={VwapProximityTicks}, crossedUp={crossedUp} (Bar={bar}).");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
 
             // Guard gegen Mehrfach-Platzierung im selben Takt (sollte durch CheckEntrySignal verhindert werden, aber doppelte Pr?fung schadet nicht)
             if (HasLiveEntryOrder())
