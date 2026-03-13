@@ -1007,16 +1007,39 @@ namespace MyNamespace.Strategies.Orderflow
 
                         // Touch-Bar rückwirkend finden (bar-1 bevorzugt).
                         OvSnapshot? touchCandidate = null;
-                        if (snapBarMinus1 != null && TouchesZone(snapBarMinus1, z))
+                        bool touchesM1 = snapBarMinus1 != null && TouchesZone(snapBarMinus1, z);
+                        bool touchesM2 = snapBarMinus2 != null && TouchesZone(snapBarMinus2, z);
+
+                        // Wenn bar-2 UND bar-1 in der Zone sind, ist bar-2 der eigentliche Touch.
+                        // bar-1 ist dann die potenzielle Umkehrkerze, wenn sie in Traderichtung schließt.
+                        if (touchesM1 && touchesM2)
+                        {
+                            bool m1ClosesInTradeDir = _direction == OrderDirections.Buy
+                                ? snapBarMinus1!.Close > snapBarMinus1.Open
+                                : snapBarMinus1!.Close < snapBarMinus1.Open;
+
+                            if (m1ClosesInTradeDir)
+                                touchCandidate = snapBarMinus2;
+                            else
+                                touchCandidate = snapBarMinus1;
+                        }
+                        else if (touchesM1)
+                        {
                             touchCandidate = snapBarMinus1;
-                        else if (snapBarMinus2 != null && TouchesZone(snapBarMinus2, z))
+                        }
+                        else if (touchesM2)
+                        {
                             touchCandidate = snapBarMinus2;
+                        }
 
                         if (touchCandidate == null)
                             continue;
 
                         retroZone = z;
                         retroTouchSnap = touchCandidate;
+
+                        // Wenn Touch bar-2 ist, ist bar-1 die zugehörige (potenzielle) Umkehrbar.
+                        // Falls Touch bar-1 ist, gibt es keine separate historische Umkehrbar.
                         retroReversalSnap = touchCandidate == snapBarMinus2 ? snapBarMinus1 : null;
                         break;
                     }
@@ -2933,7 +2956,7 @@ namespace MyNamespace.Strategies.Orderflow
                         continue;
 
                     string color = s.Close >= s.Open ? "↑" : "↓";
-                    string barLabel = $"K{b}";
+                    string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
 
                     int chartBar = s.ChartBarNumber;
@@ -3141,7 +3164,19 @@ namespace MyNamespace.Strategies.Orderflow
             if (barIndex < 0)
                 return "n/v";
 
-            return $"K{barIndex}";
+            int chart = barIndex + 1;
+            try
+            {
+                if (history != null && history.TryGetByBar(barIndex, out var f) && f?.Snapshot != null)
+                {
+                    var s = f.Snapshot;
+                    if (s.ChartBarNumber > 0)
+                        chart = s.ChartBarNumber;
+                }
+            }
+            catch { }
+
+            return $"K{chart}";
         }
 
         private static bool TouchesZone(OvSnapshot s, MarketStructureContext.Zone z)
