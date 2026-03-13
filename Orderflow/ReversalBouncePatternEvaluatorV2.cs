@@ -964,6 +964,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (!anyActiveSession)
                 {
+                    int ctxBar = currentMarketStructureContext.CurrentBar;
                     OvSnapshot? snapBarMinus1 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 1, maxLookback: 30);
                     OvSnapshot? snapBarMinus2 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 60);
 
@@ -983,8 +984,24 @@ namespace MyNamespace.Strategies.Orderflow
                                      || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
                         if (!dirOk)
                             continue;
-                        if (z.CreatedBar != currentSnapshot.Bar)
+
+                        if (z.CreatedBar != ctxBar)
+                        {
+                            LogExplainOnce(
+                                currentSnapshot.Bar,
+                                z.Id,
+                                stage: "Retest.RetroSeed.Skip.CreatedBarMismatch",
+                                lines: new[]
+                                {
+                                    $"Dir={_direction}",
+                                    $"Zone={z.Id}",
+                                    $"ZoneCreatedBar(Tick900)={z.CreatedBar}",
+                                    $"CtxCurrentBar(Tick900)={ctxBar}",
+                                    $"CurrentSnapshotBar(Range)={currentSnapshot.Bar}",
+                                    $"Rule: Retro-Seed nur wenn ZoneCreatedBar == CtxCurrentBar (Tick900-Kontext)"
+                                });
                             continue;
+                        }
 
                         // Touch-Bar rückwirkend finden (bar-1 bevorzugt).
                         OvSnapshot? touchCandidate = null;
