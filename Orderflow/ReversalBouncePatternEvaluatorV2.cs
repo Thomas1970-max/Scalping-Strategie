@@ -167,6 +167,13 @@ namespace MyNamespace.Strategies.Orderflow
                     return;
 
                 var msg = $"[ReversalBounceV2:{stage}] " + string.Join(" | ", lines);
+
+                if (stage.StartsWith("Retest.RetroSeed", StringComparison.Ordinal) || stage == "SessionProtocol")
+                {
+                    _loggerSource.LogInfo(msg);
+                    return;
+                }
+
                 SmartLogger.Instance.LogIfChanged(
                     category: "ReversalBounceV2",
                     sourceId: $"V2.{_direction}",
@@ -776,6 +783,13 @@ namespace MyNamespace.Strategies.Orderflow
                     return;
 
                 var msg = $"[ReversalBounceV2:{stage}] " + string.Join(Environment.NewLine, lines);
+
+                if (stage.StartsWith("Retest.RetroSeed", StringComparison.Ordinal) || stage == "SessionProtocol")
+                {
+                    _loggerSource.LogInfo(msg);
+                    return;
+                }
+
                 SmartLogger.Instance.LogIfChanged(
                     category: "ReversalBounceV2",
                     sourceId: $"V2.{_direction}",
