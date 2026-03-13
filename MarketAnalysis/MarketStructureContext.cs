@@ -897,6 +897,10 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (!bounds.HasValue)
                 return;
 
+            int createdBar = _currentZoneCreationBar;
+            if (createdBar <= 0)
+                createdBar = swingBar;
+
             AddOrMergeZone(new Zone
             {
                 Id = _nextZoneId++,
@@ -906,8 +910,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 Status = ZoneStatus.Ready,
                 PivotBar = swingBar,
                 IsConfirmed = false,
-                CreatedBar = swingBar,
-                ReadyBar = swingBar,
+                CreatedBar = createdBar,
+                ReadyBar = createdBar,
                 LastTouchedBar = swingBar,
                 TouchCount = 0,
                 BreakCloseCount = 0,
