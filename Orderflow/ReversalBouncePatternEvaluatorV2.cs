@@ -969,18 +969,6 @@ namespace MyNamespace.Strategies.Orderflow
                     OvSnapshot? snapBarMinus1 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 1, maxLookback: 30);
                     OvSnapshot? snapBarMinus2 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 60);
 
-                    LogExplainOnce(
-                        currentSnapshot.Bar,
-                        zoneId: 0,
-                        stage: "Retest.RetroSeed.Debug.PrevBars",
-                        lines: new[]
-                        {
-                            $"Dir={_direction}",
-                            $"CurrBarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
-                            $"Prev1={(snapBarMinus1 != null ? $"BarIdx={snapBarMinus1.Bar} ChartBar={snapBarMinus1.ChartBarNumber} Time={snapBarMinus1.Time:O}" : "null")}",
-                            $"Prev2={(snapBarMinus2 != null ? $"BarIdx={snapBarMinus2.Bar} ChartBar={snapBarMinus2.ChartBarNumber} Time={snapBarMinus2.Time:O}" : "null")}"
-                        });
-
                     MarketStructureContext.Zone? retroZone = null;
                     OvSnapshot? retroTouchSnap = null;
                     OvSnapshot? retroReversalSnap = null;
@@ -2677,11 +2665,6 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasCarryOverFromPatternC = tracker.SessionLastPatternCBar >= 0
                     && currentSnapshot.Bar == tracker.SessionLastPatternCBar + 1;
 
-                if (absCurr == AbsorptionPattern.C)
-                    tracker.SessionLastPatternCBar = currentSnapshot.Bar;
-                else if (currentSnapshot.Bar > tracker.SessionLastPatternCBar + 1)
-                    tracker.SessionLastPatternCBar = -1;
-
                 absorptionPatternSignal = hasAbsorptionInCurr
                     ? absCurr
                     : (hasCarryOverFromPatternC ? AbsorptionPattern.C : (absPrev != AbsorptionPattern.None ? absPrev : absPrevPrev));
@@ -2901,11 +2884,11 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
                 if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
-                    lines.Add($"UA→FA: gesehen in Session (Latch) bei Bar {tracker.SessionUaToFaBar}");
+                    lines.Add($"UA→FA: gesehen in Session (Latch) bei {FormatBarLabel(tracker.SessionUaToFaBar, history)}");
                 lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
 
                 if (tracker.SessionAbsorptionConfirmed)
-                    lines.Add($"ABSORPTION: bestätigt bei Bar {tracker.SessionAbsorptionBar} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
+                    lines.Add($"ABSORPTION: bestätigt bei {FormatBarLabel(tracker.SessionAbsorptionBar, history)} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add(string.Empty);
@@ -3151,6 +3134,26 @@ namespace MyNamespace.Strategies.Orderflow
             return sess > 0
                 ? $"Chart {chart} (Sess {sess}), BarIdx {barIndex}"
                 : $"Chart {chart}, BarIdx {barIndex}";
+        }
+
+        private static string FormatBarLabel(int barIndex, OfFeaturesHistory history)
+        {
+            if (barIndex < 0)
+                return "n/v";
+
+            int chart = barIndex + 1;
+            try
+            {
+                if (history != null && history.TryGetByBar(barIndex, out var f) && f?.Snapshot != null)
+                {
+                    var s = f.Snapshot;
+                    if (s.ChartBarNumber > 0)
+                        chart = s.ChartBarNumber;
+                }
+            }
+            catch { }
+
+            return $"K{chart}";
         }
 
         private static bool TouchesZone(OvSnapshot s, MarketStructureContext.Zone z)
