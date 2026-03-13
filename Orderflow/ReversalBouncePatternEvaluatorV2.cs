@@ -969,6 +969,18 @@ namespace MyNamespace.Strategies.Orderflow
                     OvSnapshot? snapBarMinus1 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 1, maxLookback: 30);
                     OvSnapshot? snapBarMinus2 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 60);
 
+                    LogExplainOnce(
+                        currentSnapshot.Bar,
+                        zoneId: 0,
+                        stage: "Retest.RetroSeed.Debug.PrevBars",
+                        lines: new[]
+                        {
+                            $"Dir={_direction}",
+                            $"CurrBarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
+                            $"Prev1={(snapBarMinus1 != null ? $"BarIdx={snapBarMinus1.Bar} ChartBar={snapBarMinus1.ChartBarNumber} Time={snapBarMinus1.Time:O}" : "null")}",
+                            $"Prev2={(snapBarMinus2 != null ? $"BarIdx={snapBarMinus2.Bar} ChartBar={snapBarMinus2.ChartBarNumber} Time={snapBarMinus2.Time:O}" : "null")}"
+                        });
+
                     MarketStructureContext.Zone? retroZone = null;
                     OvSnapshot? retroTouchSnap = null;
                     OvSnapshot? retroReversalSnap = null;
@@ -999,7 +1011,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"ZoneCreatedBar(Tick900)={z.CreatedBar}",
                                     $"CtxCurrentBar(RangeOrOther)={ctxBar}",
                                     $"CtxZoneCreationBar(Tick900)={ctxZoneCreationBar}",
-                                    $"CurrentSnapshotBar(Range)={currentSnapshot.Bar}",
+                                    $"CurrentSnapshotBarIdx(Range)={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber}",
                                     $"Rule: Retro-Seed nur wenn ZoneCreatedBar == CtxZoneCreationBar (Tick900-Kontext)"
                                 });
                             continue;
@@ -1049,7 +1061,8 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Zone={retroZone.Id}",
                                     $"State=PENDING (CreatedBar={retroZone.CreatedBar})",
                                     $"Bounds=[{retroZone.Low:F2}..{retroZone.High:F2}]",
-                                    $"RetroTouchBar={retroTouchSnap.Bar} Time={retroTouchSnap.Time:O}"
+                                    $"CurrBarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
+                                    $"RetroTouchBarIdx={retroTouchSnap.Bar} ChartBar={retroTouchSnap.ChartBarNumber} Time={retroTouchSnap.Time:O}"
                                 });
 
                             StartSession(retroTracker, SessionType.Retest, retroTouchSnap);
