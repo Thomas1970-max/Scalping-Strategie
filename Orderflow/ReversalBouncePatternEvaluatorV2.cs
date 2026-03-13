@@ -2933,7 +2933,7 @@ namespace MyNamespace.Strategies.Orderflow
                         continue;
 
                     string color = s.Close >= s.Open ? "↑" : "↓";
-                    string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
+                    string barLabel = $"K{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
 
                     int chartBar = s.ChartBarNumber;
@@ -3141,19 +3141,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (barIndex < 0)
                 return "n/v";
 
-            int chart = barIndex + 1;
-            try
-            {
-                if (history != null && history.TryGetByBar(barIndex, out var f) && f?.Snapshot != null)
-                {
-                    var s = f.Snapshot;
-                    if (s.ChartBarNumber > 0)
-                        chart = s.ChartBarNumber;
-                }
-            }
-            catch { }
-
-            return $"K{chart}";
+            return $"K{barIndex}";
         }
 
         private static bool TouchesZone(OvSnapshot s, MarketStructureContext.Zone z)
