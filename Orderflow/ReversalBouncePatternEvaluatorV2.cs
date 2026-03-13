@@ -991,7 +991,7 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         if (z == null)
                             continue;
-                        if (z.IsConfirmed)
+                        if (z.IsConfirmed && z.CreatedBar != ctxZoneCreationBar)
                             continue;
                         if (z.Status != MarketStructureContext.ZoneStatus.New
                             && z.Status != MarketStructureContext.ZoneStatus.Ready
@@ -1086,7 +1086,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 {
                                     $"Dir={_direction}",
                                     $"Zone={retroZone.Id}",
-                                    $"State=PENDING (CreatedBar={retroZone.CreatedBar})",
+                                    $"State={(retroZone.IsConfirmed ? "CONFIRMED" : "PENDING")} (CreatedBar={retroZone.CreatedBar})",
                                     $"Bounds=[{retroZone.Low:F2}..{retroZone.High:F2}]",
                                     $"CurrBarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
                                     $"RetroTouchBarIdx={retroTouchSnap.Bar} ChartBar={retroTouchSnap.ChartBarNumber} Time={retroTouchSnap.Time:O}"
