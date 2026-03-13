@@ -118,6 +118,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
         private int _currentUpdateBar;
         public int CurrentBar => _currentUpdateBar;
 
+        private int _currentZoneCreationBar;
+        public int CurrentZoneCreationBar => _currentZoneCreationBar;
+
         public ILoggerSource? LoggerSource { get; set; }
 
         public decimal? LastConfirmedSwingHigh => _lastConfirmedSwingHigh;
@@ -274,6 +277,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 _lastConfirmedSwingDir = ZigZagDir.Unknown;
                 _archivedZones.Clear();
                 LastSignal = null;
+                _currentUpdateBar = 0;
+                _currentZoneCreationBar = 0;
             }
         }
 
@@ -291,6 +296,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
             lock (_updateSync)
             {
                 _currentUpdateBar = bar;
+
+                if (allowZoneCreation)
+                    _currentZoneCreationBar = bar;
 
                 if (tickSize <= 0m)
                     tickSize = 0.25m;

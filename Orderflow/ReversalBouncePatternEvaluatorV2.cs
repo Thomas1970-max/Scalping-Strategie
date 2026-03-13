@@ -965,6 +965,7 @@ namespace MyNamespace.Strategies.Orderflow
                 if (!anyActiveSession)
                 {
                     int ctxBar = currentMarketStructureContext.CurrentBar;
+                    int ctxZoneCreationBar = currentMarketStructureContext.CurrentZoneCreationBar;
                     OvSnapshot? snapBarMinus1 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 1, maxLookback: 30);
                     OvSnapshot? snapBarMinus2 = GetPreviousClosedSnapshotByOffset(history, currentSnapshot.Bar, offset: 2, maxLookback: 60);
 
@@ -985,7 +986,7 @@ namespace MyNamespace.Strategies.Orderflow
                         if (!dirOk)
                             continue;
 
-                        if (z.CreatedBar != ctxBar)
+                        if (z.CreatedBar != ctxZoneCreationBar)
                         {
                             LogExplainOnce(
                                 currentSnapshot.Bar,
@@ -996,9 +997,10 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Dir={_direction}",
                                     $"Zone={z.Id}",
                                     $"ZoneCreatedBar(Tick900)={z.CreatedBar}",
-                                    $"CtxCurrentBar(Tick900)={ctxBar}",
+                                    $"CtxCurrentBar(RangeOrOther)={ctxBar}",
+                                    $"CtxZoneCreationBar(Tick900)={ctxZoneCreationBar}",
                                     $"CurrentSnapshotBar(Range)={currentSnapshot.Bar}",
-                                    $"Rule: Retro-Seed nur wenn ZoneCreatedBar == CtxCurrentBar (Tick900-Kontext)"
+                                    $"Rule: Retro-Seed nur wenn ZoneCreatedBar == CtxZoneCreationBar (Tick900-Kontext)"
                                 });
                             continue;
                         }
