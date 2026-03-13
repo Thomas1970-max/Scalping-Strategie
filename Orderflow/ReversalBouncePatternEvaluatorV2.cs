@@ -993,7 +993,9 @@ namespace MyNamespace.Strategies.Orderflow
                             continue;
                         if (z.IsConfirmed)
                             continue;
-                        if (z.Status != MarketStructureContext.ZoneStatus.New && z.Status != MarketStructureContext.ZoneStatus.Ready)
+                        if (z.Status != MarketStructureContext.ZoneStatus.New
+                            && z.Status != MarketStructureContext.ZoneStatus.Ready
+                            && z.Status != MarketStructureContext.ZoneStatus.Triggered)
                             continue;
                         bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
                                      || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
