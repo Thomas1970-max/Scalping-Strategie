@@ -1326,6 +1326,9 @@ namespace MyNamespace.Strategies.Orderflow
 
                     zoneCountTouchesEligible++;
 
+                    if (z.IsExternal && prevClosed == null)
+                        continue;
+
                     if (prevClosed != null)
                     {
                         decimal tol = tickSize;
@@ -1811,12 +1814,14 @@ namespace MyNamespace.Strategies.Orderflow
                     bool reclaimedInside = currentSnapshot.Close >= candidateZone.Low && currentSnapshot.Close <= candidateZone.High;
                     bool responseOk = tracker.FirstOutsideBar >= 0 && (currentSnapshot.Bar - tracker.FirstOutsideBar) <= ImmediateResponseTimeBarsMax;
                     bool extensionOk = tracker.MaxOutsideExtensionTicks <= ImmediateMaxOutsideExtensionTicks;
-                    bool approachOk = prevClosed == null || (_direction == OrderDirections.Buy
+                    bool approachOk = prevClosed != null && (_direction == OrderDirections.Buy
                         ? prevClosed.Close >= (candidateZone.High - tickSize)
                         : prevClosed.Close <= (candidateZone.Low + tickSize));
 
                     bool armedStopRun = responseOk && reclaimedInside && extensionOk;
-                    bool armedTouch = TouchesZone(currentSnapshot, candidateZone) && reclaimedInside && approachOk;
+                    bool armedTouch = TouchesZone(currentSnapshot, candidateZone)
+                        && reclaimedInside
+                        && (!candidateZone.IsExternal || approachOk);
 
                     // Armed-Moment → Session starten (statt One-Shot)
                     if (!tracker.ImmediateAttempted && (armedStopRun || armedTouch))
@@ -2352,7 +2357,9 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionDecisionBars = new List<int>();
             tracker.SessionDecisionPhases = new List<ReversalPhase>();
             tracker.SessionEndReason = null;
-            tracker.SessionTouchWasReversal = false;
+            tracker.SessionTouchWasReversal = _direction == OrderDirections.Buy
+                ? snap.Close >= snap.Open
+                : snap.Close <= snap.Open;
         }
 
         private enum SessionEvalOutcome
@@ -2383,18 +2390,17 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionLastEvalBar == currentSnapshot.Bar)
                 return SessionEvalOutcome.Continue;
 
-            // Session erlaubt Touch-Bar + 2 Folge-Bars = max 3 Bars
-            const int SignalSearchBars = 3;
             int currChartBar = currentSnapshot.ChartBarNumber > 0 ? currentSnapshot.ChartBarNumber : currentSnapshot.Bar;
             int startChartBar = tracker.SessionStartChartBar >= 0 ? tracker.SessionStartChartBar : tracker.SessionStartBar;
             int sessionBarNr = currChartBar - startChartBar + 1;
 
             bool closeInDirectionNow = _direction == OrderDirections.Buy
-                ? currentSnapshot.Close > currentSnapshot.Open
-                : currentSnapshot.Close < currentSnapshot.Open;
+                ? currentSnapshot.Close >= currentSnapshot.Open
+                : currentSnapshot.Close <= currentSnapshot.Open;
 
             int zoneWidthTicks = Math.Max(1, RoundTicks(Math.Abs(zone.High - zone.Low), tickSize));
             int reversalDeadlineOffset = zoneWidthTicks >= 8 ? 2 : 1;
+            int signalSearchBars = zoneWidthTicks >= 8 ? 4 : 3;
 
             static DecisionResult CreateExitDecision(string reason)
             {
@@ -2412,10 +2418,10 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // --- Invalidierung: Session-Dauer (Touch-Bar + 2 Folge-Bars) ---
-            if (sessionBarNr > SignalSearchBars)
+            if (sessionBarNr > signalSearchBars)
             {
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"Session abgelaufen nach {sessionBarNr} Bars ohne Signalbar (max. {SignalSearchBars}).";
+                tracker.SessionEndReason = $"Session abgelaufen nach {sessionBarNr} Bars ohne Signalbar (max. {signalSearchBars}).";
 
                 var exitDec = CreateExitDecision(tracker.SessionEndReason);
                 decision = exitDec;
@@ -2429,11 +2435,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der nächste Chart-Bar Umkehrbar sein ---
-            if (currChartBar == startChartBar)
-            {
-                tracker.SessionTouchWasReversal = closeInDirectionNow;
-            }
-            else if (!tracker.SessionTouchWasReversal)
+            if (!tracker.SessionTouchWasReversal)
             {
                 if (closeInDirectionNow)
                 {
@@ -2644,7 +2646,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             // ================================================================
             // HARTE ENTRY-KRITERIEN (neu):
-            // 1) UF→FA: Vorgänger-Bar hatte UF, aktuelle Bar hat FA
+            // 1) UF→FA: UF kann früher in der Session vorkommen, FA muss in der Umkehrkerze sein
             // 2) Close in Traderichtung (Long: Close > Open, Short: Close < Open)
             // 3) Kerzen-POC Position
             // 4) Absorption im Signalbar
@@ -2652,34 +2654,55 @@ namespace MyNamespace.Strategies.Orderflow
             bool isSignalBar = false;
             string signalBlockReason = string.Empty;
 
-            // Kriterium 1: UF→FA (Vorgänger hatte UF, dieses Bar hat FA)
-            bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
-            bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
-            bool priceProgressOkUfToFa = prev != null && (_direction == OrderDirections.Buy
-                ? prev.Low > currentSnapshot.Low
-                : prev.High < currentSnapshot.High);
-            bool ufToFaHere = prevHadUf && currHasFa && priceProgressOkUfToFa;
+            // Kriterium 2: Close in Traderichtung
+            bool closeInDirection = _direction == OrderDirections.Buy
+                ? currentSnapshot.Close >= currentSnapshot.Open
+                : currentSnapshot.Close <= currentSnapshot.Open;
 
-            if (ufToFaHere && !tracker.SessionLatchUfToFa)
+            // Kriterium 1: UF→FA (UF kann früher in der Session vorkommen, FA muss in der Umkehrkerze sein)
+            bool currHasUf = IsUnfinishedAuction(currentSnapshot, thresholds, _direction);
+            if (currHasUf && !tracker.SessionLatchUfToFa)
             {
                 tracker.SessionLatchUfToFa = true;
                 tracker.SessionLatchUfToFaBar = currentSnapshot.Bar;
             }
 
-            bool ufToFaLatchOk = tracker.SessionLatchUfToFa;
+            bool ufSeen = tracker.SessionLatchUfToFa;
+            bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
+            bool faNowIsReversalCandle = closeInDirection;
+
+            bool priceProgressOkUfToFa = true;
+            try
+            {
+                if (ufSeen && tracker.SessionLatchUfToFaBar >= 0)
+                {
+                    OvSnapshot? ufSnap = null;
+                    if (tracker.SessionLatchUfToFaBar == currentSnapshot.Bar)
+                        ufSnap = currentSnapshot;
+                    else if (history.TryGetByBar(tracker.SessionLatchUfToFaBar, out var ufF) && ufF?.Snapshot != null)
+                        ufSnap = ufF.Snapshot;
+
+                    if (ufSnap != null)
+                    {
+                        priceProgressOkUfToFa = _direction == OrderDirections.Buy
+                            ? ufSnap.Low > currentSnapshot.Low
+                            : ufSnap.High < currentSnapshot.High;
+                    }
+                }
+            }
+            catch { }
+
+            bool ufToFaHere = ufSeen && currHasFa && faNowIsReversalCandle && priceProgressOkUfToFa;
+            bool ufToFaLatchOk = ufToFaHere;
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_UF→FA",
                 Points = ufToFaLatchOk ? 1m : 0m,
                 TextDe = ufToFaLatchOk
-                    ? $"Signal UF→FA (Latch): JA (Bar {tracker.SessionLatchUfToFaBar})"
-                    : $"Signal UF→FA (Latch): NEIN (Vorgänger UF={prevHadUf}, aktuell FA={currHasFa}, PriceProgress={priceProgressOkUfToFa})"
+                    ? $"Signal UF→FA: JA (UF-Bar {tracker.SessionLatchUfToFaBar} -> FA in Umkehrkerze {currentSnapshot.Bar})"
+                    : $"Signal UF→FA: NEIN (UF gesehen={ufSeen}, aktuell FA={currHasFa}, Umkehrkerze={faNowIsReversalCandle}, PriceProgress={priceProgressOkUfToFa})"
             });
 
-            // Kriterium 2: Close in Traderichtung
-            bool closeInDirection = _direction == OrderDirections.Buy
-                ? currentSnapshot.Close > currentSnapshot.Open
-                : currentSnapshot.Close < currentSnapshot.Open;
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_Close",
@@ -2928,8 +2951,23 @@ namespace MyNamespace.Strategies.Orderflow
                 var lines = new List<string>(96);
                 string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
                 int endBarForReport = currentSnapshot.Bar;
-                if (tracker.SessionLastEvalBar >= tracker.SessionStartBar && tracker.SessionLastEvalBar <= currentSnapshot.Bar)
+                if (tracker.SessionDecisionBars != null && tracker.SessionDecisionBars.Count > 0)
+                {
+                    int lastDecBar = tracker.SessionDecisionBars[tracker.SessionDecisionBars.Count - 1];
+                    if (lastDecBar >= tracker.SessionStartBar && lastDecBar <= currentSnapshot.Bar)
+                        endBarForReport = lastDecBar;
+                }
+                else if (tracker.SessionLastEvalBar >= tracker.SessionStartBar && tracker.SessionLastEvalBar <= currentSnapshot.Bar)
+                {
                     endBarForReport = tracker.SessionLastEvalBar;
+                }
+
+                int zoneWidthTicks = Math.Max(1, RoundTicks(Math.Abs(zone.High - zone.Low), tickSize));
+                int signalSearchBars = zoneWidthTicks >= 8 ? 4 : 3;
+                int maxEndBar = tracker.SessionStartBar + signalSearchBars - 1;
+                if (endBarForReport > maxEndBar)
+                    endBarForReport = maxEndBar;
+
                 int sessionBars = (endBarForReport - tracker.SessionStartBar) + 1;
                 string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
                 string phaseDe = tracker.SessionPhase == ReversalPhase.Defense
@@ -3574,7 +3612,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (dir == OrderDirections.Buy)
             {
-                bool prevBearishPush = prev.Close < prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+                bool prevBearishPush = prev.Close <= prev.Open && prevRangeTicks >= MinPrevRangeTicks;
                 if (!prevBearishPush)
                     return false;
 
@@ -3603,7 +3641,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return true;
             }
 
-            bool prevBullishPush = prev.Close > prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+            bool prevBullishPush = prev.Close >= prev.Open && prevRangeTicks >= MinPrevRangeTicks;
             if (!prevBullishPush)
                 return false;
 
@@ -3674,7 +3712,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (dir == OrderDirections.Buy)
             {
                 decimal needPushDelta = absNetDeltaMin * 1.00m;
-                bool IsBearishPush(OvSnapshot s) => s.Close < s.Open && s.NetDeltaTotal <= -needPushDelta;
+                bool IsBearishPush(OvSnapshot s) => s.Close <= s.Open && s.NetDeltaTotal <= -needPushDelta;
 
                 OvSnapshot pushBar = prev;
                 bool usingPrevPrev = false;
@@ -3709,7 +3747,7 @@ namespace MyNamespace.Strategies.Orderflow
                         return false;
                 }
 
-                bool currBullish = curr.Close > curr.Open;
+                bool currBullish = curr.Close >= curr.Open;
                 if (!currBullish)
                     return false;
 
@@ -3727,7 +3765,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             decimal needPushDeltaShort = absNetDeltaMin * 1.00m;
-            bool IsBullishPush(OvSnapshot s) => s.Close > s.Open && s.NetDeltaTotal >= needPushDeltaShort;
+            bool IsBullishPush(OvSnapshot s) => s.Close >= s.Open && s.NetDeltaTotal >= needPushDeltaShort;
 
             OvSnapshot pushBarS = prev;
             bool usingPrevPrevS = false;
@@ -3762,7 +3800,7 @@ namespace MyNamespace.Strategies.Orderflow
                     return false;
             }
 
-            bool currBearish = curr.Close < curr.Open;
+            bool currBearish = curr.Close <= curr.Open;
             if (!currBearish)
                 return false;
 
@@ -3948,11 +3986,11 @@ namespace MyNamespace.Strategies.Orderflow
                         return $"PocAsk nicht nahe MaxAsk (PocAsk={curr.PocAsk:0}, MaxAsk={curr.MaxAskLevelAsk:0}, need>={NearMaxFrac:0.00}x)";
                 }
 
-                bool prevPushOk = dir == OrderDirections.Buy ? (prev.Close < prev.Open) : (prev.Close > prev.Open);
+                bool prevPushOk = dir == OrderDirections.Buy ? (prev.Close <= prev.Open) : (prev.Close >= prev.Open);
                 if (!prevPushOk)
                     return "Prev kein Push in Gegenrichtung";
 
-                bool closeDir = dir == OrderDirections.Buy ? (curr.Close > curr.Open) : (curr.Close < curr.Open);
+                bool closeDir = dir == OrderDirections.Buy ? (curr.Close >= curr.Open) : (curr.Close <= curr.Open);
                 if (!closeDir)
                     return "Curr Close nicht in Reversal-Richtung";
 
@@ -3998,7 +4036,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (dir == OrderDirections.Buy)
             {
-                bool prevBearishPush = prev.Close < prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+                bool prevBearishPush = prev.Close <= prev.Open && prevRangeTicks >= MinPrevRangeTicks;
                 if (!prevBearishPush)
                     return "Prev kein ausreichender Push (bearish/range zu klein)";
 
@@ -4027,7 +4065,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return string.Empty;
             }
 
-            bool prevBullishPush = prev.Close > prev.Open && prevRangeTicks >= MinPrevRangeTicks;
+            bool prevBullishPush = prev.Close >= prev.Open && prevRangeTicks >= MinPrevRangeTicks;
             if (!prevBullishPush)
                 return "Prev kein ausreichender Push (bullish/range zu klein)";
 
@@ -4195,7 +4233,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (dir == OrderDirections.Buy)
             {
                 decimal needPushDelta = absNetDeltaMin * 1.00m;
-                bool IsBearishPush(OvSnapshot s) => s.Close < s.Open && s.NetDeltaTotal <= -needPushDelta;
+                bool IsBearishPush(OvSnapshot s) => s.Close <= s.Open && s.NetDeltaTotal <= -needPushDelta;
 
                 OvSnapshot pushBar = prev;
                 bool usingPrevPrev = false;
@@ -4229,7 +4267,8 @@ namespace MyNamespace.Strategies.Orderflow
                         return "Zwischenbar macht ein neues Tief (zu viel Durchstich)";
                 }
 
-                if (!(curr.Close > curr.Open))
+                bool currBullish = curr.Close >= curr.Open;
+                if (!currBullish)
                     return "Reversal-Bar ist nicht bullisch (Close nicht über Open)";
 
                 decimal refLow = Math.Max(pushBar.Low, z.Low);
@@ -4246,7 +4285,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             decimal needPushDeltaShort = absNetDeltaMin * 1.00m;
-            bool IsBullishPush(OvSnapshot s) => s.Close > s.Open && s.NetDeltaTotal >= needPushDeltaShort;
+            bool IsBullishPush(OvSnapshot s) => s.Close >= s.Open && s.NetDeltaTotal >= needPushDeltaShort;
 
             OvSnapshot pushBarS = prev;
             bool usingPrevPrevS = false;
@@ -4280,7 +4319,8 @@ namespace MyNamespace.Strategies.Orderflow
                     return "Zwischenbar macht ein neues Hoch (zu viel Durchstich)";
             }
 
-            if (!(curr.Close < curr.Open))
+            bool currBearish = curr.Close <= curr.Open;
+            if (!currBearish)
                 return "Reversal-Bar ist nicht bärisch (Close nicht unter Open)";
 
             decimal refHigh = Math.Min(pushBarS.High, z.High);

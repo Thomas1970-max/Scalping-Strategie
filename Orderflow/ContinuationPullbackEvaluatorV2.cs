@@ -871,6 +871,9 @@ namespace MyNamespace.Strategies.Orderflow
                 if (!TouchesZone(currentSnapshot, z))
                     continue;
 
+                if (z.IsExternal && prevClosed == null)
+                    continue;
+
                 if (prevClosed != null)
                 {
                     decimal tol = tickSize;
@@ -1003,6 +1006,12 @@ namespace MyNamespace.Strategies.Orderflow
                 try
                 {
                     bool touchNowSession = TouchesZone(currentSnapshot, candidateZone);
+                    if (touchNowSession && candidateZone.IsExternal && prevClosed == null)
+                    {
+                        tracker.SessionLastEvalBar = currentSnapshot.Bar;
+                        return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: session touch blocked (no prevClose for external zone)");
+                    }
+
                     if (touchNowSession && prevClosed != null)
                     {
                         decimal tol = tickSize;

@@ -13732,7 +13732,7 @@ namespace MyNamespace.Strategies
                         || detectedPattern.Type == OrderflowPatternType.PotentialLongTrendContinuation)
                     && detectedPattern.Direction == OrderDirections.Buy)
                 {
-                    if (c.Close > c.Open)
+                    if (c.Close >= c.Open)
                     {
                         isLongSetupValid = true;
                         this.LogInfo($"[SETUP-LONG] ✅ Long Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
@@ -13746,7 +13746,7 @@ namespace MyNamespace.Strategies
                             || detectedPattern.Type == OrderflowPatternType.PotentialShortTrendContinuation)
                          && detectedPattern.Direction == OrderDirections.Sell)
                 {
-                    if (c.Close < c.Open)
+                    if (c.Close <= c.Open)
                     {
                         isShortSetupValid = true;
                         this.LogInfo($"[SETUP-SHORT] ✅ Short Setup VALID (V2): Pattern={detectedPattern.Type}, Confidence={detectedPattern.ConfidenceScore:F2}");
