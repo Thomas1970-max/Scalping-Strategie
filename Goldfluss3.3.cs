@@ -866,6 +866,7 @@ namespace MyNamespace.Strategies
                 decimal mid = (low + high) * 0.5m;
 
                 var type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
+                bool existsInCtx = false;
                 if (zoneId > 0)
                 {
                     try
@@ -878,6 +879,7 @@ namespace MyNamespace.Strategies
                             if (z != null && z.Id == zoneId)
                             {
                                 existing = z;
+                                existsInCtx = true;
                                 break;
                             }
                         }
@@ -885,6 +887,12 @@ namespace MyNamespace.Strategies
                             type = existing.Type;
                     }
                     catch { }
+                }
+
+                if (zoneId > 0 && !existsInCtx)
+                {
+                    zoneId = 0;
+                    pendingTypeCloses = 0;
                 }
 
                 var desiredType = (MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType?)null;

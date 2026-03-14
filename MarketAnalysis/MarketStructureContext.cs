@@ -1574,6 +1574,12 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                 if (ZoneDwellBarsMax > 0 && z.DwellCount >= ZoneDwellBarsMax)
                 {
+                    if (z.IsExternal)
+                    {
+                        z.DwellCount = 0;
+                        continue;
+                    }
+
                     z.Status = ZoneStatus.Used;
                     z.ConsumedReason = ZoneConsumeReason.Expiry;
                     z.ConsumedBar = bar;
@@ -1660,6 +1666,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     {
                         if (z.FlipCount >= 1)
                         {
+                            if (z.IsExternal)
+                            {
+                                z.BreakCloseCount = 0;
+                                z.BreakoutDirection = 0;
+                                z.BreakoutExtreme = 0m;
+                                z.HasRetestTouch = false;
+                                continue;
+                            }
+
                             try
                             {
                                 LoggerSource?.LogInfo(
@@ -1675,6 +1690,14 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                         if (!z.HasRetestTouch)
                         {
+                            if (z.IsExternal)
+                            {
+                                z.BreakCloseCount = 0;
+                                z.BreakoutDirection = 0;
+                                z.BreakoutExtreme = 0m;
+                                continue;
+                            }
+
                             try
                             {
                                 LoggerSource?.LogInfo(
@@ -1724,6 +1747,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     {
                         if (z.FlipCount >= 1)
                         {
+                            if (z.IsExternal)
+                            {
+                                z.BreakCloseCount = 0;
+                                z.BreakoutDirection = 0;
+                                z.BreakoutExtreme = 0m;
+                                z.HasRetestTouch = false;
+                                continue;
+                            }
+
                             try
                             {
                                 LoggerSource?.LogInfo(
@@ -1739,6 +1771,14 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
                         if (!z.HasRetestTouch)
                         {
+                            if (z.IsExternal)
+                            {
+                                z.BreakCloseCount = 0;
+                                z.BreakoutDirection = 0;
+                                z.BreakoutExtreme = 0m;
+                                continue;
+                            }
+
                             try
                             {
                                 LoggerSource?.LogInfo(

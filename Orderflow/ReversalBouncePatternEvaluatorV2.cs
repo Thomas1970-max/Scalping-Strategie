@@ -2393,6 +2393,9 @@ namespace MyNamespace.Strategies.Orderflow
                 ? currentSnapshot.Close > currentSnapshot.Open
                 : currentSnapshot.Close < currentSnapshot.Open;
 
+            int zoneWidthTicks = Math.Max(1, RoundTicks(Math.Abs(zone.High - zone.Low), tickSize));
+            int reversalDeadlineOffset = zoneWidthTicks >= 8 ? 2 : 1;
+
             static DecisionResult CreateExitDecision(string reason)
             {
                 return new DecisionResult
@@ -2430,22 +2433,29 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 tracker.SessionTouchWasReversal = closeInDirectionNow;
             }
-            else if (currChartBar == startChartBar + 1 && !tracker.SessionTouchWasReversal && !closeInDirectionNow)
+            else if (!tracker.SessionTouchWasReversal)
             {
-                tracker.SessionActive = false;
-                tracker.SessionEndReason = _direction == OrderDirections.Buy
-                    ? $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und der Folge-Bar schließt nicht bullisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})."
-                    : $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und der Folge-Bar schließt nicht bärisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2}).";
+                if (closeInDirectionNow)
+                {
+                    tracker.SessionTouchWasReversal = true;
+                }
+                else if (currChartBar == startChartBar + reversalDeadlineOffset)
+                {
+                    tracker.SessionActive = false;
+                    tracker.SessionEndReason = _direction == OrderDirections.Buy
+                        ? $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schließt kein Bar bullisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})."
+                        : $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schließt kein Bar bärisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2}).";
 
-                var exitDec = CreateExitDecision(tracker.SessionEndReason);
-                decision = exitDec;
-                tracker.SessionDecisionHistory ??= new List<DecisionResult>();
-                tracker.SessionDecisionBars ??= new List<int>();
-                tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
-                tracker.SessionDecisionHistory.Add(exitDec);
-                tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
-                tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
-                return SessionEvalOutcome.Invalidated;
+                    var exitDec = CreateExitDecision(tracker.SessionEndReason);
+                    decision = exitDec;
+                    tracker.SessionDecisionHistory ??= new List<DecisionResult>();
+                    tracker.SessionDecisionBars ??= new List<int>();
+                    tracker.SessionDecisionPhases ??= new List<ReversalPhase>();
+                    tracker.SessionDecisionHistory.Add(exitDec);
+                    tracker.SessionDecisionBars.Add(currentSnapshot.Bar);
+                    tracker.SessionDecisionPhases.Add(ReversalPhase.Defense);
+                    return SessionEvalOutcome.Invalidated;
+                }
             }
 
             // --- Invalidierung: Konsekutive Bad-Closes ---
