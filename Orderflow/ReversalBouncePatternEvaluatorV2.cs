@@ -2659,48 +2659,22 @@ namespace MyNamespace.Strategies.Orderflow
                 ? currentSnapshot.Close >= currentSnapshot.Open
                 : currentSnapshot.Close <= currentSnapshot.Open;
 
-            // Kriterium 1: UF→FA (UF kann früher in der Session vorkommen, FA muss in der Umkehrkerze sein)
-            bool currHasUf = IsUnfinishedAuction(currentSnapshot, thresholds, _direction);
-            if (currHasUf && !tracker.SessionLatchUfToFa)
-            {
-                tracker.SessionLatchUfToFa = true;
-                tracker.SessionLatchUfToFaBar = currentSnapshot.Bar;
-            }
-
-            bool ufSeen = tracker.SessionLatchUfToFa;
+            // Kriterium 1: UF→FA (streng sequenziell): UF muss in der Kerze direkt davor sein, FA in der Umkehrkerze
+            bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
             bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
             bool faNowIsReversalCandle = closeInDirection;
-
-            bool priceProgressOkUfToFa = true;
-            try
-            {
-                if (ufSeen && tracker.SessionLatchUfToFaBar >= 0)
-                {
-                    OvSnapshot? ufSnap = null;
-                    if (tracker.SessionLatchUfToFaBar == currentSnapshot.Bar)
-                        ufSnap = currentSnapshot;
-                    else if (history.TryGetByBar(tracker.SessionLatchUfToFaBar, out var ufF) && ufF?.Snapshot != null)
-                        ufSnap = ufF.Snapshot;
-
-                    if (ufSnap != null)
-                    {
-                        priceProgressOkUfToFa = _direction == OrderDirections.Buy
-                            ? ufSnap.Low > currentSnapshot.Low
-                            : ufSnap.High < currentSnapshot.High;
-                    }
-                }
-            }
-            catch { }
-
-            bool ufToFaHere = ufSeen && currHasFa && faNowIsReversalCandle && priceProgressOkUfToFa;
+            bool priceProgressOkUfToFa = prev != null && (_direction == OrderDirections.Buy
+                ? prev.Low > currentSnapshot.Low
+                : prev.High < currentSnapshot.High);
+            bool ufToFaHere = prevHadUf && currHasFa && faNowIsReversalCandle && priceProgressOkUfToFa;
             bool ufToFaLatchOk = ufToFaHere;
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_UF→FA",
                 Points = ufToFaLatchOk ? 1m : 0m,
                 TextDe = ufToFaLatchOk
-                    ? $"Signal UF→FA: JA (UF-Bar {tracker.SessionLatchUfToFaBar} -> FA in Umkehrkerze {currentSnapshot.Bar})"
-                    : $"Signal UF→FA: NEIN (UF gesehen={ufSeen}, aktuell FA={currHasFa}, Umkehrkerze={faNowIsReversalCandle}, PriceProgress={priceProgressOkUfToFa})"
+                    ? $"Signal UF→FA: JA (UF in prev-Bar {prev!.Bar} -> FA in Umkehrkerze {currentSnapshot.Bar})"
+                    : $"Signal UF→FA: NEIN (Prev UF={prevHadUf}, aktuell FA={currHasFa}, Umkehrkerze={faNowIsReversalCandle}, PriceProgress={priceProgressOkUfToFa})"
             });
 
             logItems.Add(new ScoreItem
