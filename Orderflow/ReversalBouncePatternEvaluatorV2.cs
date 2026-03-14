@@ -1145,8 +1145,14 @@ namespace MyNamespace.Strategies.Orderflow
                                         LoggerHelper.LogInfo(_loggerSource,
                                             $"[ReversalBounceV2] DETECTED (RetestRetro): zone={retroZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={dec1.TotalScore:0.0} conf={dec1.Confidence:0.00}");
 
+                                    var matched = new Dictionary<string, object>();
+                                    matched["SignalBarIndex"] = retroReversalSnap.Bar;
+                                    matched["SignalChartBarNumber"] = retroReversalSnap.ChartBarNumber;
+                                    matched["DetectedOnBarIndex"] = currentSnapshot.Bar;
+                                    matched["DetectedOnChartBarNumber"] = currentSnapshot.ChartBarNumber;
+
                                     return PatternEvaluationResult.Detected(Type, dec1.Confidence, reasons,
-                                        new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
+                                        matched, new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
                                 }
                             }
                         }

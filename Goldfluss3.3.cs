@@ -11334,8 +11334,7 @@ namespace MyNamespace.Strategies
 
                     if (!HasKey(_volBurstZ, closed))
                     {
-                        this.LogInfo($"[OnCalculate] postpone: VolZ for closed={closed} not ready (latestZBar={latestZBar})");
-                        return;
+                        this.LogInfo($"[OnCalculate] VolZ for closed={closed} not ready (latestZBar={latestZBar}) -> continue with defaults (no postpone)");
                     }
                     this.LogDebug($"[OnCalculate-TRIGGER] EvaluateSignalsAndOrders(closed={closed}, time={GetCandle(closed).Time:O})");
 
@@ -13878,7 +13877,81 @@ namespace MyNamespace.Strategies
                 string entryTriggerLevelName = string.Empty;
                 decimal entryTriggerLevel = 0;
 
-                var signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
+                int? signalBarIdxOverride = null;
+                int? signalChartBarOverride = null;
+                try
+                {
+                    if (detectedPattern?.MatchedCriteriaValues != null && detectedPattern.MatchedCriteriaValues.Count > 0)
+                    {
+                        if (detectedPattern.MatchedCriteriaValues.TryGetValue("SignalBarIndex", out var sIdxObj) && sIdxObj != null)
+                        {
+                            if (sIdxObj is int si)
+                                signalBarIdxOverride = si;
+                            else if (sIdxObj is long sl)
+                                signalBarIdxOverride = (int)sl;
+                            else if (int.TryParse(sIdxObj.ToString(), out var sParsed))
+                                signalBarIdxOverride = sParsed;
+                        }
+                        if (detectedPattern.MatchedCriteriaValues.TryGetValue("SignalChartBarNumber", out var sChartObj) && sChartObj != null)
+                        {
+                            if (sChartObj is int sci)
+                                signalChartBarOverride = sci;
+                            else if (sChartObj is long scl)
+                                signalChartBarOverride = (int)scl;
+                            else if (int.TryParse(sChartObj.ToString(), out var scParsed))
+                                signalChartBarOverride = scParsed;
+                        }
+                    }
+                }
+                catch { }
+
+                decimal signalPoc = 0m;
+                bool signalPocFromOverride = false;
+                if (signalBarIdxOverride.HasValue)
+                {
+                    try
+                    {
+                        if (ofFeaturesHistory != null)
+                        {
+                            for (int i = 0; i < ofFeaturesHistory.Count; i++)
+                            {
+                                var s = ofFeaturesHistory.GetOfFeatures(i)?.Snapshot;
+                                if (s != null && s.Bar == signalBarIdxOverride.Value)
+                                {
+                                    signalPoc = s.CandlePocPrice;
+                                    signalPocFromOverride = true;
+                                    if (!signalChartBarOverride.HasValue && s.ChartBarNumber > 0)
+                                        signalChartBarOverride = s.ChartBarNumber;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!signalPocFromOverride)
+                        {
+                            var last = _ovSnapshotHistory?.GetLast(4096);
+                            if (last != null)
+                            {
+                                for (int i = last.Count - 1; i >= 0; i--)
+                                {
+                                    var s = last[i];
+                                    if (s != null && s.Bar == signalBarIdxOverride.Value)
+                                    {
+                                        signalPoc = s.CandlePocPrice;
+                                        signalPocFromOverride = true;
+                                        if (!signalChartBarOverride.HasValue && s.ChartBarNumber > 0)
+                                            signalChartBarOverride = s.ChartBarNumber;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!signalPocFromOverride)
+                    signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
                 if (signalPoc <= 0m)
                 {
                     this.LogWarn($"[ORDER-LONG] Candle POC nicht verfügbar (ovLastClosed.CandlePocPrice={signalPoc:F2}). Fallback auf Close={c.Close:F2} (Bar={closed}).");
@@ -13984,7 +14057,7 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}");
+                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-LONG] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={longEntryPrice:F2}.");
                 PlaceEntry(OrderDirections.Buy, longEntryPrice, closed);
@@ -13997,7 +14070,81 @@ namespace MyNamespace.Strategies
                 string entryTriggerLevelName = string.Empty;
                 decimal entryTriggerLevel = 0;
 
-                var signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
+                int? signalBarIdxOverride = null;
+                int? signalChartBarOverride = null;
+                try
+                {
+                    if (detectedPattern?.MatchedCriteriaValues != null && detectedPattern.MatchedCriteriaValues.Count > 0)
+                    {
+                        if (detectedPattern.MatchedCriteriaValues.TryGetValue("SignalBarIndex", out var sIdxObj) && sIdxObj != null)
+                        {
+                            if (sIdxObj is int si)
+                                signalBarIdxOverride = si;
+                            else if (sIdxObj is long sl)
+                                signalBarIdxOverride = (int)sl;
+                            else if (int.TryParse(sIdxObj.ToString(), out var sParsed))
+                                signalBarIdxOverride = sParsed;
+                        }
+                        if (detectedPattern.MatchedCriteriaValues.TryGetValue("SignalChartBarNumber", out var sChartObj) && sChartObj != null)
+                        {
+                            if (sChartObj is int sci)
+                                signalChartBarOverride = sci;
+                            else if (sChartObj is long scl)
+                                signalChartBarOverride = (int)scl;
+                            else if (int.TryParse(sChartObj.ToString(), out var scParsed))
+                                signalChartBarOverride = scParsed;
+                        }
+                    }
+                }
+                catch { }
+
+                decimal signalPoc = 0m;
+                bool signalPocFromOverride = false;
+                if (signalBarIdxOverride.HasValue)
+                {
+                    try
+                    {
+                        if (ofFeaturesHistory != null)
+                        {
+                            for (int i = 0; i < ofFeaturesHistory.Count; i++)
+                            {
+                                var s = ofFeaturesHistory.GetOfFeatures(i)?.Snapshot;
+                                if (s != null && s.Bar == signalBarIdxOverride.Value)
+                                {
+                                    signalPoc = s.CandlePocPrice;
+                                    signalPocFromOverride = true;
+                                    if (!signalChartBarOverride.HasValue && s.ChartBarNumber > 0)
+                                        signalChartBarOverride = s.ChartBarNumber;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!signalPocFromOverride)
+                        {
+                            var last = _ovSnapshotHistory?.GetLast(4096);
+                            if (last != null)
+                            {
+                                for (int i = last.Count - 1; i >= 0; i--)
+                                {
+                                    var s = last[i];
+                                    if (s != null && s.Bar == signalBarIdxOverride.Value)
+                                    {
+                                        signalPoc = s.CandlePocPrice;
+                                        signalPocFromOverride = true;
+                                        if (!signalChartBarOverride.HasValue && s.ChartBarNumber > 0)
+                                            signalChartBarOverride = s.ChartBarNumber;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!signalPocFromOverride)
+                    signalPoc = ovLastClosed?.CandlePocPrice ?? 0m;
                 if (signalPoc <= 0m)
                 {
                     this.LogWarn($"[ORDER-SHORT] Candle POC nicht verfügbar (ovLastClosed.CandlePocPrice={signalPoc:F2}). Fallback auf Close={c.Close:F2} (Bar={closed}).");
@@ -14103,7 +14250,7 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}");
+                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-SHORT] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={shortEntryPrice:F2}.");
                 PlaceEntry(OrderDirections.Sell, shortEntryPrice, closed);
