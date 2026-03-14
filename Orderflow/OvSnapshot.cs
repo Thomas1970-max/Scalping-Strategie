@@ -21,11 +21,21 @@ namespace MyNamespace.Strategies.Orderflow
         public decimal Delta;
         public decimal Ask;
         public decimal Bid;
+        public decimal BestAskPrice;
+        public decimal BestBidPrice;
         public string MarketRegime { get; set; } = "None";
 
         public decimal CandlePocPrice;
         public decimal PocDelta;
         public decimal PocVolume;
+        public decimal PocBid;
+        public decimal PocAsk;
+        public decimal MaxBidLevelPrice;
+        public decimal MaxBidLevelBid;
+        public decimal MaxBidLevelAsk;
+        public decimal MaxAskLevelPrice;
+        public decimal MaxAskLevelAsk;
+        public decimal MaxAskLevelBid;
         public decimal BidAtLow;
         public decimal AskAtLow;
         public decimal BidAtHigh;

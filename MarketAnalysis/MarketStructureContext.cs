@@ -53,6 +53,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             public decimal High { get; set; }
             public ZoneStatus Status { get; set; }
             public int PivotBar { get; init; }
+            public bool IsExternal { get; set; }
             public bool IsConfirmed { get; set; } = true;
             public int CreatedBar { get; init; }
             public int? ReadyBar { get; set; }
@@ -153,7 +154,8 @@ namespace MyNamespace.Strategies.MarketAnalysis
             decimal high,
             int createdBar,
             ZoneStatus initialStatus = ZoneStatus.Ready,
-            bool confirmed = true)
+            bool confirmed = true,
+            bool updateTypeIfExists = false)
         {
             lock (_updateSync)
             {
@@ -165,6 +167,9 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 {
                     z.Low = low;
                     z.High = high;
+                    z.IsExternal = true;
+                    if (updateTypeIfExists)
+                        z.Type = initialType;
                     return z.Id;
                 }
 
@@ -176,6 +181,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     High = high,
                     Status = initialStatus,
                     PivotBar = createdBar,
+                    IsExternal = true,
                     IsConfirmed = confirmed,
                     CreatedBar = createdBar,
                     ReadyBar = createdBar,
@@ -1585,7 +1591,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
                     continue;
                 }
 
-                if (z.BreakoutDirection != 0)
+                if (!z.IsExternal && z.BreakoutDirection != 0)
                 {
                     decimal ts = tickSize > 0m ? tickSize : 0.25m;
                     int zoneWidthTicks = 0;

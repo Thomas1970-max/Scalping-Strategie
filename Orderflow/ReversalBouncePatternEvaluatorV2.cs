@@ -23,7 +23,8 @@ namespace MyNamespace.Strategies.Orderflow
             None,
             A,
             B,
-            C
+            C,
+            D
         }
 
         private enum SessionType
@@ -1225,65 +1226,65 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
                                     $"zones.Count={zones.Count}"
                                 });
+
+                            activeSessionTracker.SessionActive = false;
+                            activeSessionTracker.SessionEndReason = "Pending zone discarded/used/missing -> abort";
+                            _trackersByZoneId.Remove(activeZoneId);
+                            return PatternEvaluationResult.NotDetected(Type, $"Zone {activeZoneId}: pending session aborted (zone gone/used)");
                         }
                         catch { }
 
-                        activeSessionTracker.SessionActive = false;
-                        activeSessionTracker.SessionEndReason = "Pending zone discarded/used/missing -> abort";
-                        _trackersByZoneId.Remove(activeZoneId);
-                        return PatternEvaluationResult.NotDetected(Type, $"Zone {activeZoneId}: pending session aborted (zone gone/used)");
-                    }
-
-                    if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
-                    {
-                        try
+                        if (foundZoneAnyStatus != null && foundZoneAnyStatus.Status == MarketStructureContext.ZoneStatus.Used)
                         {
-                            LogExplainOnce(
-                                currentSnapshot.Bar,
-                                activeZoneId,
-                                stage: "Session.ZoneUsed.FallbackPinnedZone",
-                                lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"Zone={activeZoneId}",
-                                    $"Reason: SessionActive=true aber Zone.Status=Used → Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
-                                    $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}"
-                                });
+                            try
+                            {
+                                LogExplainOnce(
+                                    currentSnapshot.Bar,
+                                    activeZoneId,
+                                    stage: "Session.ZoneUsed.FallbackPinnedZone",
+                                    lines: new[]
+                                    {
+                                        $"Dir={_direction}",
+                                        $"Zone={activeZoneId}",
+                                        $"Reason: SessionActive=true aber Zone.Status=Used → Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
+                                        $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}"
+                                    });
+                            }
+                            catch { }
                         }
-                        catch { }
-                    }
-                    else
-                    {
-                        try
+                        else
                         {
-                            LogExplainOnce(
-                                currentSnapshot.Bar,
-                                activeZoneId,
-                                stage: "Session.ZoneMissing.FallbackPinnedZone",
-                                lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"Zone={activeZoneId}",
-                                    $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones → Fallback auf gepinnte Zone-Daten.",
-                                    $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
-                                    $"zones.Count={zones.Count}"
-                                });
+                            try
+                            {
+                                LogExplainOnce(
+                                    currentSnapshot.Bar,
+                                    activeZoneId,
+                                    stage: "Session.ZoneMissing.FallbackPinnedZone",
+                                    lines: new[]
+                                    {
+                                        $"Dir={_direction}",
+                                        $"Zone={activeZoneId}",
+                                        $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones → Fallback auf gepinnte Zone-Daten.",
+                                        $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
+                                        $"zones.Count={zones.Count}"
+                                    });
+                            }
+                            catch { }
                         }
-                        catch { }
-                    }
 
-                    candidateZone = new MarketStructureContext.Zone
-                    {
-                        Id = activeZoneId,
-                        Type = activeSessionTracker.LastKnownZoneType,
-                        Low = activeSessionTracker.LastKnownZoneLow,
-                        High = activeSessionTracker.LastKnownZoneHigh,
-                        Status = MarketStructureContext.ZoneStatus.Ready,
-                        PivotBar = -1,
-                        IsConfirmed = activeSessionTracker.LastKnownZoneConfirmed,
-                        CreatedBar = -1,
-                    };
-                    candidateFromTouch = false;
+                        candidateZone = new MarketStructureContext.Zone
+                        {
+                            Id = activeZoneId,
+                            Type = activeSessionTracker.LastKnownZoneType,
+                            Low = activeSessionTracker.LastKnownZoneLow,
+                            High = activeSessionTracker.LastKnownZoneHigh,
+                            Status = MarketStructureContext.ZoneStatus.Ready,
+                            PivotBar = -1,
+                            IsConfirmed = activeSessionTracker.LastKnownZoneConfirmed,
+                            CreatedBar = -1,
+                        };
+                        candidateFromTouch = false;
+                    }
                 }
             }
             else
@@ -2571,6 +2572,10 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 absorptionPatternLog = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: true);
 
+                bool patternDNow = DetectPocMaxVolAbsorptionInZone(prev, currentSnapshot, zone, tickSize, _direction);
+                if (patternDNow)
+                    absorptionPatternLog = AbsorptionPattern.D;
+
                 // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
                 AbsorptionPattern absorptionPatternLogPrev = (prevPrev != null && prev3 != null)
                     ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
@@ -2609,11 +2614,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (prev != null)
             {
                 bool prevUa = IsUnfinishedAuction(prev, thresholds, _direction);
-                bool priceProgressOk = _direction == OrderDirections.Buy
-                    ? prev.Low > currentSnapshot.Low
-                    : prev.High < currentSnapshot.High;
-
-                if (prevUa && faAtZone && priceProgressOk)
+                if (prevUa && faAtZone)
                 {
                     tracker.SessionSawUaToFa = true;
                     if (tracker.SessionUaToFaBar < 0)
@@ -2688,6 +2689,10 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 // Pattern C wird nur auf der Umkehrkerze (curr) akzeptiert.
                 absCurr = DetectAbsorptionPattern(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: true);
+
+                bool patternDNow = DetectPocMaxVolAbsorptionInZone(prev, currentSnapshot, zone, tickSize, _direction);
+                if (patternDNow)
+                    absCurr = AbsorptionPattern.D;
 
                 // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
                 absPrev = (prevPrev != null && prev3 != null)
@@ -2823,7 +2828,9 @@ namespace MyNamespace.Strategies.Orderflow
             // Kriterium 4: Absorption im Signalbar
             string absDbg = string.Empty;
             if (!absorptionInSignal && prev != null)
+            {
                 absDbg = GetAbsorptionDebugText(prevPrev, prev, currentSnapshot, zone, tickSize, _direction, absNetDeltaMinSession);
+            }
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_Absorption",
@@ -3021,11 +3028,13 @@ namespace MyNamespace.Strategies.Orderflow
                         : (barNumber == 1 ? "[Touch]" : "");
 
                     var checkedParts = new List<string>(8);
+                    string absorptionDbg = string.Empty;
                     if (hasDecision && barDecision?.Items != null)
                     {
                         foreach (var it in barDecision.Items)
                         {
                             if (it == null) continue;
+
                             if (string.IsNullOrEmpty(it.Key)) continue;
                             if (!it.Key.StartsWith("Signal_", StringComparison.Ordinal)) continue;
 
@@ -3036,13 +3045,21 @@ namespace MyNamespace.Strategies.Orderflow
                                 continue;
                             }
 
+                            if (it.Key == "Signal_Absorption" && it.Points <= 0m && !string.IsNullOrEmpty(it.TextDe))
+                            {
+                                int idx = it.TextDe.IndexOf("ABSDBG(", StringComparison.Ordinal);
+                                if (idx >= 0)
+                                    absorptionDbg = it.TextDe.Substring(idx);
+                            }
+
                             string shortKey = it.Key.Replace("Signal_", string.Empty, StringComparison.Ordinal);
                             checkedParts.Add($"{shortKey}({(it.Points > 0m ? "+" : "0")})");
                         }
                     }
 
                     string checks = checkedParts.Count > 0 ? " | " + string.Join(" ", checkedParts) : string.Empty;
-                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}".TrimEnd());
+                    string absExtra = !string.IsNullOrEmpty(absorptionDbg) ? $" | {absorptionDbg}" : string.Empty;
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}{absExtra}".TrimEnd());
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
@@ -3766,9 +3783,177 @@ namespace MyNamespace.Strategies.Orderflow
                 string a = GetAbsorptionDebugTextA(prev, curr, z, tickSize, dir, absNetDeltaMin);
                 string b = GetAbsorptionDebugTextB(prevPrev, prev, curr, z, tickSize, dir, absNetDeltaMin);
                 string c = GetAbsorptionDebugTextC(prev, curr, z, tickSize, dir);
-                if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b) && string.IsNullOrEmpty(c))
+                string d = GetAbsorptionDebugTextD(prev, curr, z, tickSize, dir);
+                if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b) && string.IsNullOrEmpty(c) && string.IsNullOrEmpty(d))
                     return string.Empty;
-                return $"ABSDBG(A:{a}|B:{b}|C:{c})";
+                return $"ABSDBG(A:{a}|B:{b}|C:{c}|D:{d})";
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static bool DetectPocMaxVolAbsorptionInZone(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir)
+        {
+            try
+            {
+                decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
+
+                decimal range = curr.High - curr.Low;
+                if (range <= 0m)
+                    return false;
+
+                decimal vol = curr.Volume;
+                if (vol <= 0m)
+                    vol = 1m;
+
+                int zoneWidthTicks = RoundTicks(Math.Abs(z.High - z.Low), oneTick);
+                int maxDistTicks = (int)Math.Round(zoneWidthTicks * 0.50m, MidpointRounding.AwayFromZero);
+                if (maxDistTicks < 3)
+                    maxDistTicks = 3;
+                if (maxDistTicks > 5)
+                    maxDistTicks = 5;
+
+                decimal distLow = Math.Abs(curr.CandlePocPrice - z.Low);
+                decimal distHigh = Math.Abs(curr.CandlePocPrice - z.High);
+                int pocDistTicks = RoundTicks(Math.Min(distLow, distHigh), oneTick);
+                if (pocDistTicks > maxDistTicks)
+                    return false;
+
+                decimal pocShare = curr.PocVolume / vol;
+                const decimal MinPocShare = 0.15m;
+                if (pocShare < MinPocShare)
+                    return false;
+
+                decimal tol = Math.Max(2m, curr.PocVolume * 0.05m);
+                bool pocDeltaOk = dir == OrderDirections.Buy
+                    ? (curr.PocDelta >= -tol)
+                    : (curr.PocDelta <= tol);
+                if (!pocDeltaOk)
+                    return false;
+
+                const decimal NearMaxFrac = 0.85m;
+                bool nearMax;
+                if (dir == OrderDirections.Buy)
+                {
+                    if (curr.MaxBidLevelBid <= 0m || curr.PocBid <= 0m)
+                        return false;
+                    nearMax = curr.PocBid >= (curr.MaxBidLevelBid * NearMaxFrac);
+                }
+                else
+                {
+                    if (curr.MaxAskLevelAsk <= 0m || curr.PocAsk <= 0m)
+                        return false;
+                    nearMax = curr.PocAsk >= (curr.MaxAskLevelAsk * NearMaxFrac);
+                }
+                if (!nearMax)
+                    return false;
+
+                bool prevPushOk = dir == OrderDirections.Buy ? (prev.Close < prev.Open) : (prev.Close > prev.Open);
+                if (!prevPushOk)
+                    return false;
+
+                bool closeDir = dir == OrderDirections.Buy ? (curr.Close > curr.Open) : (curr.Close < curr.Open);
+                if (!closeDir)
+                    return false;
+
+                decimal recoveryRatio = dir == OrderDirections.Buy
+                    ? ((curr.Close - curr.Low) / range)
+                    : ((curr.High - curr.Close) / range);
+                const decimal MinRecovery = 0.55m;
+                if (recoveryRatio < MinRecovery)
+                    return false;
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string GetAbsorptionDebugTextD(
+            OvSnapshot prev,
+            OvSnapshot curr,
+            MarketStructureContext.Zone z,
+            decimal tickSize,
+            OrderDirections dir)
+        {
+            try
+            {
+                decimal oneTick = tickSize > 0m ? tickSize : 0.25m;
+
+                decimal range = curr.High - curr.Low;
+                if (range <= 0m)
+                    return "Range=0";
+
+                decimal vol = curr.Volume;
+                if (vol <= 0m)
+                    vol = 1m;
+
+                int zoneWidthTicks = RoundTicks(Math.Abs(z.High - z.Low), oneTick);
+                int maxDistTicks = (int)Math.Round(zoneWidthTicks * 0.50m, MidpointRounding.AwayFromZero);
+                if (maxDistTicks < 3)
+                    maxDistTicks = 3;
+                if (maxDistTicks > 5)
+                    maxDistTicks = 5;
+
+                decimal distLow = Math.Abs(curr.CandlePocPrice - z.Low);
+                decimal distHigh = Math.Abs(curr.CandlePocPrice - z.High);
+                int pocDistTicks = RoundTicks(Math.Min(distLow, distHigh), oneTick);
+                if (pocDistTicks > maxDistTicks)
+                    return $"POC nicht nahe Zone-Edge (Dist={pocDistTicks} Ticks, max {maxDistTicks}, ZoneW={zoneWidthTicks}t)";
+
+                decimal pocShare = curr.PocVolume / vol;
+                const decimal MinPocShare = 0.15m;
+                if (pocShare < MinPocShare)
+                    return $"POC-Vol-Anteil zu klein (POCVol={curr.PocVolume:0}, Vol={vol:0}, Share={pocShare:0.00}, min {MinPocShare:0.00})";
+
+                decimal tol = Math.Max(2m, curr.PocVolume * 0.05m);
+                bool pocDeltaOk = dir == OrderDirections.Buy
+                    ? (curr.PocDelta >= -tol)
+                    : (curr.PocDelta <= tol);
+                if (!pocDeltaOk)
+                    return $"POC-Delta nicht neutralisiert (POCΔ={curr.PocDelta:+0;-0;0}, Tol=±{tol:0})";
+
+                const decimal NearMaxFrac = 0.85m;
+                if (dir == OrderDirections.Buy)
+                {
+                    if (curr.MaxBidLevelBid <= 0m || curr.PocBid <= 0m)
+                        return $"MaxBid/PocBid fehlen (MaxBid={curr.MaxBidLevelBid:0}, PocBid={curr.PocBid:0})";
+                    if (curr.PocBid < (curr.MaxBidLevelBid * NearMaxFrac))
+                        return $"PocBid nicht nahe MaxBid (PocBid={curr.PocBid:0}, MaxBid={curr.MaxBidLevelBid:0}, need>={NearMaxFrac:0.00}x)";
+                }
+                else
+                {
+                    if (curr.MaxAskLevelAsk <= 0m || curr.PocAsk <= 0m)
+                        return $"MaxAsk/PocAsk fehlen (MaxAsk={curr.MaxAskLevelAsk:0}, PocAsk={curr.PocAsk:0})";
+                    if (curr.PocAsk < (curr.MaxAskLevelAsk * NearMaxFrac))
+                        return $"PocAsk nicht nahe MaxAsk (PocAsk={curr.PocAsk:0}, MaxAsk={curr.MaxAskLevelAsk:0}, need>={NearMaxFrac:0.00}x)";
+                }
+
+                bool prevPushOk = dir == OrderDirections.Buy ? (prev.Close < prev.Open) : (prev.Close > prev.Open);
+                if (!prevPushOk)
+                    return "Prev kein Push in Gegenrichtung";
+
+                bool closeDir = dir == OrderDirections.Buy ? (curr.Close > curr.Open) : (curr.Close < curr.Open);
+                if (!closeDir)
+                    return "Curr Close nicht in Reversal-Richtung";
+
+                decimal recoveryRatio = dir == OrderDirections.Buy
+                    ? ((curr.Close - curr.Low) / range)
+                    : ((curr.High - curr.Close) / range);
+                const decimal MinRecovery = 0.55m;
+                if (recoveryRatio < MinRecovery)
+                    return $"Recovery zu klein ({recoveryRatio:0.00} < {MinRecovery:0.00})";
+
+                return string.Empty;
             }
             catch
             {

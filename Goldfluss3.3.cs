@@ -848,12 +848,15 @@ namespace MyNamespace.Strategies
                 _pdOpenZoneId = 0;
                 _pdCloseZoneId = 0;
                 _pdZoneDay = currentDay;
+
+                _pdHighZonePendingTypeCloses = 0;
+                _pdLowZonePendingTypeCloses = 0;
             }
 
             const int ZoneTicks = 4;
             decimal pad = ZoneTicks * _tickSize;
 
-            void Upsert(ref int zoneId, decimal levelValue)
+            void Upsert(ref int zoneId, ref int pendingTypeCloses, decimal levelValue)
             {
                 if (levelValue <= 0m)
                     return;
@@ -863,14 +866,60 @@ namespace MyNamespace.Strategies
                 decimal mid = (low + high) * 0.5m;
 
                 var type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
-                if (zoneId <= 0)
+                if (zoneId > 0)
                 {
-                    decimal px = currentSnapshot.Close;
-                    if (px > high) type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
-                    else if (px < low) type = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Resistance;
-                    else type = px >= mid
+                    try
+                    {
+                        MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.Zone? existing = null;
+                        var zones = ctx.ActiveZones;
+                        for (int zi = 0; zi < zones.Count; zi++)
+                        {
+                            var z = zones[zi];
+                            if (z != null && z.Id == zoneId)
+                            {
+                                existing = z;
+                                break;
+                            }
+                        }
+                        if (existing != null)
+                            type = existing.Type;
+                    }
+                    catch { }
+                }
+
+                var desiredType = (MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType?)null;
+                decimal px = currentSnapshot.Close;
+                if (px > high)
+                    desiredType = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support;
+                else if (px < low)
+                    desiredType = MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Resistance;
+                else if (zoneId <= 0)
+                    desiredType = px >= mid
                         ? MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Support
                         : MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneType.Resistance;
+
+                bool updateType = false;
+                if (desiredType.HasValue)
+                {
+                    if (zoneId <= 0)
+                    {
+                        type = desiredType.Value;
+                        pendingTypeCloses = 0;
+                    }
+                    else if (desiredType.Value == type)
+                    {
+                        pendingTypeCloses = 0;
+                    }
+                    else
+                    {
+                        pendingTypeCloses = Math.Max(0, pendingTypeCloses) + 1;
+                        if (pendingTypeCloses >= 2)
+                        {
+                            type = desiredType.Value;
+                            updateType = true;
+                            pendingTypeCloses = 0;
+                        }
+                    }
                 }
 
                 zoneId = ctx.UpsertExternalZone(
@@ -880,11 +929,12 @@ namespace MyNamespace.Strategies
                     high: high,
                     createdBar: createdBar,
                     initialStatus: MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready,
-                    confirmed: true);
+                    confirmed: true,
+                    updateTypeIfExists: updateType);
             }
 
-            Upsert(ref _pdOpenZoneId, _previousDayHigh);
-            Upsert(ref _pdCloseZoneId, _previousDayLow);
+            Upsert(ref _pdOpenZoneId, ref _pdHighZonePendingTypeCloses, _previousDayHigh);
+            Upsert(ref _pdCloseZoneId, ref _pdLowZonePendingTypeCloses, _previousDayLow);
         }
 
         private void EnsureTick900BackfillRequested(int bar)
@@ -1202,6 +1252,64 @@ namespace MyNamespace.Strategies
                     try { _msBackfillRequestSemaphore?.Release(); } catch { }
                     _msBackfillRequestSemaphoreOwned = false;
                 }
+            }
+
+        }
+
+        private void TrackBestBidAskFreeze()
+        {
+            try
+            {
+                var sec = Security;
+                if (sec == null)
+                    return;
+
+                decimal ask = sec.BestAskPrice;
+                decimal bid = sec.BestBidPrice;
+                decimal last = sec.LastTradePrice ?? 0m;
+
+                var now = DateTime.UtcNow;
+
+                bool changed = false;
+                if (ask != _bbbaLastAsk || bid != _bbbaLastBid)
+                {
+                    changed = true;
+                    _bbbaLastAsk = ask;
+                    _bbbaLastBid = bid;
+                    _bbbaLastChangeUtc = now;
+                }
+
+                // Track last trade changes separately (for freeze detection)
+                bool lastChanged = last > 0m && last != _bbbaLastTrade;
+                if (lastChanged)
+                    _bbbaLastTrade = last;
+
+                if (_bbbaLastChangeUtc == DateTime.MinValue)
+                {
+                    // initialize change timestamp on first run
+                    if (ask > 0m || bid > 0m)
+                        _bbbaLastChangeUtc = now;
+                    else
+                        return;
+                }
+
+                // Freeze definition: Bid/Ask unchanged >= 5s while LastTrade is changing
+                if (!changed && lastChanged)
+                {
+                    var staleFor = now - _bbbaLastChangeUtc;
+                    if (staleFor.TotalSeconds >= 5)
+                    {
+                        if (_bbbaLastWarnUtc == DateTime.MinValue || (now - _bbbaLastWarnUtc).TotalSeconds >= 5)
+                        {
+                            _bbbaLastWarnUtc = now;
+                            this.LogWarn($"[QuoteFreeze] BestBid/Ask unchanged for {staleFor.TotalSeconds:F1}s while LastTrade moves. Last={last:F2}, BestAsk={ask:F2}, BestBid={bid:F2}, CurrentBar={CurrentBar}.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                this.LogWarn($"[QuoteFreeze] Tracker error: {ex.Message}");
             }
         }
 
@@ -2595,6 +2703,9 @@ namespace MyNamespace.Strategies
         private int _pdOpenZoneId;
         private int _pdCloseZoneId;
         private DateTime _pdZoneDay = DateTime.MinValue;
+
+        private int _pdHighZonePendingTypeCloses;
+        private int _pdLowZonePendingTypeCloses;
 
         private int _lastSessionStartBar = -1;
 
@@ -5460,6 +5571,15 @@ namespace MyNamespace.Strategies
         private int AggSellersQuietTrades = 6; // sp?ter mit Prints nutzbar
         private int StopTriggerTicks = 1;
         private int StopLimitOffsetTicks = 1; // sp?ter adaptiv
+        private bool EnableIntrabarEntry = false;
+        private bool EnableEntryQuoteSanityGuard = true;
+        private int EntryQuoteMaxDeviationTicks = 8;
+
+        private DateTime _bbbaLastChangeUtc = DateTime.MinValue;
+        private DateTime _bbbaLastWarnUtc = DateTime.MinValue;
+        private decimal _bbbaLastAsk = 0m;
+        private decimal _bbbaLastBid = 0m;
+        private decimal _bbbaLastTrade = 0m;
 
         // Laufzeit-Felder
         private EntryState _entryState = EntryState.Idle;
@@ -10166,7 +10286,7 @@ namespace MyNamespace.Strategies
             bool stopTick = false; // statt fr?her returns
 
             // === Tickgenaue Armed-Entry-Ausl?sung (VOR dem Guard) ===
-            if (_entryState == EntryState.TouchArmed && !HasLiveEntryOrder())
+            if (EnableIntrabarEntry && _entryState == EntryState.TouchArmed && !HasLiveEntryOrder())
             {
 
 
@@ -10186,8 +10306,9 @@ namespace MyNamespace.Strategies
                     decimal finalShortTrigger = ComputeFinalShortTrigger(_tickSize);
 
                     // Preisquelle f?r Ausl?sepr?fung (Last; ggf. BestAsk/BestBid verwenden)
-                    decimal triggerCheckPriceLong = Security?.BestAskPrice ?? 0m;
-                    decimal triggerCheckPriceShort = Security?.BestBidPrice ?? 0m;
+                    decimal lastTrade = Security?.LastTradePrice ?? 0m;
+                    decimal triggerCheckPriceLong = lastTrade > 0m ? lastTrade : (Security?.BestAskPrice ?? 0m);
+                    decimal triggerCheckPriceShort = lastTrade > 0m ? lastTrade : (Security?.BestBidPrice ?? 0m);
 
                     if (_entryIsLong && triggerCheckPriceLong >= finalLongTrigger)
                     {
@@ -10217,6 +10338,8 @@ namespace MyNamespace.Strategies
 
 
             // === Tick-leichte Trade-Management-Updates (m?ssen auch laufen, wenn heavy-work f?r diesen Bar bereits gelaufen ist) ===
+            TrackBestBidAskFreeze();
+
             // 1) BestSinceEntry aktualisieren (pro Tick, intrabar)
             if (_positionOpen)
             {
@@ -11264,6 +11387,15 @@ namespace MyNamespace.Strategies
                     decimal candlePocPrice = closedCandle.Close;
                     decimal pocDelta = 0m;
                     decimal pocVolume = 0m;
+                    decimal pocBid = 0m;
+                    decimal pocAsk = 0m;
+
+                    decimal maxBidLevelPrice = 0m;
+                    decimal maxBidLevelBid = 0m;
+                    decimal maxBidLevelAsk = 0m;
+                    decimal maxAskLevelPrice = 0m;
+                    decimal maxAskLevelAsk = 0m;
+                    decimal maxAskLevelBid = 0m;
                     try
                     {
                         var pocPvi = closedCandle.MaxVolumePriceInfo;
@@ -11272,11 +11404,41 @@ namespace MyNamespace.Strategies
                             candlePocPrice = (decimal)pocPvi.Price;
                             pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
                             pocVolume = (decimal)pocPvi.Volume;
+                            pocBid = (decimal)pocPvi.Bid;
+                            pocAsk = (decimal)pocPvi.Ask;
                         }
                     }
                     catch
                     {
                         // ignore, use fallback
+                    }
+
+                    try
+                    {
+                        var maxBidPvi = closedCandle.MaxBidPriceInfo;
+                        if (maxBidPvi != null)
+                        {
+                            maxBidLevelPrice = (decimal)maxBidPvi.Price;
+                            maxBidLevelBid = (decimal)maxBidPvi.Bid;
+                            maxBidLevelAsk = (decimal)maxBidPvi.Ask;
+                        }
+                    }
+                    catch
+                    {
+                    }
+
+                    try
+                    {
+                        var maxAskPvi = closedCandle.MaxAskPriceInfo;
+                        if (maxAskPvi != null)
+                        {
+                            maxAskLevelPrice = (decimal)maxAskPvi.Price;
+                            maxAskLevelAsk = (decimal)maxAskPvi.Ask;
+                            maxAskLevelBid = (decimal)maxAskPvi.Bid;
+                        }
+                    }
+                    catch
+                    {
                     }
 
                     int sessionStartBarForNumbering = 0;
@@ -11307,9 +11469,19 @@ namespace MyNamespace.Strategies
                         Delta = closedCandle.Delta,
                         Ask = closedCandle.Ask,
                         Bid = closedCandle.Bid,
+                        BestAskPrice = Security?.BestAskPrice ?? 0m,
+                        BestBidPrice = Security?.BestBidPrice ?? 0m,
                         CandlePocPrice = candlePocPrice,
                         PocDelta = pocDelta,
                         PocVolume = pocVolume,
+                        PocBid = pocBid,
+                        PocAsk = pocAsk,
+                        MaxBidLevelPrice = maxBidLevelPrice,
+                        MaxBidLevelBid = maxBidLevelBid,
+                        MaxBidLevelAsk = maxBidLevelAsk,
+                        MaxAskLevelPrice = maxAskLevelPrice,
+                        MaxAskLevelAsk = maxAskLevelAsk,
+                        MaxAskLevelBid = maxAskLevelBid,
                         BidAtLow = bidAtLow,
                         AskAtLow = askAtLow,
                         BidAtHigh = bidAtHigh,
@@ -11371,17 +11543,19 @@ namespace MyNamespace.Strategies
                     this.LogInfo(string.Format(CultureInfo.InvariantCulture,
                         "[OnCalculate_SNAP] 🆕 Bar={0} ChartBarNumber={1} SessionBarNumber={2} Time={3:O} MarketRegime={4} " +
                         "Open={5:F2} High={6:F2} Low={7:F2} Close={8:F2} Volume={9:F2} Delta={10:F2} Ask={11:F2} Bid={12:F2} " +
-                        "CandlePocPrice={13:F2} PocDelta={14:F4} PocVolume={15:F2} BidAtLow={16:F2} AskAtLow={17:F2} BidAtHigh={18:F2} AskAtHigh={19:F2} " +
-                        "MaxBull={20:F4} MaxBear={21:F4} VolBurstZ={22:F4} CvdImpulse={23:F4} CvdCoherence={24:F4} AggPressure={25:F4} TradeRateZ={26:F4} Efficiency={27:F4} " +
-                        "BuyTrades={28} SellTrades={29} TotalTrades={30} IttZ={31:F4} SweepUp={32} SweepDn={33} " +
-                        "ImbalanceScore={34:F4} ImbalanceScoreLabel={35} " +
-                        "StackedBuyCount={36} StackedSellCount={37} StackedBuyTop={38} StackedSellBottom={39} StackedImbRatioPct={40:F4} StackedImbMinVolPerLevel={41} StackedImbRangeMin={42} StackedImbMaxDepthTicks={43} " +
-                        "CandleDuration={44:F4} VolPerSecond={45:F4} EmaVolPerSecond={46:F4} EmaVolPerSecondStd={47:F4} CumulativeDelta={48:F4} CumulativeVolume={49:F4} BarDeltaPerVolume={50:F6} " +
-                        "TopDeltaRatio={51:F4} BottomDeltaRatio={52:F4} TopDominance={53} BottomDominance={54} NetDeltaTotal={55:F4} " +
-                        "IsPerfectLongSetup={56} IsPerfectShortSetup={57} PerfectSetupReason={58} " +
-                        "UpperWickDeltaRatio={59:F4} LowerWickDeltaRatio={60:F4} UpperWickDominance={61} LowerWickDominance={62} UpperWickAbsDeltaTotal={63:F4} LowerWickAbsDeltaTotal={64:F4}",
+                        "BestAskPrice={13:F2} BestBidPrice={14:F2} " +
+                        "CandlePocPrice={15:F2} PocDelta={16:F4} PocVolume={17:F2} BidAtLow={18:F2} AskAtLow={19:F2} BidAtHigh={20:F2} AskAtHigh={21:F2} " +
+                        "MaxBull={22:F4} MaxBear={23:F4} VolBurstZ={24:F4} CvdImpulse={25:F4} CvdCoherence={26:F4} AggPressure={27:F4} TradeRateZ={28:F4} Efficiency={29:F4} " +
+                        "BuyTrades={30} SellTrades={31} TotalTrades={32} IttZ={33:F4} SweepUp={34} SweepDn={35} " +
+                        "ImbalanceScore={36:F4} ImbalanceScoreLabel={37} " +
+                        "StackedBuyCount={38} StackedSellCount={39} StackedBuyTop={40} StackedSellBottom={41} StackedImbRatioPct={42:F4} StackedImbMinVolPerLevel={43} StackedImbRangeMin={44} StackedImbMaxDepthTicks={45} " +
+                        "CandleDuration={46:F4} VolPerSecond={47:F4} EmaVolPerSecond={48:F4} EmaVolPerSecondStd={49:F4} CumulativeDelta={50:F4} CumulativeVolume={51:F4} BarDeltaPerVolume={52:F6} " +
+                        "TopDeltaRatio={53:F4} BottomDeltaRatio={54:F4} TopDominance={55} BottomDominance={56} NetDeltaTotal={57:F4} " +
+                        "IsPerfectLongSetup={58} IsPerfectShortSetup={59} PerfectSetupReason={60} " +
+                        "UpperWickDeltaRatio={61:F4} LowerWickDeltaRatio={62:F4} UpperWickDominance={63} LowerWickDominance={64} UpperWickAbsDeltaTotal={65:F4} LowerWickAbsDeltaTotal={66:F4}",
                         ovSnapshot.Bar, ovSnapshot.ChartBarNumber, ovSnapshot.SessionBarNumber, ovSnapshot.Time, ovSnapshot.MarketRegime,
                         ovSnapshot.Open, ovSnapshot.High, ovSnapshot.Low, ovSnapshot.Close, ovSnapshot.Volume, ovSnapshot.Delta, ovSnapshot.Ask, ovSnapshot.Bid,
+                        ovSnapshot.BestAskPrice, ovSnapshot.BestBidPrice,
                         ovSnapshot.CandlePocPrice, ovSnapshot.PocDelta, ovSnapshot.PocVolume, ovSnapshot.BidAtLow, ovSnapshot.AskAtLow, ovSnapshot.BidAtHigh, ovSnapshot.AskAtHigh,
                         ovSnapshot.MaxCounterShareBull, ovSnapshot.MaxCounterShareBear, ovSnapshot.VolBurstZ, ovSnapshot.CvdImpulse, ovSnapshot.CvdCoherence, ovSnapshot.AggPressure, ovSnapshot.TradeRateZ, ovSnapshot.Efficiency,
                         ovSnapshot.BuyTrades, ovSnapshot.SellTrades, ovSnapshot.TotalTrades, ovSnapshot.IttZ, ovSnapshot.SweepUpClosed, ovSnapshot.SweepDnClosed,
@@ -13557,7 +13731,7 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
-                        this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert: Signalkerze nicht bullisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}).");
+                        this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert: Signalkerze nicht bullisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
                 else if ((detectedPattern.Type == OrderflowPatternType.PotentialShortReversalBounce
@@ -13571,7 +13745,7 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
-                        this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert: Signalkerze nicht bärisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}).");
+                        this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert: Signalkerze nicht bärisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
                 else
@@ -15302,7 +15476,7 @@ namespace MyNamespace.Strategies
                 // Initial-spezifisch: CurrentBar setzen
                 try
                 {
-                    _currentBar = GetCandle(CurrentBar);
+                    _currentBar = TryGetCandleAtOrBefore(CurrentBar) ?? GetCandle(CurrentBar);
                 }
                 catch (ArgumentOutOfRangeException ex)
                 {
@@ -16594,14 +16768,67 @@ namespace MyNamespace.Strategies
             // Beachten Sie, dies cancelt keine aktiven Orders, setzt nur interne Referenzen auf null.
             _tpOrder = null; _slOrder = null;
 
-            var entry = CreateStopLimitOrder(direction, price);
+            bool quoteSanityFailed = false;
+
+            if (EnableEntryQuoteSanityGuard)
+            {
+                decimal tick = InstrumentInfo?.TickSize ?? _tickSize;
+                if (tick <= 0m) tick = 0.25m;
+
+                decimal lastTrade = Security?.LastTradePrice ?? 0m;
+                decimal bestAsk = Security?.BestAskPrice ?? 0m;
+                decimal bestBid = Security?.BestBidPrice ?? 0m;
+
+                if (lastTrade > 0m && (bestAsk > 0m || bestBid > 0m) && EntryQuoteMaxDeviationTicks > 0)
+                {
+                    decimal maxDevPx = EntryQuoteMaxDeviationTicks * tick;
+                    bool askBad = bestAsk > 0m && Math.Abs(bestAsk - lastTrade) > maxDevPx;
+                    bool bidBad = bestBid > 0m && Math.Abs(bestBid - lastTrade) > maxDevPx;
+
+                    if (askBad || bidBad)
+                    {
+                        quoteSanityFailed = true;
+                        this.LogWarn($"[PlaceEntry] QuoteSanity FAIL: Dir={direction}, IntendedPx={price:F5}, Last={lastTrade:F5}, BestAsk={bestAsk:F5}, BestBid={bestBid:F5}, maxDevTicks={EntryQuoteMaxDeviationTicks}. Fallback -> Stop entry.");
+                    }
+                }
+            }
+
+            Order entry;
+            if (quoteSanityFailed)
+            {
+                entry = new Order
+                {
+                    Portfolio = Portfolio,
+                    Security = Security,
+                    Direction = direction,
+                    Type = OrderTypes.Stop,
+                    TriggerPrice = price,
+                    Price = price,
+                    QuantityToFill = HandelsMenge
+                };
+            }
+            else
+            {
+                entry = new Order
+                {
+                    Portfolio = Portfolio,
+                    Security = Security,
+                    Direction = direction,
+                    Type = OrderTypes.Limit,
+                    Price = price,
+                    QuantityToFill = HandelsMenge
+                };
+            }
             _entryOrder = entry;
             _entryBarIndex = bar;
             this.LogInfo($"[PlaceEntry SET] entryBarIndex={_entryBarIndex} timeoutBars={_orderTimeoutBars} " +
                  $"timeoutBarIndex={_entryBarIndex + _orderTimeoutBars}");
 
             // Sende-Log inkl. tats?chlich verwendeter Menge
-            this.LogInfo($"[PlaceEntry] Sende StopLimit: Dir={direction}, Trg={price:F5}, Qty={HandelsMenge}.");
+            if (entry.Type == OrderTypes.Stop)
+                this.LogInfo($"[PlaceEntry] Sende Stop: Dir={direction}, Trg={entry.TriggerPrice:F5}, Px={entry.Price:F5}, Qty={HandelsMenge}.");
+            else
+                this.LogInfo($"[PlaceEntry] Sende Limit: Dir={direction}, Px={entry.Price:F5}, Qty={HandelsMenge}.");
             OpenOrder(entry);
             //this.LogInfo($"[DBG-ORDER] PlaceOrder returned:  time={DateTime.UtcNow:O}");
 
@@ -16609,6 +16836,9 @@ namespace MyNamespace.Strategies
 
         private void ArmIntrabarEntry(int bar, bool isLong, int bandIdx, decimal bandLevel, decimal signalBarHigh, decimal signalBarLow, decimal targetLevel, string marketSpeed, decimal volZ, decimal? longTriggerOverride = null, decimal? shortTriggerOverride = null, int? reclaimTicksOverride = null, int? nearTicksOverride = null)
         {
+            if (!EnableIntrabarEntry)
+                return;
+
             // Nur aus Idle/Cancelled arming ? vermeidet Doppel-Arms
             if (_entryState != EntryState.Idle && _entryState != EntryState.Cancelled)
             {
