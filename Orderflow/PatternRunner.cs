@@ -62,6 +62,8 @@ namespace MyNamespace.Strategies.Orderflow
             MarketStructureContext currentMarketStructureContext,
             int? currentBar = null)
         {
+            bool isIntrabar = currentBar.HasValue && bar == currentBar.Value;
+            
             if (ofFeaturesByBar == null)
                 throw new ArgumentNullException(nameof(ofFeaturesByBar));
             if (history == null)
@@ -69,6 +71,8 @@ namespace MyNamespace.Strategies.Orderflow
 
             if (!ofFeaturesByBar.TryGetValue(bar, out var currentFeatures) || currentFeatures?.Snapshot == null)
             {
+                if (_loggerSource != null)
+                    LoggerHelper.LogDebug(_loggerSource, $"[PatternRunner] (intrabar={isIntrabar}) Features for bar {bar} missing or empty. No pattern detected.");
                 return new DetectedOrderflowPattern(
                     OrderflowPatternType.None,
                     OrderDirections.Buy,
@@ -97,7 +101,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (ev == null)
                         return null;
 
-                    return ev.Evaluate(
+                    var res = ev.Evaluate(
                         currentFeatures.Snapshot,
                         currentFeatures,
                         history,
@@ -106,6 +110,16 @@ namespace MyNamespace.Strategies.Orderflow
                         currentDirectionalBias,
                         state,
                         currentMarketStructureContext);
+                        
+                    if (_loggerSource != null)
+                    {
+                        string evalName = ev.GetType().Name.Replace("PatternEvaluatorV2", "").Replace("PatternEvaluator", "");
+                        if (res.IsDetected)
+                        {
+                            LoggerHelper.LogInfo(_loggerSource, $"[PatternRunner] (intrabar={isIntrabar}) {evalName} DETECTED: {res.PatternType} score={res.ConfidenceScore}");
+                        }
+                    }
+                    return res;
                 }
                 catch (Exception ex)
                 {

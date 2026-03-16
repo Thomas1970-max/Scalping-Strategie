@@ -7219,23 +7219,9 @@ namespace MyNamespace.Strategies
                                 {
                                     this.LogInfo($"[Tick900-INTRABAR-ZONE-CREATED] Ready zone created (maxReadyId {maxReadyZoneIdAfter} > {maxReadyZoneIdBefore}) msTick900Bar={_msTick900Bar}, chartBar={CurrentBar}");
                                     _lastSeenMarketStructureMaxReadyZoneId = Math.Max(_lastSeenMarketStructureMaxReadyZoneId, maxReadyZoneIdAfter);
-
-                                    // Ready/Confirmed-Zonen dürfen NICHT intrabar platziert werden.
-                                    // Tick900 soll hier nur signalisieren, dass beim n?chsten OnCalculate/IsNewBar eine Auswertung laufen soll.
-                                    try
-                                    {
-                                        int closedNow = CurrentBar - 1;
-                                        if (closedNow >= 0 && closedNow < CurrentBar)
-                                        {
-                                            _deferredIntrabarPendingEvalClosed = closedNow;
-                                            _deferredIntrabarPendingEvalMaxPendingId = maxReadyZoneIdAfter;
-                                            _deferredIntrabarPendingEvalTick900Dirty = true;
-                                            this.LogInfo($"[Tick900-INTRABAR-ZONE-CREATED] Deferred eval scheduled for IsNewBar: closed={closedNow} maxId={maxReadyZoneIdAfter} chartBar={CurrentBar}");
-                                        }
-                                    }
-                                    catch { }
-
-                                    return;
+                                    
+                                    // Setze Dirty-Flag, damit der Intrabar-Pfad in OnCalculate SOFORT anspringt
+                                    System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
                                 }
                             }
                             catch { }
@@ -11194,7 +11180,20 @@ namespace MyNamespace.Strategies
             // 2) Snapshot aus den gefilterten Levels bauen
             _currentLevelsSnapshot = BuildLevelsSnapshot(_untouchedLevels);
 
-            if (stopTick) return;
+            if (stopTick)
+            {
+                bool forceIntrabarPendingPass = false;
+                try
+                {
+                    forceIntrabarPendingPass = System.Threading.Interlocked.CompareExchange(ref _msTick900ZonesDirtyFlag, 0, 0) == 1;
+                }
+                catch { forceIntrabarPendingPass = false; }
+
+                if (!forceIntrabarPendingPass)
+                    return;
+
+                this.LogDebug("[OnCalculate] stopTick bypassed because msTick900ZonesDirtyFlag=1 -> continue to intrabar pending evaluation.");
+            }
 
             // 3) Entry-Blocker berechnen
             var entryProxPx = ProximityTicksForEntry * _tickSize;
@@ -11425,24 +11424,26 @@ namespace MyNamespace.Strategies
                     }
                     catch { maxReadyZoneId = -1; }
 
-                    int closedNow = bar - 1;
+                    int currentBarNow = bar;
+                    int evalBar = currentBarNow - 1; // Evaluieren der GESCHLOSSENEN Kerze retroaktiv
+                    int closedNow = currentBarNow - 1;
                     if (closedNow >= 0 && closedNow != _lastPendingZonesLogClosed)
                     {
                         this.LogInfo("[OnCalculate-PENDING-ZONES] bar=" + bar + " closed=" + closedNow + " activeZones=" + activeCount + " pendingUnconfirmed=" + pendingCount + " maxPendingId=" + maxReadyZoneId);
                         _lastPendingZonesLogClosed = closedNow;
                     }
 
-                    bool notAlreadyTriggeredForClosed = closedNow != _lastIntrabarZoneTriggerClosed;
-                    bool newPendingZoneAppearedSameClosed = (closedNow == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId);
-                    if (pendingCount > 0 && closedNow >= 0 && (tick900Dirty || notAlreadyTriggeredForClosed || newPendingZoneAppearedSameClosed))
+                    bool notAlreadyTriggeredForEvalBar = evalBar != _lastIntrabarZoneTriggerClosed;
+                    bool newPendingZoneAppearedSameEvalBar = (evalBar == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId);
+                    if (pendingCount > 0 && evalBar >= 0 && (tick900Dirty || notAlreadyTriggeredForEvalBar || newPendingZoneAppearedSameEvalBar))
                     {
-                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones present (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + closedNow + ")");
+                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones present (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + evalBar + ")");
 
-                        OvSnapshot ovForClosedNow = null;
+                        OvSnapshot ovForEvalBar = null;
                         try
                         {
-                            if (ovSnapshot != null && ovSnapshot.Bar == closedNow)
-                                ovForClosedNow = ovSnapshot;
+                            if (ovSnapshot != null && ovSnapshot.Bar == evalBar)
+                                ovForEvalBar = ovSnapshot;
                             else if (_ovSnapshotHistory != null && !_ovSnapshotHistory.IsEmpty)
                             {
                                 int maxScan = 80;
@@ -11451,9 +11452,9 @@ namespace MyNamespace.Strategies
                                 {
                                     if (!_ovSnapshotHistory.TryGetRelative(off, out var s) || s == null)
                                         break;
-                                    if (s.Bar == closedNow)
+                                    if (s.Bar == evalBar)
                                     {
-                                        ovForClosedNow = s;
+                                        ovForEvalBar = s;
                                         break;
                                     }
                                     count++;
@@ -11462,13 +11463,13 @@ namespace MyNamespace.Strategies
                                 }
                             }
                         }
-                        catch { ovForClosedNow = null; }
+                        catch { ovForEvalBar = null; }
 
-                        if (ovForClosedNow == null)
+                        if (ovForEvalBar == null)
                         {
                             try
                             {
-                                var cc = GetCandle(closedNow);
+                                var cc = GetCandle(evalBar);
                                 if (cc != null)
                                 {
                                     decimal candlePocPrice = cc.Close;
@@ -11484,11 +11485,11 @@ namespace MyNamespace.Strategies
                                     }
                                     catch { }
 
-                                    ovForClosedNow = new OvSnapshot
+                                    ovForEvalBar = new OvSnapshot
                                     {
-                                        Bar = closedNow,
-                                        ChartBarNumber = closedNow + 1,
-                                        SessionBarNumber = closedNow + 1,
+                                        Bar = evalBar,
+                                        ChartBarNumber = evalBar + 1,
+                                        SessionBarNumber = evalBar + 1,
                                         Open = cc.Open,
                                         High = cc.High,
                                         Low = cc.Low,
@@ -11505,25 +11506,25 @@ namespace MyNamespace.Strategies
                                     };
                                 }
                             }
-                            catch { ovForClosedNow = null; }
+                            catch { ovForEvalBar = null; }
                         }
 
                         MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternIntrabar = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
 
-                        // Berechne MarketRegime für closedNow (wie im isNewBar-Pfad)
-                        MarketRegime localRegimeForClosedNow = MarketRegime.None;
-                        MarketRegimeDetails localRegimeDetailsForClosedNow = null;
+                        // Berechne MarketRegime für evalBar (forming bar)
+                        MarketRegime localRegimeForEvalBar = MarketRegime.None;
+                        MarketRegimeDetails localRegimeDetailsForEvalBar = null;
                         try
                         {
-                            var cRegIntra = GetCandle(closedNow);
-                            var pRegIntra = GetCandle(closedNow - 1);
-                            if (cRegIntra != null && pRegIntra != null && ovForClosedNow != null)
+                            var cRegIntra = GetCandle(evalBar);
+                            var pRegIntra = GetCandle(evalBar - 1);
+                            if (cRegIntra != null && pRegIntra != null && ovForEvalBar != null)
                             {
-                                var cndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cRegIntra, ovForClosedNow?.NetDeltaTotal ?? 0m);
-                                var prevCndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pRegIntra, ovForClosedNow?.NetDeltaTotal ?? 0m);
-                                localRegimeDetailsForClosedNow = _marketRegimeEvaluator.GetCurrentMarketRegime(closedNow, ovForClosedNow, _myClusterStatistic, cndlIntra, prevCndlIntra);
-                                if (localRegimeDetailsForClosedNow != null)
-                                    localRegimeForClosedNow = localRegimeDetailsForClosedNow.Regime;
+                                var cndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cRegIntra, ovForEvalBar?.NetDeltaTotal ?? 0m);
+                                var prevCndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pRegIntra, ovForEvalBar?.NetDeltaTotal ?? 0m);
+                                localRegimeDetailsForEvalBar = _marketRegimeEvaluator.GetCurrentMarketRegime(evalBar, ovForEvalBar, _myClusterStatistic, cndlIntra, prevCndlIntra);
+                                if (localRegimeDetailsForEvalBar != null)
+                                    localRegimeForEvalBar = localRegimeDetailsForEvalBar.Regime;
                             }
                         }
                         catch (Exception exRegime)
@@ -11531,24 +11532,24 @@ namespace MyNamespace.Strategies
                             this.LogWarn($"[OnCalculate-INTRABAR-PENDING] MarketRegime compute failed: {exRegime.Message}");
                         }
 
-                        // Berechne MarketStateV2 für closedNow (wie im isNewBar-Pfad)
-                        MyNamespace.Strategies.Models.MarketStateV2 localMarketStateForClosedNow = null;
+                        // Berechne MarketStateV2 für evalBar (forming bar)
+                        MyNamespace.Strategies.Models.MarketStateV2 localMarketStateForEvalBar = null;
                         try
                         {
-                            if (_marketStateEngineV2 != null && ovForClosedNow != null && _currentVwapSnapshot != null)
+                            if (_marketStateEngineV2 != null && ovForEvalBar != null && _currentVwapSnapshot != null)
                             {
                                 var htfSwingHigh = _marketStructureContext?.LastConfirmedSwingHigh;
                                 var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
-                                bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovForClosedNow.Close, _tickSize, bufferTicks: 2);
+                                bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovForEvalBar.Close, _tickSize, bufferTicks: 2);
                                 var htfZoneType = _marketStructureContext != null
-                                    ? _marketStructureContext.GetHtfZoneType(ovForClosedNow.Close, _tickSize, bufferTicks: 2)
+                                    ? _marketStructureContext.GetHtfZoneType(ovForEvalBar.Close, _tickSize, bufferTicks: 2)
                                     : MyNamespace.Strategies.Models.HtfZoneType.None;
 
                                 var v2InputIntra = new MyNamespace.Strategies.Models.MarketStateInputV2(
-                                    bar: closedNow,
-                                    high: ovForClosedNow.High,
-                                    low: ovForClosedNow.Low,
-                                    close: ovForClosedNow.Close,
+                                    bar: evalBar,
+                                    high: ovForEvalBar.High,
+                                    low: ovForEvalBar.Low,
+                                    close: ovForEvalBar.Close,
                                     vwap: _currentVwapSnapshot.Current,
                                     upperBand1: _currentVwapSnapshot.UpperBand1,
                                     lowerBand1: _currentVwapSnapshot.LowerBand1,
@@ -11558,15 +11559,15 @@ namespace MyNamespace.Strategies
                                     lowerBand3: _currentVwapSnapshot.LowerBand3,
                                     currentVah: _currentLevelsSnapshot?.CurrentVAH ?? 0m,
                                     currentVal: _currentLevelsSnapshot?.CurrentVAL ?? 0m,
-                                    candlePocPrice: ovForClosedNow.CandlePocPrice,
-                                    regime: localRegimeForClosedNow,
+                                    candlePocPrice: ovForEvalBar.CandlePocPrice,
+                                    regime: localRegimeForEvalBar,
                                     htfSwingHigh: htfSwingHigh,
                                     htfSwingLow: htfSwingLow,
                                     isInHtfZone: isInHtfZone,
                                     htfZoneType: htfZoneType);
 
-                                localMarketStateForClosedNow = _marketStateEngineV2.Update(v2InputIntra);
-                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING] Computed MarketState for closedNow={closedNow}: Bias={localMarketStateForClosedNow?.Bias} Phase={localMarketStateForClosedNow?.Phase}");
+                                localMarketStateForEvalBar = _marketStateEngineV2.Update(v2InputIntra);
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING] Computed MarketState for evalBar={evalBar}: Bias={localMarketStateForEvalBar?.Bias} Phase={localMarketStateForEvalBar?.Phase}");
                             }
                         }
                         catch (Exception exState)
@@ -11575,8 +11576,8 @@ namespace MyNamespace.Strategies
                         }
 
                         // Fallback auf globale Werte wenn lokale Berechnung fehlschlägt
-                        if (localMarketStateForClosedNow == null)
-                            localMarketStateForClosedNow = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegimeForClosedNow };
+                        if (localMarketStateForEvalBar == null)
+                            localMarketStateForEvalBar = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegimeForEvalBar };
 
                         try
                         {
@@ -11594,13 +11595,13 @@ namespace MyNamespace.Strategies
                                 try
                                 {
                                     if (_ofFeaturesByBar != null)
-                                        _ofFeaturesByBar.TryGetValue(closedNow, out featIntrabar);
+                                        _ofFeaturesByBar.TryGetValue(evalBar, out featIntrabar);
                                 }
                                 catch { featIntrabar = null; }
 
                                 if (featIntrabar == null)
                                 {
-                                    try { _ofFeaturesHistory.TryGetByBar(closedNow, out featIntrabar); }
+                                    try { _ofFeaturesHistory.TryGetByBar(evalBar, out featIntrabar); }
                                     catch { featIntrabar = null; }
                                 }
 
@@ -11608,23 +11609,23 @@ namespace MyNamespace.Strategies
                                 {
                                     try
                                     {
-                                        OvSnapshot snapForClosed = null;
+                                        OvSnapshot snapForEval = null;
                                         try
                                         {
-                                            snapForClosed = ovForClosedNow;
+                                            snapForEval = ovForEvalBar;
                                         }
-                                        catch { snapForClosed = null; }
+                                        catch { snapForEval = null; }
 
-                                        if (_featureCalculator != null && snapForClosed != null)
+                                        if (_featureCalculator != null && snapForEval != null)
                                         {
-                                            var forced = _featureCalculator.ComputeFeaturesForLastBar(snapForClosed);
+                                            var forced = _featureCalculator.ComputeFeaturesForLastBar(snapForEval);
                                             if (forced != null)
                                             {
                                                 AddFeatureAndSync(forced);
                                                 featIntrabar = forced;
                                             }
                                         }
-                                        else if (snapForClosed == null)
+                                        else if (snapForEval == null)
                                         {
                                             // No OvSnapshot available - cannot force OfFeatures
                                         }
@@ -11637,22 +11638,22 @@ namespace MyNamespace.Strategies
 
                                 if (featIntrabar != null)
                                 {
-                                    if (featIntrabar != null && featIntrabar.Snapshot != null && !_ofFeaturesByBar.ContainsKey(closedNow))
+                                    if (featIntrabar != null && featIntrabar.Snapshot != null && !_ofFeaturesByBar.ContainsKey(evalBar))
                                     {
-                                        _ofFeaturesByBar[closedNow] = featIntrabar;
+                                        _ofFeaturesByBar[evalBar] = featIntrabar;
                                     }
 
-                                    var computedBias = localMarketStateForClosedNow.Bias;
+                                    var computedBias = localMarketStateForEvalBar.Bias;
 
                                     var detectedPattern = _patternRunner.DetectDominantOrderflowPattern(
-                                        bar: closedNow,
+                                        bar: evalBar,
                                         history: _ofFeaturesHistory,
                                         ofFeaturesByBar: _ofFeaturesByBar,
-                                        currentRegime: localRegimeForClosedNow,
+                                        currentRegime: localRegimeForEvalBar,
                                         currentDirectionalBias: computedBias,
-                                        currentMarketState: localMarketStateForClosedNow,
+                                        currentMarketState: localMarketStateForEvalBar,
                                         currentMarketStructureContext: _marketStructureContext,
-                                        currentBar: closedNow);
+                                        currentBar: evalBar);
 
                                     if (detectedPattern != null)
                                         detectedPatternIntrabar = detectedPattern;
@@ -11671,8 +11672,8 @@ namespace MyNamespace.Strategies
                         {
                             EvaluateSignalsAndOrders(
                                 caller: "IntrabarPending",
-                                closed: closedNow,
-                                ovLastClosed: ovForClosedNow ?? ovSnapshot,
+                                closed: evalBar,
+                                ovLastClosed: ovForEvalBar ?? ovSnapshot,
                                 ofFeaturesHistory: _ofFeaturesHistory,
                                 isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
                                 isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
@@ -11680,9 +11681,9 @@ namespace MyNamespace.Strategies
                                 currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
                                 currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
                                 currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
-                                currentMarketRegime: localRegimeForClosedNow,
+                                currentMarketRegime: localRegimeForEvalBar,
                                 detectedPattern: detectedPatternIntrabar,
-                                currentMarketState: localMarketStateForClosedNow,
+                                currentMarketState: localMarketStateForEvalBar,
                                 currentVwap: _currentVwapSnapshot?.Current ?? 0m);
                         }
                         finally
@@ -11690,7 +11691,7 @@ namespace MyNamespace.Strategies
                             _intrabarImmediatePlaceMode = false;
                             _intrabarImmediatePlaceBar = -1;
                         }
-                        _lastIntrabarZoneTriggerClosed = closedNow;
+                        _lastIntrabarZoneTriggerClosed = evalBar;
 
                         _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneId;
                     }
@@ -14018,7 +14019,7 @@ namespace MyNamespace.Strategies
         {
             //this.LogInfo($"[DBG-EVAL] Start EvaluateSignalsAndOrders(closed={closed}) at {DateTime.UtcNow:O}");
 
-            if (closed < 0 || closed >= CurrentBar)
+            if (closed < 0 || closed > CurrentBar || (closed == CurrentBar && !_intrabarImmediatePlaceMode))
             {
                 if (_intrabarImmediatePlaceMode)
                     this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=closed_out_of_range closed={closed} CurrentBar={CurrentBar}");
@@ -14064,7 +14065,7 @@ namespace MyNamespace.Strategies
             int placeChart = placeBar + 1;
 
             int setupBar = closed;
-            if (_intrabarImmediatePlaceMode && entryClosedOverride.HasValue && entryClosedOverride.Value >= 0 && entryClosedOverride.Value < CurrentBar)
+            if (entryClosedOverride.HasValue && entryClosedOverride.Value >= 0 && entryClosedOverride.Value < CurrentBar)
                 setupBar = entryClosedOverride.Value;
 
             var c = GetCandle(setupBar);
