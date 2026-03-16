@@ -110,6 +110,8 @@ namespace MyNamespace.Strategies.Orderflow
             public int SessionUaToFaBar;
             public bool SessionLatchUfToFa;
             public int SessionLatchUfToFaBar;
+            public decimal SessionLatchUfToFaTurnHigh;
+            public decimal SessionLatchUfToFaTurnLow;
             public bool SessionLatchClose;
             public int SessionLatchCloseBar;
             public int SessionLatchCloseBrokenBar;
@@ -992,35 +994,20 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         if (z == null)
                             continue;
-                        if (z.IsConfirmed && z.CreatedBar != ctxZoneCreationBar)
-                            continue;
-                        if (z.Status != MarketStructureContext.ZoneStatus.New
-                            && z.Status != MarketStructureContext.ZoneStatus.Ready
-                            && z.Status != MarketStructureContext.ZoneStatus.Triggered)
+                        // RetroSeed: Auch PENDING-Zonen prüfen (IsConfirmed=false), nicht nur New/Ready/Triggered
+                        bool statusOk = z.Status == MarketStructureContext.ZoneStatus.New
+                            || z.Status == MarketStructureContext.ZoneStatus.Ready
+                            || z.Status == MarketStructureContext.ZoneStatus.Triggered
+                            || !z.IsConfirmed; // PENDING zones
+                        if (!statusOk)
                             continue;
                         bool dirOk = (_direction == OrderDirections.Buy && z.Type == MarketStructureContext.ZoneType.Support)
                                      || (_direction == OrderDirections.Sell && z.Type == MarketStructureContext.ZoneType.Resistance);
                         if (!dirOk)
                             continue;
 
-                        if (z.CreatedBar != ctxZoneCreationBar)
-                        {
-                            LogExplainOnce(
-                                currentSnapshot.Bar,
-                                z.Id,
-                                stage: "Retest.RetroSeed.Skip.CreatedBarMismatch",
-                                lines: new[]
-                                {
-                                    $"Dir={_direction}",
-                                    $"Zone={z.Id}",
-                                    $"ZoneCreatedBar(Tick900)={z.CreatedBar}",
-                                    $"CtxCurrentBar(RangeOrOther)={ctxBar}",
-                                    $"CtxZoneCreationBar(Tick900)={ctxZoneCreationBar}",
-                                    $"CurrentSnapshotBarIdx(Range)={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber}",
-                                    $"Rule: Retro-Seed nur wenn ZoneCreatedBar == CtxZoneCreationBar (Tick900-Kontext)"
-                                });
+                        if (z.IsConfirmed && z.CreatedBar != ctxZoneCreationBar)
                             continue;
-                        }
 
                         // Touch-Bar rückwirkend finden (bar-1 bevorzugt).
                         OvSnapshot? touchCandidate = null;
@@ -1095,6 +1082,67 @@ namespace MyNamespace.Strategies.Orderflow
 
                             StartSession(retroTracker, SessionType.Retest, retroTouchSnap);
 
+                            // Option B: Touch-Bar ist selbst Signal-Kandidat (z.B. Touchkerze == Umkehrkerze).
+                            // Deshalb: Touch-Bar immer sofort evaluieren.
+                            var out0 = EvaluateActiveSession(
+                                retroTracker, retroTouchSnap, history, retroZone, thresholds, tickSize,
+                                MaxSessionBars, MaxConsecutiveBadCloses, MaxSessionPenetrationTicks,
+                                out var dec0);
+
+                            if (out0 == SessionEvalOutcome.EntryGo && dec0 != null)
+                            {
+                                bool stillNear0 = TouchesZone(currentSnapshot, retroZone) || IsRejectWickAtZone(currentSnapshot, retroZone, tickSize, _direction);
+                                if (!stillNear0 && retroZone.IsConfirmed)
+                                {
+                                    retroTracker.SessionActive = false;
+                                    retroTracker.SessionEndReason = "Retro-GO auf Touch-Bar, aber aktueller Bar nicht mehr zonennah → kein Entry.";
+                                    return PatternEvaluationResult.NotDetected(Type, $"Zone {retroZone.Id}: retro signal missed (price moved away)");
+                                }
+
+                                LogSessionProtocol(
+                                    retroTracker,
+                                    retroZone,
+                                    history,
+                                    currentSnapshot,
+                                    thresholds,
+                                    tickSize,
+                                    MaxSessionBars,
+                                    MaxConsecutiveBadCloses,
+                                    MaxSessionPenetrationTicks,
+                                    "GO – Entry ausgelöst (Retro: Signalbar war Touch-Bar)",
+                                    dec0);
+
+                                var reasons0 = new List<string>
+                                {
+                                    $"ZoneRetestRetro id={retroZone.Id}",
+                                    $"Path={(dec0.Path == AllowPath.UaToFa ? "UAtoFA" : "MultiFA")}",
+                                    $"Score={dec0.TotalScore:0.0}",
+                                    $"Confidence={dec0.Confidence:0.00}"
+                                };
+
+                                retroTracker.EntryTriggered = true;
+                                _lastValidReversalBarIndex = currentSnapshot.Bar;
+                                _lastValidReversalDirection = _direction;
+
+                                currentMarketStructureContext.ConsumeZoneOnEntry(retroZone.Id);
+                                _trackersByZoneId.Remove(retroZone.Id);
+
+                                if (_loggerSource != null)
+                                    LoggerHelper.LogInfo(_loggerSource,
+                                        $"[ReversalBounceV2] DETECTED (RetestRetroTouch): zone={retroZone.Id} dir={_direction} bar={currentSnapshot.Bar} score={dec0.TotalScore:0.0} conf={dec0.Confidence:0.00}");
+
+                                var matched0 = new Dictionary<string, object>();
+                                matched0["SignalBarIndex"] = retroTouchSnap.Bar;
+                                matched0["SignalChartBarNumber"] = retroTouchSnap.ChartBarNumber;
+                                matched0["EntryClosedOverride"] = retroTouchSnap.Bar;
+                                matched0["EntryChartBarOverride"] = retroTouchSnap.ChartBarNumber;
+                                matched0["DetectedOnBarIndex"] = currentSnapshot.Bar;
+                                matched0["DetectedOnChartBarNumber"] = currentSnapshot.ChartBarNumber;
+
+                                return PatternEvaluationResult.Detected(Type, dec0.Confidence, reasons0,
+                                    matched0, new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
+                            }
+
                             // Falls Umkehrbar bereits geschlossen vorhanden (Touch war bar-2): historisch prüfen.
                             if (retroReversalSnap != null)
                             {
@@ -1106,7 +1154,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 if (out1 == SessionEvalOutcome.EntryGo && dec1 != null)
                                 {
                                     bool stillNear = TouchesZone(currentSnapshot, retroZone) || IsRejectWickAtZone(currentSnapshot, retroZone, tickSize, _direction);
-                                    if (!stillNear)
+                                    if (!stillNear && retroZone.IsConfirmed)
                                     {
                                         retroTracker.SessionActive = false;
                                         retroTracker.SessionEndReason = "Retro-GO in bar-1, aber aktueller Bar nicht mehr zonennah → kein Entry.";
@@ -1148,6 +1196,8 @@ namespace MyNamespace.Strategies.Orderflow
                                     var matched = new Dictionary<string, object>();
                                     matched["SignalBarIndex"] = retroReversalSnap.Bar;
                                     matched["SignalChartBarNumber"] = retroReversalSnap.ChartBarNumber;
+                                    matched["EntryClosedOverride"] = retroReversalSnap.Bar;
+                                    matched["EntryChartBarOverride"] = retroReversalSnap.ChartBarNumber;
                                     matched["DetectedOnBarIndex"] = currentSnapshot.Bar;
                                     matched["DetectedOnChartBarNumber"] = currentSnapshot.ChartBarNumber;
 
@@ -1365,26 +1415,10 @@ namespace MyNamespace.Strategies.Orderflow
 
                 if (touchedZones.Count == 0)
                 {
-                    try
+                    if (candidateZone == null)
                     {
-                        SmartLogger.Instance.LogIfChanged(
-                            category: "ReversalBounceV2",
-                            sourceId: $"V2.{_direction}",
-                            barIndex: currentSnapshot.Bar,
-                            message: $"[ReversalBounceV2:ZoneGate.NoCandidate] Dir={_direction} | zones={zoneCountAll} | eligibleStatus(New/Ready)={zoneCountEligibleStatus} | dirOk={zoneCountDirOk} | touchesAny={zoneCountTouchesAny} | touchesEligible={zoneCountTouchesEligible} | prevClosed={(prevClosed != null ? prevClosed.Close.ToString("F2") : "null")}",
-                            signature: SmartLogger.ComposeSignature(
-                                ("dir", _direction.ToString()),
-                                ("stage", "ZoneGate.NoCandidate"),
-                                ("bar", currentSnapshot.Bar.ToString()),
-                                ("zAll", zoneCountAll.ToString()),
-                                ("zElig", zoneCountEligibleStatus.ToString()),
-                                ("zDir", zoneCountDirOk.ToString()),
-                                ("zTouchAny", zoneCountTouchesAny.ToString()),
-                                ("zTouchElig", zoneCountTouchesEligible.ToString())),
-                            backendLogAction: s => _loggerSource?.LogInfo(s)
-                        );
+                        return PatternEvaluationResult.NotDetected(Type, $"ZoneGate: no touched/session zone for dir={_direction} (zones={zones.Count})");
                     }
-                    catch { }
                 }
 
                 candidateZone = touchedZones.Count > 0 ? touchedZones[0] : null;
@@ -2346,6 +2380,8 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.SessionUaToFaBar = -1;
             tracker.SessionLatchUfToFa = false;
             tracker.SessionLatchUfToFaBar = -1;
+            tracker.SessionLatchUfToFaTurnHigh = 0m;
+            tracker.SessionLatchUfToFaTurnLow = 0m;
             tracker.SessionLatchClose = false;
             tracker.SessionLatchCloseBar = -1;
             tracker.SessionLatchCloseBrokenBar = -1;
@@ -2665,22 +2701,62 @@ namespace MyNamespace.Strategies.Orderflow
                 ? currentSnapshot.Close >= currentSnapshot.Open
                 : currentSnapshot.Close <= currentSnapshot.Open;
 
-            // Kriterium 1: UF→FA (streng sequenziell): UF muss in der Kerze direkt davor sein, FA in der Umkehrkerze
+            // Kriterium 1: UF→FA (Session-Bestätigung):
+            // - UF muss in der Kerze direkt vor der Drehkerze sein
+            // - FA muss in der Drehkerze sein (Richtungswechsel)
+            // - nach Bestätigung gilt UF→FA als erfüllt für spätere Signal-Kerzen innerhalb der Session
             bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
             bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
-            bool faNowIsReversalCandle = closeInDirection;
+            bool prevCloseInDirection = prev != null && (_direction == OrderDirections.Buy
+                ? prev.Close >= prev.Open
+                : prev.Close <= prev.Open);
+            bool isTurnCandle = closeInDirection && !prevCloseInDirection;
             bool priceProgressOkUfToFa = prev != null && (_direction == OrderDirections.Buy
                 ? prev.Low > currentSnapshot.Low
                 : prev.High < currentSnapshot.High);
-            bool ufToFaHere = prevHadUf && currHasFa && faNowIsReversalCandle && priceProgressOkUfToFa;
-            bool ufToFaLatchOk = ufToFaHere;
+            bool ufToFaConfirmedNow = isTurnCandle && prevHadUf && currHasFa && priceProgressOkUfToFa;
+            if (ufToFaConfirmedNow && !tracker.SessionLatchUfToFa)
+            {
+                tracker.SessionLatchUfToFa = true;
+                tracker.SessionLatchUfToFaBar = currentSnapshot.Bar;
+                tracker.SessionLatchUfToFaTurnHigh = currentSnapshot.High;
+                tracker.SessionLatchUfToFaTurnLow = currentSnapshot.Low;
+            }
+
+            bool ufToFaNeutralized = false;
+            if (tracker.SessionLatchUfToFa && tracker.SessionLatchUfToFaBar >= 0 && currentSnapshot.Bar > tracker.SessionLatchUfToFaBar)
+            {
+                if (_direction == OrderDirections.Buy)
+                {
+                    if (currentSnapshot.Low < tracker.SessionLatchUfToFaTurnLow)
+                        ufToFaNeutralized = true;
+                }
+                else
+                {
+                    if (currentSnapshot.High > tracker.SessionLatchUfToFaTurnHigh)
+                        ufToFaNeutralized = true;
+                }
+            }
+            if (ufToFaNeutralized)
+            {
+                tracker.SessionLatchUfToFa = false;
+                tracker.SessionLatchUfToFaBar = -1;
+                tracker.SessionLatchUfToFaTurnHigh = 0m;
+                tracker.SessionLatchUfToFaTurnLow = 0m;
+            }
+
+            bool ufToFaLatchOk = tracker.SessionLatchUfToFa;
             logItems.Add(new ScoreItem
             {
                 Key = "Signal_UF→FA",
                 Points = ufToFaLatchOk ? 1m : 0m,
                 TextDe = ufToFaLatchOk
-                    ? $"Signal UF→FA: JA (UF in prev-Bar {prev!.Bar} -> FA in Umkehrkerze {currentSnapshot.Bar})"
-                    : $"Signal UF→FA: NEIN (Prev UF={prevHadUf}, aktuell FA={currHasFa}, Umkehrkerze={faNowIsReversalCandle}, PriceProgress={priceProgressOkUfToFa})"
+                    ? (tracker.SessionLatchUfToFaBar == currentSnapshot.Bar
+                        ? $"Signal UF→FA: JA (bestätigt JETZT auf Drehkerze {currentSnapshot.Bar} | UF in prev-Bar {prev!.Bar})"
+                        : $"Signal UF→FA: JA (bereits bestätigt in Bar {tracker.SessionLatchUfToFaBar})")
+                    : (ufToFaNeutralized
+                        ? $"Signal UF→FA: NEIN (neutralisiert: {(_direction == OrderDirections.Buy ? "tieferes Tief" : "höheres Hoch")}) nach Drehkerze)"
+                        : $"Signal UF→FA: NEIN (Drehkerze={isTurnCandle}, Prev UF={prevHadUf}, aktuell FA={currHasFa}, PriceProgress={priceProgressOkUfToFa})")
             });
 
             logItems.Add(new ScoreItem
@@ -2743,7 +2819,7 @@ namespace MyNamespace.Strategies.Orderflow
             // Kriterium 3: Kerzen-POC Position
             OvSnapshot pocBar = currentSnapshot;
             string pocBarText = "curr";
-            bool requireCurrPocDelta = ufToFaHere && (absCurr == AbsorptionPattern.None) && ((absPrev != AbsorptionPattern.None) || (absPrevPrev != AbsorptionPattern.None));
+            bool requireCurrPocDelta = ufToFaConfirmedNow && (absCurr == AbsorptionPattern.None) && ((absPrev != AbsorptionPattern.None) || (absPrevPrev != AbsorptionPattern.None));
             if (requireCurrPocDelta)
             {
                 if (absPrev != AbsorptionPattern.None)
@@ -2957,6 +3033,8 @@ namespace MyNamespace.Strategies.Orderflow
                 lines.Add("═══════════════════════════════════════════════════════════");
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
+                if (tracker.SessionLatchUfToFa && tracker.SessionLatchUfToFaBar >= 0)
+                    lines.Add($"UF→FA: bestätigt in Session (Latch) bei {FormatBarLabel(tracker.SessionLatchUfToFaBar, history)}");
                 if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
                     lines.Add($"UA→FA: gesehen in Session (Latch) bei {FormatBarLabel(tracker.SessionUaToFaBar, history)}");
                 lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");

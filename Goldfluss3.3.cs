@@ -748,7 +748,7 @@ namespace MyNamespace.Strategies
         [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks). 0 = verwende Thresholds.")]
         [DefaultValue(12)]
         [Range(0, 100)]
-        public int ContinuationCompressionGapTicks { get; set; } = 12;
+        public int ContinuationCompressionGapTicks { get; set; } = 4;
 
 
 
@@ -1478,6 +1478,28 @@ namespace MyNamespace.Strategies
                                     recentOf: null,
                                     allowZoneCreation: true,
                                     allowZoneLifecycle: false);
+
+                                try
+                                {
+                                    int maxId = -1;
+                                    var zonesNow = _marketStructureContext.ActiveZones;
+                                    if (zonesNow != null)
+                                    {
+                                        for (int zi = 0; zi < zonesNow.Count; zi++)
+                                        {
+                                            var z = zonesNow[zi];
+                                            if (z == null) continue;
+                                            if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                            if (z.Id > maxId) maxId = z.Id;
+                                        }
+                                    }
+                                    if (maxId > _msTick900LastSeenMaxZoneId)
+                                    {
+                                        _msTick900LastSeenMaxZoneId = maxId;
+                                        System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
+                                    }
+                                }
+                                catch { }
                             }
                         }
 
@@ -1562,6 +1584,28 @@ namespace MyNamespace.Strategies
                                         recentOf: null,
                                         allowZoneCreation: true,
                                         allowZoneLifecycle: false);
+
+                                    try
+                                    {
+                                        int maxId = -1;
+                                        var zonesNow = _marketStructureContext.ActiveZones;
+                                        if (zonesNow != null)
+                                        {
+                                            for (int zi = 0; zi < zonesNow.Count; zi++)
+                                            {
+                                                var z = zonesNow[zi];
+                                                if (z == null) continue;
+                                                if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                                if (z.Id > maxId) maxId = z.Id;
+                                            }
+                                        }
+                                        if (maxId > _msTick900LastSeenMaxZoneId)
+                                        {
+                                            _msTick900LastSeenMaxZoneId = maxId;
+                                            System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
+                                        }
+                                    }
+                                    catch { }
                                 }
                             }
 
@@ -5040,6 +5084,9 @@ namespace MyNamespace.Strategies
         private const int MsTick900MaxLiveBuffer = 200000;
         private readonly List<MarketDataArg> _msTick900LiveTradeBuffer = new List<MarketDataArg>(4096);
         private readonly List<TickCandle> _msTick900ClosedCandles = new List<TickCandle>(4096);
+
+        private int _msTick900ZonesDirtyFlag = 0;
+        private int _msTick900LastSeenMaxZoneId = -1;
         
         private DateTimeKind? _msChartTimeKind;
         private DateTime _msLastLiveTradeWallClockUtc;
@@ -5056,6 +5103,19 @@ namespace MyNamespace.Strategies
         private OfFeaturesHistory _ofFeaturesHistory;
         private Dictionary<int, OfFeatures> _ofFeaturesByBar;
 
+        private int _lastSeenMarketStructureMaxReadyZoneId = -1;
+        private int _lastIntrabarZoneTriggerClosed = -1;
+
+        private int _lastIntrabarZoneTriggerMaxPendingId = -1;
+
+        private int _lastPendingZonesLogClosed = -1;
+
+        private int _deferredIntrabarPendingEvalClosed = -1;
+        private int _deferredIntrabarPendingEvalMaxPendingId = -1;
+        private bool _deferredIntrabarPendingEvalTick900Dirty;
+
+        private int _lastOnCalculateBar = -1;
+        private decimal _lastOnCalculateValue;
         readonly object _ofFeaturesSync = new object();
         private readonly List<int> _ofFeaturesBarList;
         private readonly Dictionary<int, int> _ofFeaturesBarMap = new Dictionary<int, int>(); // fungiert als Set (Wert wird nicht verwendet)
@@ -5601,12 +5661,16 @@ namespace MyNamespace.Strategies
         private bool _evalPositive = false;          // Ergebnis der Evaluation
         private bool _intrabarReclaimed = false;     // Reclaim-Kriterium erf?llt?
         private bool _dwellOk = false;               // Dwell-Kriterium erf?llt?
+        private bool _intrabarImmediatePlaceMode = false;
+        private int _intrabarImmediatePlaceBar = -1;
 
         // Entry-Kontext
         private bool _entryIsLong = false;           // true = Long, false = Short
         private int _signalBarIndex = -1;
         private decimal _signalBarHigh = 0m;
         private decimal _signalBarLow = 0m;
+
+        private int _entryTimeoutStartBarIndex = -1;
 
         private int _entryBandIdx = 0;               // 1 oder 2
         private decimal _entryBandLevel = 0m;        // LB/UB je Richtung
@@ -7098,6 +7162,25 @@ namespace MyNamespace.Strategies
                             _msTick900Bar++;
                             RecordSyntheticTick900ClosedCandle(closedTickCandle);
                             var vwapNow = _currentVwapSnapshot?.Current ?? 0m;
+                            int maxReadyZoneIdBefore = -1;
+                            try
+                            {
+                                var zonesBefore = _marketStructureContext.ActiveZones;
+                                if (zonesBefore != null && zonesBefore.Count > 0)
+                                {
+                                    for (int zi = 0; zi < zonesBefore.Count; zi++)
+                                    {
+                                        var z = zonesBefore[zi];
+                                        if (z == null)
+                                            continue;
+                                        if (z.Status != MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready)
+                                            continue;
+                                        if (z.Id > maxReadyZoneIdBefore)
+                                            maxReadyZoneIdBefore = z.Id;
+                                    }
+                                }
+                            }
+                            catch { maxReadyZoneIdBefore = -1; }
                             try
                             {
                                 _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
@@ -7114,6 +7197,260 @@ namespace MyNamespace.Strategies
                                 recentOf: null,
                                 allowZoneCreation: true,
                                 allowZoneLifecycle: false);
+                            try
+                            {
+                                int maxReadyZoneIdAfter = -1;
+                                var zonesAfter = _marketStructureContext.ActiveZones;
+                                if (zonesAfter != null && zonesAfter.Count > 0)
+                                {
+                                    for (int zi = 0; zi < zonesAfter.Count; zi++)
+                                    {
+                                        var z = zonesAfter[zi];
+                                        if (z == null)
+                                            continue;
+                                        if (z.Status != MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready)
+                                            continue;
+                                        if (z.Id > maxReadyZoneIdAfter)
+                                            maxReadyZoneIdAfter = z.Id;
+                                    }
+                                }
+
+                                if (maxReadyZoneIdAfter >= 0 && maxReadyZoneIdAfter > maxReadyZoneIdBefore)
+                                {
+                                    this.LogInfo($"[Tick900-INTRABAR-ZONE-CREATED] Ready zone created (maxReadyId {maxReadyZoneIdAfter} > {maxReadyZoneIdBefore}) msTick900Bar={_msTick900Bar}, chartBar={CurrentBar}");
+                                    _lastSeenMarketStructureMaxReadyZoneId = Math.Max(_lastSeenMarketStructureMaxReadyZoneId, maxReadyZoneIdAfter);
+
+                                    try
+                                    {
+                                        if (_currentLevelsSnapshot != null && _patternRunner != null && _ofFeaturesHistory != null)
+                                        {
+                                            int closedNow = CurrentBar - 1;
+                                            if (closedNow >= 0 && closedNow < CurrentBar)
+                                            {
+                                                OvSnapshot ovForClosedNow = null;
+                                                try
+                                                {
+                                                    if (_ovSnapshotHistory != null && !_ovSnapshotHistory.IsEmpty)
+                                                    {
+                                                        int maxScan = 80;
+                                                        int count = 0;
+                                                        for (int off = 0; off >= -maxScan; off--)
+                                                        {
+                                                            if (!_ovSnapshotHistory.TryGetRelative(off, out var s) || s == null)
+                                                                break;
+                                                            if (s.Bar == closedNow)
+                                                            {
+                                                                ovForClosedNow = s;
+                                                                break;
+                                                            }
+                                                            count++;
+                                                            if (count > maxScan)
+                                                                break;
+                                                        }
+                                                    }
+                                                }
+                                                catch { ovForClosedNow = null; }
+
+                                                if (ovForClosedNow == null)
+                                                {
+                                                    try
+                                                    {
+                                                        var cc = GetCandle(closedNow);
+                                                        if (cc != null)
+                                                        {
+                                                            decimal candlePocPrice = cc.Close;
+                                                            decimal pocDelta = 0m;
+                                                            try
+                                                            {
+                                                                var pocPvi = cc.MaxVolumePriceInfo;
+                                                                if (pocPvi != null)
+                                                                {
+                                                                    candlePocPrice = (decimal)pocPvi.Price;
+                                                                    pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
+                                                                }
+                                                            }
+                                                            catch { }
+
+                                                            ovForClosedNow = new OvSnapshot
+                                                            {
+                                                                Bar = closedNow,
+                                                                ChartBarNumber = closedNow + 1,
+                                                                SessionBarNumber = closedNow + 1,
+                                                                Open = cc.Open,
+                                                                High = cc.High,
+                                                                Low = cc.Low,
+                                                                Time = cc.Time,
+                                                                Close = cc.Close,
+                                                                Volume = cc.Volume,
+                                                                Delta = cc.Delta,
+                                                                Ask = cc.Ask,
+                                                                Bid = cc.Bid,
+                                                                BestAskPrice = Security?.BestAskPrice ?? 0m,
+                                                                BestBidPrice = Security?.BestBidPrice ?? 0m,
+                                                                CandlePocPrice = candlePocPrice,
+                                                                PocDelta = pocDelta,
+                                                            };
+                                                        }
+                                                    }
+                                                    catch { ovForClosedNow = null; }
+                                                }
+
+                                                if (ovForClosedNow != null)
+                                                {
+                                                    MarketRegime localRegime = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.Normal;
+                                                    try
+                                                    {
+                                                        var cReg = GetCandle(closedNow);
+                                                        var pReg = closedNow > 0 ? GetCandle(closedNow - 1) : null;
+                                                        if (cReg != null && pReg != null)
+                                                        {
+                                                            var cndl = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cReg, ovForClosedNow?.NetDeltaTotal ?? 0m);
+                                                            var prevCndl = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pReg, ovForClosedNow?.NetDeltaTotal ?? 0m);
+                                                            var det = _marketRegimeEvaluator.GetCurrentMarketRegime(closedNow, ovForClosedNow, _myClusterStatistic, cndl, prevCndl);
+                                                            if (det != null)
+                                                                localRegime = det.Regime;
+                                                        }
+                                                    }
+                                                    catch { }
+
+                                                    decimal vwapForClosedNow = 0m;
+                                                    decimal ub1ForClosedNow = 0m;
+                                                    decimal lb1ForClosedNow = 0m;
+                                                    decimal ub2ForClosedNow = 0m;
+                                                    decimal lb2ForClosedNow = 0m;
+                                                    decimal ub3ForClosedNow = 0m;
+                                                    decimal lb3ForClosedNow = 0m;
+                                                    try
+                                                    {
+                                                        vwapForClosedNow = ReadVwapSeriesSafely(0, closedNow);
+                                                        lb3ForClosedNow = ReadVwapSeriesSafely(1, closedNow);
+                                                        ub3ForClosedNow = ReadVwapSeriesSafely(2, closedNow);
+                                                        lb2ForClosedNow = ReadVwapSeriesSafely(3, closedNow);
+                                                        ub2ForClosedNow = ReadVwapSeriesSafely(4, closedNow);
+                                                        lb1ForClosedNow = ReadVwapSeriesSafely(5, closedNow);
+                                                        ub1ForClosedNow = ReadVwapSeriesSafely(6, closedNow);
+                                                    }
+                                                    catch { }
+
+                                                    MyNamespace.Strategies.Models.MarketStateV2 localMarketState = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegime };
+                                                    try
+                                                    {
+                                                        if (_marketStateEngineV2 != null)
+                                                        {
+                                                            var htfSwingHigh = _marketStructureContext?.LastConfirmedSwingHigh;
+                                                            var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
+                                                            bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovForClosedNow.Close, _tickSize, bufferTicks: 2);
+                                                            var htfZoneType = _marketStructureContext != null
+                                                                ? _marketStructureContext.GetHtfZoneType(ovForClosedNow.Close, _tickSize, bufferTicks: 2)
+                                                                : MyNamespace.Strategies.Models.HtfZoneType.None;
+
+                                                            var v2Input = new MyNamespace.Strategies.Models.MarketStateInputV2(
+                                                                bar: closedNow,
+                                                                high: ovForClosedNow.High,
+                                                                low: ovForClosedNow.Low,
+                                                                close: ovForClosedNow.Close,
+                                                                vwap: vwapForClosedNow,
+                                                                upperBand1: ub1ForClosedNow,
+                                                                lowerBand1: lb1ForClosedNow,
+                                                                upperBand2: ub2ForClosedNow,
+                                                                lowerBand2: lb2ForClosedNow,
+                                                                upperBand3: ub3ForClosedNow,
+                                                                lowerBand3: lb3ForClosedNow,
+                                                                currentVah: _currentLevelsSnapshot?.CurrentVAH ?? 0m,
+                                                                currentVal: _currentLevelsSnapshot?.CurrentVAL ?? 0m,
+                                                                candlePocPrice: ovForClosedNow.CandlePocPrice,
+                                                                regime: localRegime,
+                                                                htfSwingHigh: htfSwingHigh,
+                                                                htfSwingLow: htfSwingLow,
+                                                                isInHtfZone: isInHtfZone,
+                                                                htfZoneType: htfZoneType);
+
+                                                            localMarketState = _marketStateEngineV2.Update(v2Input);
+                                                        }
+                                                    }
+                                                    catch { }
+
+                                                    OfFeatures feat = null;
+                                                    try
+                                                    {
+                                                        if (_ofFeaturesByBar != null)
+                                                            _ofFeaturesByBar.TryGetValue(closedNow, out feat);
+                                                    }
+                                                    catch { feat = null; }
+
+                                                    if (feat == null)
+                                                    {
+                                                        try { _ofFeaturesHistory.TryGetByBar(closedNow, out feat); }
+                                                        catch { feat = null; }
+                                                    }
+
+                                                    if (feat == null && _featureCalculator != null)
+                                                    {
+                                                        try
+                                                        {
+                                                            var forced = _featureCalculator.ComputeFeaturesForLastBar(ovForClosedNow);
+                                                            if (forced != null)
+                                                            {
+                                                                AddFeatureAndSync(forced);
+                                                                feat = forced;
+                                                                // Direkt in Dictionary einfügen falls AddFeatureAndSync fehlschlägt
+                                                                if (_ofFeaturesByBar != null && !_ofFeaturesByBar.ContainsKey(forced.Bar))
+                                                                    _ofFeaturesByBar[forced.Bar] = forced;
+                                                            }
+                                                        }
+                                                        catch { }
+                                                    }
+
+                                                    // Stelle sicher, dass das Feature im Dictionary ist
+                                                    var safeOfFeaturesByBar = _ofFeaturesByBar ?? new Dictionary<int, OfFeatures>();
+                                                    if (feat != null && feat.Snapshot != null && !safeOfFeaturesByBar.ContainsKey(closedNow))
+                                                    {
+                                                        safeOfFeaturesByBar[closedNow] = feat;
+                                                    }
+
+                                                    var computedBias = localMarketState.Bias;
+                                                    var detectedPattern = _patternRunner.DetectDominantOrderflowPattern(
+                                                        bar: closedNow,
+                                                        history: _ofFeaturesHistory,
+                                                        ofFeaturesByBar: safeOfFeaturesByBar,
+                                                        currentRegime: localRegime,
+                                                        currentDirectionalBias: computedBias,
+                                                        currentMarketState: localMarketState,
+                                                        currentMarketStructureContext: _marketStructureContext,
+                                                        currentBar: closedNow);
+
+                                                    _intrabarImmediatePlaceMode = true;
+                                                    _intrabarImmediatePlaceBar = CurrentBar;
+                                                    try
+                                                    {
+                                                        EvaluateSignalsAndOrders(
+                                                            closedNow,
+                                                            ovForClosedNow,
+                                                            _ofFeaturesHistory,
+                                                            _currentLevelsSnapshot.IsBlockedLong,
+                                                            _currentLevelsSnapshot.IsBlockedShort,
+                                                            _currentLevelsSnapshot,
+                                                            _currentLevelsSnapshot.CurrentPOC,
+                                                            _currentLevelsSnapshot.CurrentVAH,
+                                                            _currentLevelsSnapshot.CurrentVAL,
+                                                            localRegime,
+                                                            detectedPattern,
+                                                            localMarketState,
+                                                            vwapForClosedNow);
+                                                    }
+                                                    finally
+                                                    {
+                                                        _intrabarImmediatePlaceMode = false;
+                                                        _intrabarImmediatePlaceBar = -1;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            }
+                            catch { }
 
                             WriteZonesSnapshot();
                             
@@ -9842,6 +10179,15 @@ namespace MyNamespace.Strategies
         {
             try
             {
+                _lastOnCalculateBar = bar;
+                _lastOnCalculateValue = value;
+                var c = GetCandle(bar);
+                if (c == null) // Explizite Null-Pr?fung f?r aktuelle Kerze
+                {
+                    this.LogWarn($"OnCalculate: Aktuelle Kerze f?r Bar {bar} ist null. ?berspringe weitere Verarbeitung.");
+                    return;
+                }
+
                 if (UseTick900ForMarketStructure && !_msLeaderElectionAttempted)
                     TryAcquireMarketStructureLeadership();
 
@@ -9862,13 +10208,6 @@ namespace MyNamespace.Strategies
                 CheckAndRecreateCsvWriterIfNeeded();
 
                 int b = bar;
-
-            var c = GetCandle(bar);
-            if (c == null) // Explizite Null-Pr?fung f?r aktuelle Kerze
-            {
-                this.LogWarn($"OnCalculate: Aktuelle Kerze f?r Bar {bar} ist null. ?berspringe weitere Verarbeitung.");
-                return;
-            }
 
             var p = (b > 0) ? GetCandle(b - 1) : c;
             if (p == null) // Explizite Null-Pr?fung f?r vorherige Kerze
@@ -11267,6 +11606,308 @@ namespace MyNamespace.Strategies
                 return;
             }
 
+            try
+            {
+                if (_marketStructureContext != null && bar > 0 && _currentLevelsSnapshot != null && _hasOvLastClosed && ovSnapshot != null)
+                {
+                                        bool tick900Dirty = System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 0) == 1;
+                                        int maxReadyZoneId = -1;
+                    int pendingCount = 0;
+                    int activeCount = 0;
+                    try
+                    {
+                        var zonesNow = _marketStructureContext.ActiveZones;
+                        activeCount = zonesNow != null ? zonesNow.Count : 0;
+                        if (zonesNow != null && zonesNow.Count > 0)
+                        {
+                            for (int zi = 0; zi < zonesNow.Count; zi++)
+                            {
+                                var z = zonesNow[zi];
+                                if (z == null)
+                                    continue;
+                                if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used)
+                                    continue;
+                                if (z.IsConfirmed)
+                                    continue;
+                                pendingCount++;
+                                if (z.Id > maxReadyZoneId)
+                                    maxReadyZoneId = z.Id;
+                            }
+                        }
+                    }
+                    catch { maxReadyZoneId = -1; }
+
+                    int closedNow = bar - 1;
+                    if (closedNow >= 0 && closedNow != _lastPendingZonesLogClosed)
+                    {
+                        this.LogInfo("[OnCalculate-PENDING-ZONES] bar=" + bar + " closed=" + closedNow + " activeZones=" + activeCount + " pendingUnconfirmed=" + pendingCount + " maxPendingId=" + maxReadyZoneId);
+                        _lastPendingZonesLogClosed = closedNow;
+                    }
+
+                    bool notAlreadyTriggeredForClosed = closedNow != _lastIntrabarZoneTriggerClosed;
+                    bool newPendingZoneAppearedSameClosed = (closedNow == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId);
+                    if (pendingCount > 0 && closedNow >= 0 && (tick900Dirty || notAlreadyTriggeredForClosed || newPendingZoneAppearedSameClosed))
+                    {
+                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones present (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + closedNow + ")");
+
+                        OvSnapshot ovForClosedNow = null;
+                        try
+                        {
+                            if (ovSnapshot != null && ovSnapshot.Bar == closedNow)
+                                ovForClosedNow = ovSnapshot;
+                            else if (_ovSnapshotHistory != null && !_ovSnapshotHistory.IsEmpty)
+                            {
+                                int maxScan = 80;
+                                int count = 0;
+                                for (int off = 0; off >= -maxScan; off--)
+                                {
+                                    if (!_ovSnapshotHistory.TryGetRelative(off, out var s) || s == null)
+                                        break;
+                                    if (s.Bar == closedNow)
+                                    {
+                                        ovForClosedNow = s;
+                                        break;
+                                    }
+                                    count++;
+                                    if (count > maxScan)
+                                        break;
+                                }
+                            }
+                        }
+                        catch { ovForClosedNow = null; }
+
+                        if (ovForClosedNow == null)
+                        {
+                            try
+                            {
+                                var cc = GetCandle(closedNow);
+                                if (cc != null)
+                                {
+                                    decimal candlePocPrice = cc.Close;
+                                    decimal pocDelta = 0m;
+                                    try
+                                    {
+                                        var pocPvi = cc.MaxVolumePriceInfo;
+                                        if (pocPvi != null)
+                                        {
+                                            candlePocPrice = (decimal)pocPvi.Price;
+                                            pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
+                                        }
+                                    }
+                                    catch { }
+
+                                    ovForClosedNow = new OvSnapshot
+                                    {
+                                        Bar = closedNow,
+                                        ChartBarNumber = closedNow + 1,
+                                        SessionBarNumber = closedNow + 1,
+                                        Open = cc.Open,
+                                        High = cc.High,
+                                        Low = cc.Low,
+                                        Time = cc.Time,
+                                        Close = cc.Close,
+                                        Volume = cc.Volume,
+                                        Delta = cc.Delta,
+                                        Ask = cc.Ask,
+                                        Bid = cc.Bid,
+                                        BestAskPrice = Security?.BestAskPrice ?? 0m,
+                                        BestBidPrice = Security?.BestBidPrice ?? 0m,
+                                        CandlePocPrice = candlePocPrice,
+                                        PocDelta = pocDelta,
+                                    };
+                                }
+                            }
+                            catch { ovForClosedNow = null; }
+                        }
+
+                        MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternIntrabar = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
+
+                        // Berechne MarketRegime für closedNow (wie im isNewBar-Pfad)
+                        MarketRegime localRegimeForClosedNow = MarketRegime.None;
+                        MarketRegimeDetails localRegimeDetailsForClosedNow = null;
+                        try
+                        {
+                            var cRegIntra = GetCandle(closedNow);
+                            var pRegIntra = GetCandle(closedNow - 1);
+                            if (cRegIntra != null && pRegIntra != null && ovForClosedNow != null)
+                            {
+                                var cndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cRegIntra, ovForClosedNow?.NetDeltaTotal ?? 0m);
+                                var prevCndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pRegIntra, ovForClosedNow?.NetDeltaTotal ?? 0m);
+                                localRegimeDetailsForClosedNow = _marketRegimeEvaluator.GetCurrentMarketRegime(closedNow, ovForClosedNow, _myClusterStatistic, cndlIntra, prevCndlIntra);
+                                if (localRegimeDetailsForClosedNow != null)
+                                    localRegimeForClosedNow = localRegimeDetailsForClosedNow.Regime;
+                            }
+                        }
+                        catch (Exception exRegime)
+                        {
+                            this.LogWarn($"[OnCalculate-INTRABAR-PENDING] MarketRegime compute failed: {exRegime.Message}");
+                        }
+
+                        // Berechne MarketStateV2 für closedNow (wie im isNewBar-Pfad)
+                        MyNamespace.Strategies.Models.MarketStateV2 localMarketStateForClosedNow = null;
+                        try
+                        {
+                            if (_marketStateEngineV2 != null && ovForClosedNow != null && _currentVwapSnapshot != null)
+                            {
+                                var htfSwingHigh = _marketStructureContext?.LastConfirmedSwingHigh;
+                                var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
+                                bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovForClosedNow.Close, _tickSize, bufferTicks: 2);
+                                var htfZoneType = _marketStructureContext != null
+                                    ? _marketStructureContext.GetHtfZoneType(ovForClosedNow.Close, _tickSize, bufferTicks: 2)
+                                    : MyNamespace.Strategies.Models.HtfZoneType.None;
+
+                                var v2InputIntra = new MyNamespace.Strategies.Models.MarketStateInputV2(
+                                    bar: closedNow,
+                                    high: ovForClosedNow.High,
+                                    low: ovForClosedNow.Low,
+                                    close: ovForClosedNow.Close,
+                                    vwap: _currentVwapSnapshot.Current,
+                                    upperBand1: _currentVwapSnapshot.UpperBand1,
+                                    lowerBand1: _currentVwapSnapshot.LowerBand1,
+                                    upperBand2: _currentVwapSnapshot.UpperBand2,
+                                    lowerBand2: _currentVwapSnapshot.LowerBand2,
+                                    upperBand3: _currentVwapSnapshot.UpperBand3,
+                                    lowerBand3: _currentVwapSnapshot.LowerBand3,
+                                    currentVah: _currentLevelsSnapshot?.CurrentVAH ?? 0m,
+                                    currentVal: _currentLevelsSnapshot?.CurrentVAL ?? 0m,
+                                    candlePocPrice: ovForClosedNow.CandlePocPrice,
+                                    regime: localRegimeForClosedNow,
+                                    htfSwingHigh: htfSwingHigh,
+                                    htfSwingLow: htfSwingLow,
+                                    isInHtfZone: isInHtfZone,
+                                    htfZoneType: htfZoneType);
+
+                                localMarketStateForClosedNow = _marketStateEngineV2.Update(v2InputIntra);
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING] Computed MarketState for closedNow={closedNow}: Bias={localMarketStateForClosedNow?.Bias} Phase={localMarketStateForClosedNow?.Phase}");
+                            }
+                        }
+                        catch (Exception exState)
+                        {
+                            this.LogWarn($"[OnCalculate-INTRABAR-PENDING] MarketStateV2 compute failed: {exState.Message}");
+                        }
+
+                        // Fallback auf globale Werte wenn lokale Berechnung fehlschlägt
+                        if (localMarketStateForClosedNow == null)
+                            localMarketStateForClosedNow = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegimeForClosedNow };
+
+                        try
+                        {
+                            if (_patternRunner == null)
+                            {
+                                // skip detection - patternRunner not initialized
+                            }
+                            else if (_ofFeaturesHistory == null)
+                            {
+                                // skip detection - ofFeaturesHistory not initialized
+                            }
+                            else
+                            {
+                                OfFeatures featIntrabar = null;
+                                try
+                                {
+                                    if (_ofFeaturesByBar != null)
+                                        _ofFeaturesByBar.TryGetValue(closedNow, out featIntrabar);
+                                }
+                                catch { featIntrabar = null; }
+
+                                if (featIntrabar == null)
+                                {
+                                    try { _ofFeaturesHistory.TryGetByBar(closedNow, out featIntrabar); }
+                                    catch { featIntrabar = null; }
+                                }
+
+                                if (featIntrabar == null)
+                                {
+                                    try
+                                    {
+                                        OvSnapshot snapForClosed = null;
+                                        try
+                                        {
+                                            snapForClosed = ovForClosedNow;
+                                        }
+                                        catch { snapForClosed = null; }
+
+                                        if (_featureCalculator != null && snapForClosed != null)
+                                        {
+                                            var forced = _featureCalculator.ComputeFeaturesForLastBar(snapForClosed);
+                                            if (forced != null)
+                                            {
+                                                AddFeatureAndSync(forced);
+                                                featIntrabar = forced;
+                                            }
+                                        }
+                                        else if (snapForClosed == null)
+                                        {
+                                            // No OvSnapshot available - cannot force OfFeatures
+                                        }
+                                    }
+                                    catch (Exception)
+                                    {
+                                        // Forced OfFeatures compute failed - ignore
+                                    }
+                                }
+
+                                if (featIntrabar != null)
+                                {
+                                    if (featIntrabar != null && featIntrabar.Snapshot != null && !_ofFeaturesByBar.ContainsKey(closedNow))
+                                    {
+                                        _ofFeaturesByBar[closedNow] = featIntrabar;
+                                    }
+
+                                    var computedBias = localMarketStateForClosedNow.Bias;
+
+                                    var detectedPattern = _patternRunner.DetectDominantOrderflowPattern(
+                                        bar: closedNow,
+                                        history: _ofFeaturesHistory,
+                                        ofFeaturesByBar: _ofFeaturesByBar,
+                                        currentRegime: localRegimeForClosedNow,
+                                        currentDirectionalBias: computedBias,
+                                        currentMarketState: localMarketStateForClosedNow,
+                                        currentMarketStructureContext: _marketStructureContext,
+                                        currentBar: closedNow);
+                                }
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+
+                        _intrabarImmediatePlaceMode = true;
+                        _intrabarImmediatePlaceBar = bar;
+                        try
+                        {
+                            EvaluateSignalsAndOrders(
+                                closedNow,
+                                ovForClosedNow ?? ovSnapshot,
+                                _ofFeaturesHistory,
+                                _currentLevelsSnapshot.IsBlockedLong,
+                                _currentLevelsSnapshot.IsBlockedShort,
+                                _currentLevelsSnapshot,
+                                _currentLevelsSnapshot.CurrentPOC,
+                                _currentLevelsSnapshot.CurrentVAH,
+                                _currentLevelsSnapshot.CurrentVAL,
+                                localRegimeForClosedNow,
+                                detectedPatternIntrabar,
+                                localMarketStateForClosedNow,
+                                _currentVwapSnapshot?.Current ?? 0m);
+                        }
+                        finally
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+                        _lastIntrabarZoneTriggerClosed = closedNow;
+
+                        _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneId;
+                    }
+
+                    _lastSeenMarketStructureMaxReadyZoneId = maxReadyZoneId;
+                }
+            }
+            catch { }
+
             bool isNewBar = (bar != _lastSeenBar);
 
             if (isNewBar)
@@ -11307,8 +11948,7 @@ namespace MyNamespace.Strategies
                     // mindestens 2636 Elemente (Indizes 0 bis 2635) haben.
                     if (_myClusterStatistic.VolPerSecond.Count <= closed)
                     {
-                        //this.LogInfo($"[OC] MyClusterStatistic's VolPerSecond.Count ist {_myClusterStatistic.VolPerSecond.Count}, ben?tigt mindestens {closed + 1} f?r geschlossenen Bar {closed}. " + $"DataSeries[0].Count (aktuell) ist {_myClusterStatistic.DataSeries[0].Count}. ?berspringe Bewertung.");
-                        return;
+                        this.LogInfo($"[OnCalculate] MyClusterStatistic series not ready for closed={closed} (VolPerSecond.Count={_myClusterStatistic.VolPerSecond.Count}) -> continue with defaults (no postpone)");
                     }
 
                     // Wenn dieser Punkt erreicht wird, ist VolPerSecond.Count > closed.
@@ -11324,7 +11964,7 @@ namespace MyNamespace.Strategies
 
                     // Diagnose: welcher Z-Bar ist der letzte geschriebene?
                     int latestZBar = (_volBurstZ != null && _volBurstZ.Count > 0) ? _volBurstZ.Keys.Max() : -1;
-                    this.LogInfo($"[OnCalculate] 🆕 newBar: current={bar}, closed={closed}, lastEval={_lastEvalBar}, latestZBar={latestZBar}");
+                    this.LogInfo($"[OnCalculate] ? newBar: current={bar}, closed={closed}, lastEval={_lastEvalBar}, latestZBar={latestZBar}");
 
                     if (_lastEvalBar == closed)
                     {
@@ -11367,14 +12007,21 @@ namespace MyNamespace.Strategies
                         ? scoreLabel
                         : string.Empty;
 
-                    // HINZUGEF?GT: Werte aus MyClusterStatistic (angenommen, sie sind als Series verf?gbar)
-                    decimal candleDuration = _myClusterStatistic.CandleDurations[closed];
-                    decimal volPerSecond = _myClusterStatistic.VolPerSecond[closed];
-                    decimal emaVolPerSecond = _myClusterStatistic.EmaVolPerSecond[closed];
-                    decimal emaVolPerSecondStd = _myClusterStatistic.EmaVolPerSecondStd[closed];
-                    decimal cumulativeDelta = _myClusterStatistic.CumulativeDelta[closed];
-                    decimal cumulativeVolume = _myClusterStatistic.CumulativeVolume[closed];
-                    decimal barDeltaPerVolume = _myClusterStatistic.BarDeltaPerVolume[closed];
+                    // HINZUGEF?GT: Werte aus MyClusterStatistic (index-sicher; wenn Series noch nicht bereit, nutze 0)
+                    decimal candleDuration = 0m;
+                    decimal volPerSecond = 0m;
+                    decimal emaVolPerSecond = 0m;
+                    decimal emaVolPerSecondStd = 0m;
+                    decimal cumulativeDelta = 0m;
+                    decimal cumulativeVolume = 0m;
+                    decimal barDeltaPerVolume = 0m;
+                    try { if (_myClusterStatistic.CandleDurations != null && _myClusterStatistic.CandleDurations.Count > closed) candleDuration = _myClusterStatistic.CandleDurations[closed]; } catch { }
+                    try { if (_myClusterStatistic.VolPerSecond != null && _myClusterStatistic.VolPerSecond.Count > closed) volPerSecond = _myClusterStatistic.VolPerSecond[closed]; } catch { }
+                    try { if (_myClusterStatistic.EmaVolPerSecond != null && _myClusterStatistic.EmaVolPerSecond.Count > closed) emaVolPerSecond = _myClusterStatistic.EmaVolPerSecond[closed]; } catch { }
+                    try { if (_myClusterStatistic.EmaVolPerSecondStd != null && _myClusterStatistic.EmaVolPerSecondStd.Count > closed) emaVolPerSecondStd = _myClusterStatistic.EmaVolPerSecondStd[closed]; } catch { }
+                    try { if (_myClusterStatistic.CumulativeDelta != null && _myClusterStatistic.CumulativeDelta.Count > closed) cumulativeDelta = _myClusterStatistic.CumulativeDelta[closed]; } catch { }
+                    try { if (_myClusterStatistic.CumulativeVolume != null && _myClusterStatistic.CumulativeVolume.Count > closed) cumulativeVolume = _myClusterStatistic.CumulativeVolume[closed]; } catch { }
+                    try { if (_myClusterStatistic.BarDeltaPerVolume != null && _myClusterStatistic.BarDeltaPerVolume.Count > closed) barDeltaPerVolume = _myClusterStatistic.BarDeltaPerVolume[closed]; } catch { }
                     // Stacked imbalance Zusatzfelder: stelle sicher, dass _imbalanceRatioPct decimal ist
                     decimal stackedImbRatioPct = _imbalanceRatioPct; // bereits decimal, wie gew?nscht
 
@@ -11527,7 +12174,7 @@ namespace MyNamespace.Strategies
                         StackedImbRatioPct = _imbalanceRatioPct,
                         StackedImbRangeMin = _imbalanceRangeMin,
                         StackedImbMaxDepthTicks = _imbMaxDepthTicksAnchored,
-                        // 🟢 NEU: Spatial-Delta Properties
+                        // ? NEU: Spatial-Delta Properties
                         TopDeltaRatio = r.TopDeltaRatio,
                         BottomDeltaRatio = r.BottomDeltaRatio,
                         TopDominance = r.TopDominance,
@@ -11548,7 +12195,7 @@ namespace MyNamespace.Strategies
 
 
                     this.LogInfo(string.Format(CultureInfo.InvariantCulture,
-                        "[OnCalculate_SNAP] 🆕 Bar={0} ChartBarNumber={1} SessionBarNumber={2} Time={3:O} MarketRegime={4} " +
+                        "[OnCalculate_SNAP] ? Bar={0} ChartBarNumber={1} SessionBarNumber={2} Time={3:O} MarketRegime={4} " +
                         "Open={5:F2} High={6:F2} Low={7:F2} Close={8:F2} Volume={9:F2} Delta={10:F2} Ask={11:F2} Bid={12:F2} " +
                         "BestAskPrice={13:F2} BestBidPrice={14:F2} " +
                         "CandlePocPrice={15:F2} PocDelta={16:F4} PocVolume={17:F2} BidAtLow={18:F2} AskAtLow={19:F2} BidAtHigh={20:F2} AskAtHigh={21:F2} " +
@@ -11590,6 +12237,91 @@ namespace MyNamespace.Strategies
                     }
 
                     UpdateLastClosedOv(ovSnapshot);
+
+                    // Deferred intrabar pending-zone evaluation: now the snapshot/history should be aligned to 'closed'.
+                    try
+                    {
+                        if (_deferredIntrabarPendingEvalClosed == closed && _marketStructureContext != null && _currentLevelsSnapshot != null && _hasOvLastClosed && ovSnapshot != null)
+                        {
+                            int maxPendingIdNow = -1;
+                            int pendingCountNow = 0;
+                            try
+                            {
+                                var zonesNow = _marketStructureContext.ActiveZones;
+                                if (zonesNow != null && zonesNow.Count > 0)
+                                {
+                                    for (int zi = 0; zi < zonesNow.Count; zi++)
+                                    {
+                                        var z = zonesNow[zi];
+                                        if (z == null) continue;
+                                        if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                        if (z.IsConfirmed) continue;
+                                        pendingCountNow++;
+                                        if (z.Id > maxPendingIdNow) maxPendingIdNow = z.Id;
+                                    }
+                                }
+                            }
+                            catch { maxPendingIdNow = -1; pendingCountNow = 0; }
+
+                            if (pendingCountNow > 0)
+                            {
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED] Running deferred pending-zone eval. bar={bar} closed={closed} pending={pendingCountNow} maxPendingId={maxPendingIdNow} tick900Dirty={_deferredIntrabarPendingEvalTick900Dirty}");
+
+                                MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternDeferred = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
+                                try
+                                {
+                                    if (_patternRunner != null && _ofFeaturesHistory != null)
+                                    {
+                                        var safeOfFeaturesByBar = _ofFeaturesByBar ?? new Dictionary<int, OfFeatures>();
+                                        var localRegime = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None;
+                                        var localMarketState = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegime };
+                                        var localBias = localMarketState.Bias;
+                                        detectedPatternDeferred = _patternRunner.DetectDominantOrderflowPattern(
+                                            bar: closed,
+                                            history: _ofFeaturesHistory,
+                                            ofFeaturesByBar: safeOfFeaturesByBar,
+                                            currentRegime: localRegime,
+                                            currentDirectionalBias: localBias,
+                                            currentMarketState: localMarketState,
+                                            currentMarketStructureContext: _marketStructureContext,
+                                            currentBar: closed);
+                                        this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Detected: bar={bar} closed={closed} type={detectedPatternDeferred?.Type} dir={detectedPatternDeferred?.Direction} conf={detectedPatternDeferred?.ConfidenceScore:0.00}");
+                                    }
+                                    else
+                                    {
+                                        this.LogWarn($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Pattern detection skipped: runner={( _patternRunner==null ? "null" : "ok")} history={( _ofFeaturesHistory==null ? "null" : "ok")} (bar={bar}, closed={closed})");
+                                    }
+                                }
+                                catch (Exception exDet)
+                                {
+                                    this.LogWarn($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Detection failed: {exDet.GetType().Name}: {exDet.Message} (bar={bar}, closed={closed})");
+                                }
+
+                                EvaluateSignalsAndOrders(
+                                    closed,
+                                    ovSnapshot,
+                                    _ofFeaturesHistory,
+                                    _currentLevelsSnapshot.IsBlockedLong,
+                                    _currentLevelsSnapshot.IsBlockedShort,
+                                    _currentLevelsSnapshot,
+                                    _currentLevelsSnapshot.CurrentPOC,
+                                    _currentLevelsSnapshot.CurrentVAH,
+                                    _currentLevelsSnapshot.CurrentVAL,
+                                    _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
+                                    detectedPatternDeferred,
+                                    _currentMarketStateV2,
+                                    _currentVwapSnapshot?.Current ?? 0m);
+
+                                _lastIntrabarZoneTriggerClosed = closed;
+                                _lastIntrabarZoneTriggerMaxPendingId = maxPendingIdNow;
+                            }
+
+                            _deferredIntrabarPendingEvalClosed = -1;
+                            _deferredIntrabarPendingEvalMaxPendingId = -1;
+                            _deferredIntrabarPendingEvalTick900Dirty = false;
+                        }
+                    }
+                    catch { }
 
                     // ========== PHASE 3: MARKET REGIME ==========
 
@@ -11858,6 +12590,25 @@ namespace MyNamespace.Strategies
                                 {
                                     var mcndl = new IndicatorCandleAdapter(cndl, ovSnapshot?.NetDeltaTotal ?? 0m);
                                     var vwapNow = _currentVwapSnapshot?.Current ?? 0m;
+                                    int maxReadyZoneIdBefore = -1;
+                                    try
+                                    {
+                                        var zonesBefore = _marketStructureContext.ActiveZones;
+                                        if (zonesBefore != null && zonesBefore.Count > 0)
+                                        {
+                                            for (int zi = 0; zi < zonesBefore.Count; zi++)
+                                            {
+                                                var z = zonesBefore[zi];
+                                                if (z == null)
+                                                    continue;
+                                                if (z.Status != MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready)
+                                                    continue;
+                                                if (z.Id > maxReadyZoneIdBefore)
+                                                    maxReadyZoneIdBefore = z.Id;
+                                            }
+                                        }
+                                    }
+                                    catch { maxReadyZoneIdBefore = -1; }
                                     try
                                     {
                                         _marketStructureContext.ZigZagSensitivity = MarketStructureZigZagSensitivity;
@@ -11873,6 +12624,51 @@ namespace MyNamespace.Strategies
                                         recentOf: null,
                                         allowZoneCreation: !UseTick900ForMarketStructure,
                                         allowZoneLifecycle: true);
+
+                                    try
+                                    {
+                                        int maxReadyZoneIdAfter = -1;
+                                        var zonesAfter = _marketStructureContext.ActiveZones;
+                                        if (zonesAfter != null && zonesAfter.Count > 0)
+                                        {
+                                            for (int zi = 0; zi < zonesAfter.Count; zi++)
+                                            {
+                                                var z = zonesAfter[zi];
+                                                if (z == null)
+                                                    continue;
+                                                if (z.Status != MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Ready)
+                                                    continue;
+                                                if (z.Id > maxReadyZoneIdAfter)
+                                                    maxReadyZoneIdAfter = z.Id;
+                                            }
+                                        }
+
+                                        bool notAlreadyTriggeredForClosed = closed != _lastIntrabarZoneTriggerClosed;
+                                        bool newPendingZoneAppearedSameClosed = (closed == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneIdAfter > _lastIntrabarZoneTriggerMaxPendingId);
+                                        if (maxReadyZoneIdAfter >= 0 && maxReadyZoneIdAfter > maxReadyZoneIdBefore && (notAlreadyTriggeredForClosed || newPendingZoneAppearedSameClosed))
+                                        {
+                                            this.LogInfo($"[OnCalculate-INTRABAR-ZONE-AFTER-UPDATE] Ready zone created during MarketStructure.Update (maxReadyId {maxReadyZoneIdAfter} > {maxReadyZoneIdBefore}) at bar={bar}, closed={closed} -> EvaluateSignalsAndOrders NOW");
+                                            EvaluateSignalsAndOrders(
+                                                closed,
+                                                ovSnapshot,
+                                                _ofFeaturesHistory,
+                                                _currentLevelsSnapshot.IsBlockedLong,
+                                                _currentLevelsSnapshot.IsBlockedShort,
+                                                _currentLevelsSnapshot,
+                                                _currentLevelsSnapshot.CurrentPOC,
+                                                _currentLevelsSnapshot.CurrentVAH,
+                                                _currentLevelsSnapshot.CurrentVAL,
+                                                _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
+                                                new MyNamespace.Strategies.Models.DetectedOrderflowPattern(),
+                                                _currentMarketStateV2,
+                                                _currentVwapSnapshot?.Current ?? 0m);
+                                            _lastIntrabarZoneTriggerClosed = closed;
+
+                                            _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneIdAfter;
+                                            _lastSeenMarketStructureMaxReadyZoneId = Math.Max(_lastSeenMarketStructureMaxReadyZoneId, maxReadyZoneIdAfter);
+                                        }
+                                    }
+                                    catch { }
 
                                     try
                                     {
@@ -12531,14 +13327,34 @@ namespace MyNamespace.Strategies
 
                     // ========== PHASE 6: SIGNAL EVALUATION ==========
 
+                    // Wenn wir für diesen closed-Bar bereits einen Intrabar-Pending-Trigger hatten,
+                    // aktivieren wir den Intrabar-Immediate-Place-Modus, damit placeBar=bar (forming) statt closed verwendet wird.
+                    bool useIntrabarPlaceMode = (_lastIntrabarZoneTriggerClosed == closed);
+                    if (useIntrabarPlaceMode)
+                    {
+                        _intrabarImmediatePlaceMode = true;
+                        _intrabarImmediatePlaceBar = bar;
+                        this.LogInfo($"[OnCalculate-isNewBar] Activating intrabar immediate place mode for closed={closed} -> placeBar={bar}");
+                    }
 
                     //this.LogInfo($"[OnCalculate] Calling EvaluateSignalsAndOrders for closed={closed}, lastEvalBar(before)={_lastEvalBar}");
                     //this.LogInfo($"[DEBUG] Vor EvaluateSignalsAndOrders: Bar={bar}, POC={currentPOC}, VAH={currentVAH}, VAL={currentVAL}");
                     //this.LogInfo($"[DBG] Enter isNewBar: bar={bar}, closed={closed}, now={DateTime.UtcNow:O}, CurrentBar={CurrentBar}, _lastEvalBar={_lastEvalBar}");
-                    EvaluateSignalsAndOrders(
-                        closed, ovSnapshot, _ofFeaturesHistory, isBlockedLong, isBlockedShort,
-                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, currentMarketRegime, detectedPattern, _currentMarketStateV2,
-                        _currentVwapSnapshot?.Current ?? 0m);
+                    try
+                    {
+                        EvaluateSignalsAndOrders(
+                            closed, ovSnapshot, _ofFeaturesHistory, isBlockedLong, isBlockedShort,
+                            _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, currentMarketRegime, detectedPattern, _currentMarketStateV2,
+                            _currentVwapSnapshot?.Current ?? 0m);
+                    }
+                    finally
+                    {
+                        if (useIntrabarPlaceMode)
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+                    }
                     _lastEvalBar = closed;
 
                     //this.LogInfo($"[OnCalculate] EvaluateSignalsAndOrders completed for closed={closed}; setting _lastEvalBar={closed}");
@@ -12590,7 +13406,8 @@ namespace MyNamespace.Strategies
                 {
                     if (_entryBarIndex >= 0 && OrderTimeoutBars > 0) // defensive Vorbedingungen
                     {
-                        int timeoutBarIndex = _entryBarIndex + OrderTimeoutBars; // $$timeoutBarIndex = _entryBarIndex + OrderTimeoutBars$$
+                        int timeoutBaseBarIndex = _entryTimeoutStartBarIndex >= 0 ? _entryTimeoutStartBarIndex : _entryBarIndex;
+                        int timeoutBarIndex = timeoutBaseBarIndex + OrderTimeoutBars; // $$timeoutBarIndex = _entryBarIndex + OrderTimeoutBars$$
 
                         // Timeout nur pr?fen auf dem LatestClosedBar (oder dem erwarteten "bar" Parameter)
                         if (latestClosedBar >= timeoutBarIndex)
@@ -12647,6 +13464,7 @@ namespace MyNamespace.Strategies
                                     _entryOrder = null;
                                     _pullbackOrder = null;
                                     _entryBarIndex = -1;
+                                    _entryTimeoutStartBarIndex = -1;
                                 }
                             }
                             // sonst: Orders sind gef?llt oder in einem finalen/anderen Status ? nichts zu tun
@@ -13389,15 +14207,61 @@ namespace MyNamespace.Strategies
         {
             //this.LogInfo($"[DBG-EVAL] Start EvaluateSignalsAndOrders(closed={closed}) at {DateTime.UtcNow:O}");
 
-            if (closed < 0 || closed >= CurrentBar) return;
+            if (closed < 0 || closed >= CurrentBar)
+            {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=closed_out_of_range closed={closed} CurrentBar={CurrentBar}");
+                return;
+            }
             //this.LogInfo($"[DBG] Pre-Eval bar={bar}, hasZ=true, Z={Volumenburst:F6}, CurrentBar={CurrentBar}");
 
-            var c = GetCandle(closed);
-            var p = closed > 0 ? GetCandle(closed - 1) : c;
+            int? entryClosedOverride = null;
+            int? entryChartBarOverride = null;
+            try
+            {
+                if (detectedPattern?.MatchedCriteriaValues != null && detectedPattern.MatchedCriteriaValues.Count > 0)
+                {
+                    if (detectedPattern.MatchedCriteriaValues.TryGetValue("EntryClosedOverride", out var eIdxObj) && eIdxObj != null)
+                    {
+                        if (eIdxObj is int ei)
+                            entryClosedOverride = ei;
+                        else if (eIdxObj is long el)
+                            entryClosedOverride = (int)el;
+                        else if (int.TryParse(eIdxObj.ToString(), out var eParsed))
+                            entryClosedOverride = eParsed;
+                    }
+
+                    if (detectedPattern.MatchedCriteriaValues.TryGetValue("EntryChartBarOverride", out var eChartObj) && eChartObj != null)
+                    {
+                        if (eChartObj is int eci)
+                            entryChartBarOverride = eci;
+                        else if (eChartObj is long ecl)
+                            entryChartBarOverride = (int)ecl;
+                        else if (int.TryParse(eChartObj.ToString(), out var ecParsed))
+                            entryChartBarOverride = ecParsed;
+                    }
+                }
+            }
+            catch { }
+
+            int placeBar = closed;
+            if (_intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0)
+            {
+                placeBar = _intrabarImmediatePlaceBar;
+                this.LogInfo($"[EvaluateSignalsAndOrders] Intrabar immediate place mode: placeBar={placeBar} (was closed={closed})");
+            }
+            int placeChart = placeBar + 1;
+
+            int setupBar = closed;
+            if (_intrabarImmediatePlaceMode && entryClosedOverride.HasValue && entryClosedOverride.Value >= 0 && entryClosedOverride.Value < CurrentBar)
+                setupBar = entryClosedOverride.Value;
+
+            var c = GetCandle(setupBar);
+            var p = setupBar > 0 ? GetCandle(setupBar - 1) : c;
             double seconds = (c.Time - p.Time).TotalSeconds;
             if (seconds <= 0) seconds = 1;
             //this.LogInfo($"[Eval] bar={bar}, time={c.Time:O}");
-            bool inSession = IsWithinAnyTradingSession(closed);
+            bool inSession = IsWithinAnyTradingSession(setupBar);
             var tickSize = InstrumentInfo?.TickSize ?? _tickSize;
             int riskTicks = GetRiskTicks();
             bool wegFreiLong = true;
@@ -13544,6 +14408,8 @@ namespace MyNamespace.Strategies
             //this.LogInfo($"[EVAL] timeCheck inSession={inSession}");
             if (!inSession)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=outside_session setupBar={setupBar} time={c.Time:O}");
                 this.LogInfo("[EVAL] guard: outside session");
                 return;
             }
@@ -13558,6 +14424,8 @@ namespace MyNamespace.Strategies
             // 2. Pr?fen des Trading Managers (grundlegende Absicherung)
             if (TradingManager == null)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=trading_manager_null closed={closed} setupBar={setupBar}");
                 this.LogInfo($"[EvaluateSignalAndOrders] TradingManager ist null!");
                 return;
             }
@@ -13565,6 +14433,8 @@ namespace MyNamespace.Strategies
             // 3. Pr?fen auf ausreichend historische Kerzen
             if (closed < 2)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=insufficient_history closed={closed}");
                 return;
             }
 
@@ -13661,6 +14531,8 @@ namespace MyNamespace.Strategies
 
             if (hasOpenPosition || hasActiveTradingManagerOrders || hasPendingEntryOrders || hasPendingExitOrders)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=guards_open_pos_or_orders closed={closed} setupBar={setupBar} Pos={CurrentPosition} TMActive={hasActiveTradingManagerOrders} EntryPending={hasPendingEntryOrders} ExitPending={hasPendingExitOrders}");
                 this.LogInfo($"[GUARD] Skip: Pos={CurrentPosition}, TMOrders={hasActiveTradingManagerOrders}, " +
                              $"EntryOrders={hasPendingEntryOrders}, ExitOrders={hasPendingExitOrders}");
                 return;
@@ -13711,6 +14583,8 @@ namespace MyNamespace.Strategies
                         int pdPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.PreviousDayPOC));
                         if (pdPocDistTicks <= pocKlebeZoneTicks)
                         {
+                            if (_intrabarImmediatePlaceMode)
+                                this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=poc_cling_prev_day setupBar={setupBar} PdPOC={levelsSnapshot.PreviousDayPOC:F2} close={c.Close:F2} distTicks={pdPocDistTicks}");
                             this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am POC vom Vortag (PdPOC={levelsSnapshot.PreviousDayPOC:F2}, Close={c.Close:F2}, dist={pdPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
                             return;
                         }
@@ -13721,6 +14595,8 @@ namespace MyNamespace.Strategies
                         int curPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.CurrentPOC));
                         if (curPocDistTicks <= pocKlebeZoneTicks)
                         {
+                            if (_intrabarImmediatePlaceMode)
+                                this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=poc_cling_current setupBar={setupBar} POC={levelsSnapshot.CurrentPOC:F2} close={c.Close:F2} distTicks={curPocDistTicks}");
                             this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am aktuellen POC (POC={levelsSnapshot.CurrentPOC:F2}, Close={c.Close:F2}, dist={curPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
                             return;
                         }
@@ -13738,6 +14614,8 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
+                        if (_intrabarImmediatePlaceMode)
+                            this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=signal_candle_not_bullish setupBar={setupBar} open={c.Open:F2} close={c.Close:F2} pattern={detectedPattern.Type} conf={detectedPattern.ConfidenceScore:0.00}");
                         this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert: Signalkerze nicht bullisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
@@ -13752,6 +14630,8 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
+                        if (_intrabarImmediatePlaceMode)
+                            this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=signal_candle_not_bearish setupBar={setupBar} open={c.Open:F2} close={c.Close:F2} pattern={detectedPattern.Type} conf={detectedPattern.ConfidenceScore:0.00}");
                         this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert: Signalkerze nicht bärisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
@@ -14013,7 +14893,8 @@ namespace MyNamespace.Strategies
                 }
 
                 _activeTradeSetupParams = setup;
-                _entryBarIndex = closed;
+                _entryBarIndex = placeBar;
+                _entryTimeoutStartBarIndex = closed;
 
                 bool entryWegFreiLong = true;
                 string entryWegFreiLongBlocker = string.Empty;
@@ -14057,10 +14938,10 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
+                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: CurrentBar={CurrentBar}, lastOnCalcBar={_lastOnCalculateBar}, dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}, closedChart={closed + 1}, placeBar={placeBar}, placeChart={placeChart}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-LONG] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={longEntryPrice:F2}.");
-                PlaceEntry(OrderDirections.Buy, longEntryPrice, closed);
+                PlaceEntry(OrderDirections.Buy, longEntryPrice, placeBar);
                 return; // Beende die Methode nach Orderplatzierung
             }
             else if (isShortSetupValid)
@@ -14206,7 +15087,8 @@ namespace MyNamespace.Strategies
                 }
 
                 _activeTradeSetupParams = setup;
-                _entryBarIndex = closed;
+                _entryBarIndex = placeBar;
+                _entryTimeoutStartBarIndex = closed;
 
                 bool entryWegFreiShort = true;
                 string entryWegFreiShortBlocker = string.Empty;
@@ -14250,16 +15132,13 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
+                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: CurrentBar={CurrentBar}, lastOnCalcBar={_lastOnCalculateBar}, dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}, closedChart={closed + 1}, placeBar={placeBar}, placeChart={placeChart}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-SHORT] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={shortEntryPrice:F2}.");
-                PlaceEntry(OrderDirections.Sell, shortEntryPrice, closed);
+                PlaceEntry(OrderDirections.Sell, shortEntryPrice, placeBar);
                 return; // Beende die Methode nach Orderplatzierung
             }
         }
-
-
-
 
 
 
@@ -16978,6 +17857,30 @@ namespace MyNamespace.Strategies
             _entryBarIndex = bar;
             this.LogInfo($"[PlaceEntry SET] entryBarIndex={_entryBarIndex} timeoutBars={_orderTimeoutBars} " +
                  $"timeoutBarIndex={_entryBarIndex + _orderTimeoutBars}");
+            try
+            {
+                var cb = CurrentBar;
+                int lastCalcBar = _lastOnCalculateBar;
+                int calcClosed = lastCalcBar - 1;
+
+                DateTime? tClosed = null;
+                DateTime? tForming = null;
+                try
+                {
+                    if (TryGetCandleSafe(cb - 1, out var icClosed) && icClosed != null)
+                        tClosed = icClosed.Time;
+                }
+                catch { }
+                try
+                {
+                    if (TryGetCandleSafe(cb, out var icForming) && icForming != null)
+                        tForming = icForming.Time;
+                }
+                catch { }
+
+                this.LogInfo($"[PlaceEntry-TIMING] CurrentBar={cb} CurrentClosed={(cb - 1)} lastOnCalcBar={lastCalcBar} lastOnCalcClosed={calcClosed} argBar={bar} nowUtc={DateTime.UtcNow:O} candleTime(CurrentClosed)={(tClosed.HasValue ? tClosed.Value.ToString("O") : "n/a")} candleTime(CurrentForming)={(tForming.HasValue ? tForming.Value.ToString("O") : "n/a")}");
+            }
+            catch { }
 
             // Sende-Log inkl. tats?chlich verwendeter Menge
             if (entry.Type == OrderTypes.Stop)
