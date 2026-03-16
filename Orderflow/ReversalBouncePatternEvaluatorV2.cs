@@ -3135,6 +3135,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                     var checkedParts = new List<string>(8);
                     string absorptionDbg = string.Empty;
+                    bool? signalCloseClaimedOk = null;
                     if (hasDecision && barDecision?.Items != null)
                     {
                         foreach (var it in barDecision.Items)
@@ -3160,12 +3161,27 @@ namespace MyNamespace.Strategies.Orderflow
 
                             string shortKey = it.Key.Replace("Signal_", string.Empty, StringComparison.Ordinal);
                             checkedParts.Add($"{shortKey}({(it.Points > 0m ? "+" : "0")})");
+
+                            if (it.Key == "Signal_Close")
+                                signalCloseClaimedOk = it.Points > 0m;
                         }
                     }
 
                     string checks = checkedParts.Count > 0 ? " | " + string.Join(" ", checkedParts) : string.Empty;
                     string absExtra = !string.IsNullOrEmpty(absorptionDbg) ? $" | {absorptionDbg}" : string.Empty;
-                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}{absExtra}".TrimEnd());
+
+                    string closeMismatch = string.Empty;
+                    if (signalCloseClaimedOk.HasValue)
+                    {
+                        bool actualCloseInDir = _direction == OrderDirections.Buy
+                            ? s.Close >= s.Open
+                            : s.Close <= s.Open;
+
+                        if (signalCloseClaimedOk.Value != actualCloseInDir)
+                            closeMismatch = $" | CLOSE_MISMATCH claimed={(signalCloseClaimedOk.Value ? "+" : "0")} actualO={s.Open:F2} actualC={s.Close:F2}";
+                    }
+
+                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}{absExtra}{closeMismatch}".TrimEnd());
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
