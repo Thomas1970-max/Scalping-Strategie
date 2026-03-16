@@ -944,6 +944,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
                 if (wickSize < minWickSize)
                     return null;
 
+                var range = c.High - c.Low;
+                if (range > 0)
+                {
+                    var wickRatio = wickSize / range;
+                    var closePos = (c.Close - c.Low) / range;
+                    if (wickRatio < 0.30m || closePos < 0.25m)
+                        return null;
+                }
+
                 var top = bodyLow;
                 if (top <= minLow)
                     return null;
@@ -957,6 +966,15 @@ namespace MyNamespace.Strategies.MarketAnalysis
             var minWickSizeR = Math.Max(1, wickMinTicks) * tickSize;
             if (wickSizeR < minWickSizeR)
                 return null;
+
+            var rangeR = c.High - c.Low;
+            if (rangeR > 0)
+            {
+                var wickRatioR = wickSizeR / rangeR;
+                var closePosR = (c.Close - c.Low) / rangeR;
+                if (wickRatioR < 0.30m || closePosR > 0.75m)
+                    return null;
+            }
 
             var bottom = bodyHigh;
             if (bottom >= maxHigh)
