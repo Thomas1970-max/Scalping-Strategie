@@ -14069,6 +14069,25 @@ namespace MyNamespace.Strategies
             }
             catch { }
 
+            // Guard: Retro-Entry in Pending-Zone nur zulassen, wenn das Signalbar direkt vor der aktuell entstehenden Forming-Bar liegt.
+            // (Sonst ist Entry/Preis-Kontext veraltet, wenn der Markt bereits mehrere Bars weiter ist.)
+            try
+            {
+                if (caller == "IntrabarPending" && entryClosedOverride.HasValue)
+                {
+                    int requiredSignalBar = CurrentBar - 1;
+                    if (entryClosedOverride.Value != requiredSignalBar)
+                    {
+                        this.LogInfo(
+                            $"[SETUP-BLOCKED-RETRO-TIMING] caller={caller} pattern={detectedPattern?.Type} dir={detectedPattern?.Direction} " +
+                            $"CurrentBar={CurrentBar} requiredSignalBar={requiredSignalBar} EntryClosedOverride={entryClosedOverride.Value} " +
+                            $"closed={closed} intrabarMode={_intrabarImmediatePlaceMode} intrabarPlaceBar={_intrabarImmediatePlaceBar}");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             int placeBar = closed;
             if (_intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0)
             {
