@@ -5670,6 +5670,8 @@ namespace MyNamespace.Strategies
         private decimal _signalBarHigh = 0m;
         private decimal _signalBarLow = 0m;
 
+        private int _lastEntryAttemptSetupBar = -1;
+
         private int _entryTimeoutStartBarIndex = -1;
 
         private int _entryBandIdx = 0;               // 1 oder 2
@@ -14078,6 +14080,18 @@ namespace MyNamespace.Strategies
             int setupBar = closed;
             if (entryClosedOverride.HasValue && entryClosedOverride.Value >= 0 && entryClosedOverride.Value < CurrentBar)
                 setupBar = entryClosedOverride.Value;
+
+            if (detectedPattern != null && detectedPattern.IsDetected && setupBar >= 0)
+            {
+                if (_lastEntryAttemptSetupBar == setupBar)
+                {
+                    if (_intrabarImmediatePlaceMode)
+                        this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=entry_dedupe_same_setup_bar caller={caller} setupBar={setupBar} closed={closed} placeBar={( _intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0 ? _intrabarImmediatePlaceBar : closed)} pattern={detectedPattern.Type} dir={detectedPattern.Direction}");
+                    this.LogInfo($"[ENTRY-DEDUPE] Skip duplicate entry evaluation: setupBar={setupBar} closed={closed} caller={caller} pattern={detectedPattern.Type} dir={detectedPattern.Direction}");
+                    return;
+                }
+                _lastEntryAttemptSetupBar = setupBar;
+            }
 
             var c = GetCandle(setupBar);
             var p = setupBar > 0 ? GetCandle(setupBar - 1) : c;
