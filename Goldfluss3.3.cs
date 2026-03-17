@@ -11485,6 +11485,13 @@ namespace MyNamespace.Strategies
                                     }
                                     catch { }
 
+                                    var lowPvi = cc.GetPriceVolumeInfo(cc.Low);
+                                    var highPvi = cc.GetPriceVolumeInfo(cc.High);
+                                    decimal bidAtLow = lowPvi != null ? (decimal)lowPvi.Bid : 0m;
+                                    decimal askAtLow = lowPvi != null ? (decimal)lowPvi.Ask : 0m;
+                                    decimal bidAtHigh = highPvi != null ? (decimal)highPvi.Bid : 0m;
+                                    decimal askAtHigh = highPvi != null ? (decimal)highPvi.Ask : 0m;
+
                                     ovForEvalBar = new OvSnapshot
                                     {
                                         Bar = evalBar,
@@ -11503,6 +11510,10 @@ namespace MyNamespace.Strategies
                                         BestBidPrice = Security?.BestBidPrice ?? 0m,
                                         CandlePocPrice = candlePocPrice,
                                         PocDelta = pocDelta,
+                                        BidAtLow = bidAtLow,
+                                        AskAtLow = askAtLow,
+                                        BidAtHigh = bidAtHigh,
+                                        AskAtHigh = askAtHigh,
                                     };
                                 }
                             }
