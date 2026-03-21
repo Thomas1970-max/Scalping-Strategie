@@ -5,7 +5,7 @@ using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
 using MyNamespace.Strategies.Orderflow;
 using Utils.Common.Logging;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.MarketAnalysis
 {

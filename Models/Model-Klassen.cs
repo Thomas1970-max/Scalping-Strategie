@@ -1,7 +1,7 @@
 using System; // Für [Flags] Attribut, falls GateMetric ein Flags-Enum ist
 using ATAS.DataFeedsCore;
 using System.Collections.Generic;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 using MyNamespace.Strategies.Orderflow;
 using static MyNamespace.Strategies.Models.DetectedOrderflowPattern;
 using MyNamespace.Strategies.Models;

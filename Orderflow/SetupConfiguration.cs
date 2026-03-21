@@ -1,16 +1,16 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.Orderflow
 {
     /// <summary>
-    /// ReprÃ¤sentiert die globale Konfiguration fÃ¼r eine Strategie.
-    /// EnthÃ¤lt globale Einstellungen, Handelszeiten, adaptive Parameter und eine Sammlung
+    /// Repräsentiert die globale Konfiguration für eine Strategie.
+    /// Enthält globale Einstellungen, Handelszeiten, adaptive Parameter und eine Sammlung
     /// von muster-spezifischen Bedingungskonfigurationen.
     /// </summary>
     [TypeConverter(typeof(ExpandableObjectConverter))]
@@ -64,7 +64,7 @@ namespace MyNamespace.Strategies.Orderflow
         public int MaxRangeBandWidth { get; set; } // In Ticks
 
         [Browsable(false)]
-        public decimal VolPerSecondHighActivityMultiplier { get; set; } // FÃ¼r highVol PrÃ¼fung
+        public decimal VolPerSecondHighActivityMultiplier { get; set; } // Für highVol Prüfung
 
         [Browsable(false)]
         public decimal RangeReversalTicks { get; set; } = 4m;

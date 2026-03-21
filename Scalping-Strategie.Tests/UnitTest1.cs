@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Runtime.Serialization;
 using MyNamespace.Strategies;
 using Xunit;
@@ -7,9 +7,9 @@ namespace Scalping_Strategie.Tests;
 
 public class ImbalanceScoreTests
 {
-    private static object CreateUninitializedGoldfluss()
+    private static object CreateUninitializedGeldfluss()
     {
-        var type = typeof(Goldfluss3_3);
+        var type = typeof(Geldfluss3_3);
 #pragma warning disable SYSLIB0050
         return FormatterServices.GetUninitializedObject(type);
 #pragma warning restore SYSLIB0050
@@ -17,7 +17,7 @@ public class ImbalanceScoreTests
 
     private static object CreateStackedImbParams(int maxDepthTicksAnchored)
     {
-        var type = typeof(Goldfluss3_3).GetNestedType("StackedImbParams", BindingFlags.Public | BindingFlags.NonPublic);
+        var type = typeof(Geldfluss3_3).GetNestedType("StackedImbParams", BindingFlags.Public | BindingFlags.NonPublic);
         Assert.NotNull(type);
         var instance = Activator.CreateInstance(type!);
         type!.GetField("MaxDepthTicksAnchored")?.SetValue(instance, maxDepthTicksAnchored);
@@ -34,7 +34,7 @@ public class ImbalanceScoreTests
         decimal avgSellVol,
         decimal baseVolMedian)
     {
-        var type = typeof(Goldfluss3_3).GetNestedType("StackedImbalanceResult", BindingFlags.Public);
+        var type = typeof(Geldfluss3_3).GetNestedType("StackedImbalanceResult", BindingFlags.Public);
         Assert.NotNull(type);
         var instance = Activator.CreateInstance(type!);
         type!.GetField("TotalPairs")?.SetValue(instance, totalPairs);
@@ -50,7 +50,7 @@ public class ImbalanceScoreTests
 
     private static (decimal score, string label) ComputeScore(object instance, object result, object param)
     {
-        var method = typeof(Goldfluss3_3).GetMethod("ComputeImbalanceScore", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Geldfluss3_3).GetMethod("ComputeImbalanceScore", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         object?[] args = { result, param, null };
         var score = (decimal)method!.Invoke(instance, args)!;
@@ -61,7 +61,7 @@ public class ImbalanceScoreTests
     [Fact]
     public void Score_IsZero_WhenInsufficientLevels()
     {
-        var instance = CreateUninitializedGoldfluss();
+        var instance = CreateUninitializedGeldfluss();
         var result = CreateResult(1, 0, 0, 0, 0, 0m, 0m, 0m);
         var param = CreateStackedImbParams(3);
 
@@ -74,7 +74,7 @@ public class ImbalanceScoreTests
     [Fact]
     public void Score_IsStrongBuy_ForDominantBuyStack()
     {
-        var instance = CreateUninitializedGoldfluss();
+        var instance = CreateUninitializedGeldfluss();
         var result = CreateResult(totalPairs: 10, buyCountMax: 8, sellCountMax: 0, buyTopAnchored: 3, sellBottomAnchored: 0,
             avgBuyVol: 200m, avgSellVol: 0m, baseVolMedian: 100m);
         var param = CreateStackedImbParams(3);
@@ -88,7 +88,7 @@ public class ImbalanceScoreTests
     [Fact]
     public void Score_IsStrongSell_ForDominantSellStack()
     {
-        var instance = CreateUninitializedGoldfluss();
+        var instance = CreateUninitializedGeldfluss();
         var result = CreateResult(totalPairs: 10, buyCountMax: 0, sellCountMax: 8, buyTopAnchored: 0, sellBottomAnchored: 3,
             avgBuyVol: 0m, avgSellVol: 200m, baseVolMedian: 100m);
         var param = CreateStackedImbParams(3);

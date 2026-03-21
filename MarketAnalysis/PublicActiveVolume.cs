@@ -19,7 +19,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         private ILoggerSource? _loggerSource;
 
-        private Dictionary<decimal, decimal> _totalValues = new();
+        private Dictionary<decimal, decimal> _totalGeldfluss = new();
         private List<CumulativeTrade> _cumulativeTrades = new();
 
         private DateTime _dateTimeFrom = DateTime.MinValue;
@@ -163,7 +163,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
             lock (_locker)
             {
                 _tickBasedCalculation = false;
-                _totalValues.Clear();
+                _totalGeldfluss.Clear();
                 _cumulativeTrades.Clear();
                 _totalVolume = 0m;
                 _signature = 0;
@@ -492,7 +492,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         public Dictionary<decimal, decimal> GetTotalSnapshot()
         {
             lock (_locker)
-                return new Dictionary<decimal, decimal>(_totalValues);
+                return new Dictionary<decimal, decimal>(_totalGeldfluss);
         }
 
         private void ResetSession()
@@ -503,7 +503,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         private void ResetSession_NoLock()
         {
-            _totalValues.Clear();
+            _totalGeldfluss.Clear();
             _cumulativeTrades.Clear();
             _totalVolume = 0m;
             _signature = 0;
@@ -515,13 +515,13 @@ namespace MyNamespace.Strategies.MarketAnalysis
             if (volume == 0m)
                 return;
 
-            _totalValues.TryGetValue(price, out var v);
+            _totalGeldfluss.TryGetValue(price, out var v);
             var nv = v + volume;
 
             if (nv == 0m)
-                _totalValues.Remove(price);
+                _totalGeldfluss.Remove(price);
             else
-                _totalValues[price] = nv;
+                _totalGeldfluss[price] = nv;
 
             _totalVolume += volume;
 
@@ -536,7 +536,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
 
         private void RebuildFromTrades_NoLock()
         {
-            _totalValues.Clear();
+            _totalGeldfluss.Clear();
             _totalVolume = 0m;
             _signature = 0;
 

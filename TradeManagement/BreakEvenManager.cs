@@ -1,9 +1,9 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using Utils.Common.Logging;
-using static MyNamespace.Strategies.Goldfluss3_3; // Damit OrderDirections gefunden werden
+using static MyNamespace.Strategies.Geldfluss3_3; // Damit OrderDirections gefunden werden
 
 namespace MyNamespace.Strategies.TradeManagement
 {
@@ -15,7 +15,7 @@ namespace MyNamespace.Strategies.TradeManagement
         private readonly OrderDirections _direction;
         private readonly decimal _tickSizePriceUnit;
 
-        // Internes Tracking des Best-Preises (Extrem seit Entry) fÃ¼r intrabar-Profit
+        // Internes Tracking des Best-Preises (Extrem seit Entry) für intrabar-Profit
         private decimal _internalBestPrice;
 
         public BreakEvenManager(decimal entryPrice, OrderDirections direction, decimal tickSize, IEnumerable<BreakEvenStage> stages, decimal initialBestPrice = 0m)
@@ -37,7 +37,7 @@ namespace MyNamespace.Strategies.TradeManagement
             if (currentPrice <= 0m)
                 return null;
 
-            // 1) Internes Extrem fortschreiben â€“ FIX: Wenn bestPrice >0, priorisiere es (globales Best), sonst nur current
+            // 1) Internes Extrem fortschreiben – FIX: Wenn bestPrice >0, priorisiere es (globales Best), sonst nur current
             if (_direction == OrderDirections.Buy)
             {
                 if (bestPrice > 0m)
@@ -59,14 +59,14 @@ namespace MyNamespace.Strategies.TradeManagement
                     _internalBestPrice = Math.Min(_internalBestPrice, currentPrice);
             }
 
-            // 2) Bewegte Distanz â€“ NEU: Nutze immer _internalBestPrice (jetzt sync't mit global, wenn bestPrice>0)
+            // 2) Bewegte Distanz – NEU: Nutze immer _internalBestPrice (jetzt sync't mit global, wenn bestPrice>0)
             decimal moved = (_direction == OrderDirections.Buy)
                 ? (_internalBestPrice - _entryPrice)
                 : (_entryPrice - _internalBestPrice);
 
-            this.LogDebug($"[BE-Manager] Moved calc: {_internalBestPrice} vs Entry {_entryPrice} = {moved:F2}");  // NEU: FÃ¼r Threshold-Debug
+            this.LogDebug($"[BE-Manager] Moved calc: {_internalBestPrice} vs Entry {_entryPrice} = {moved:F2}");  // NEU: Für Threshold-Debug
 
-            // 3) NÃ¤chste Stufe prÃ¼fen (unverÃ¤ndert, aber mit besserem moved)
+            // 3) Nächste Stufe prüfen (unverändert, aber mit besserem moved)
             for (int i = _lastActivatedIndex + 1; i < _stages.Count; i++)
             {
                 var s = _stages[i];
@@ -88,7 +88,7 @@ namespace MyNamespace.Strategies.TradeManagement
                     if (shouldModify)
                     {
                         _lastActivatedIndex = i;
-                        this.LogInfo($"[BE-Manager] Stage {i + 1} triggered: Moved={moved:F2} >= Th={triggerDistance:F2}, NewStop={newStop}");  // NEU: Info fÃ¼r Trigger
+                        this.LogInfo($"[BE-Manager] Stage {i + 1} triggered: Moved={moved:F2} >= Th={triggerDistance:F2}, NewStop={newStop}");  // NEU: Info für Trigger
                         return newStop;
                     }
                     else

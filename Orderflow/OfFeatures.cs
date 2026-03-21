@@ -1,7 +1,7 @@
 using System;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.Orderflow
 {

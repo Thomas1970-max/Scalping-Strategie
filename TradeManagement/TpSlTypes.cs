@@ -1,6 +1,6 @@
-ï»¿using System.Collections.Generic;
+using System.Collections.Generic;
 using ATAS.DataFeedsCore;
-using static MyNamespace.Strategies.Goldfluss3_3;// damit OrderDirections, LevelsSnapshot, Candle, VwapSnapshot gefunden werden (falls diese Typen dort definiert sind)
+using static MyNamespace.Strategies.Geldfluss3_3;// damit OrderDirections, LevelsSnapshot, Candle, VwapSnapshot gefunden werden (falls diese Typen dort definiert sind)
 using ATAS.Indicators;
 using ATAS.Strategies;
 using ATAS.Indicators.Technical;
@@ -35,16 +35,16 @@ namespace MyNamespace.Strategies.TradeManagement
         
         // NEU: Dynamische Level-basierte TP-Berechnung
         public bool UseDynamicLevelTp { get; set; } = false;
-        public decimal DynamicLevelTpOffsetTicks { get; set; } = 1m; // Offset vom nÃ¤chsten Level
-        public decimal? MaxDynamicTpDistanceTicks { get; set; } = 12m; // Maximale Distanz fÃ¼r dynamisches TP
-        public decimal? MinDynamicTpDistanceTicks { get; set; } = 0m;  // Minimale Distanz fÃ¼r dynamisches TP (Fallback wenn zu nah)
+        public decimal DynamicLevelTpOffsetTicks { get; set; } = 1m; // Offset vom nächsten Level
+        public decimal? MaxDynamicTpDistanceTicks { get; set; } = 12m; // Maximale Distanz für dynamisches TP
+        public decimal? MinDynamicTpDistanceTicks { get; set; } = 0m;  // Minimale Distanz für dynamisches TP (Fallback wenn zu nah)
 
         // NEU: SL Calculation Strategy
         public string? SlType { get; set; } // z.B. "Ticks", "ATR", "Level"
         public string? SlLevelKey { get; set; } // z.B. "VWAP", "VWAPBAND1_UPPER", "VWAPBAND1_LOWER"
         public decimal? SlLevelOffsetTicks { get; set; } // Optionaler Offset vom Level in Ticks
 
-        // NEU: Parameter fÃ¼r VolPerSecond-basierte SL-Berechnung, wenn SlType = "VolPerSecondScaled"
+        // NEU: Parameter für VolPerSecond-basierte SL-Berechnung, wenn SlType = "VolPerSecondScaled"
         public decimal? BaseSlTicksAtAvgVol { get; set; }
         public decimal? SlVolPerSecondScaleMultiplier { get; set; }
         public int? MinSlTicks { get; set; }
@@ -64,7 +64,7 @@ namespace MyNamespace.Strategies.TradeManagement
 
         // Vorzeitige Ausstiegsstufen: kommagetrennte Liste, z. B. "POC,VAH".
         public string? EarlyExitLevels { get; set; }
-        // maximaler Abstand vom Einstiegsniveau bis zur BerÃ¼cksichtigung des frÃ¼hen Ausstiegs (in Ticks)
+        // maximaler Abstand vom Einstiegsniveau bis zur Berücksichtigung des frühen Ausstiegs (in Ticks)
         public decimal? EarlyExitMaxDistTicks { get; set; }
         public bool? EarlyExitCloseAtLevel { get; set; }
         public decimal? ProximityTicksForExit { get; set; } = 2m;
@@ -98,10 +98,10 @@ namespace MyNamespace.Strategies.TradeManagement
     public class TrailingConfiguration
     {
         public TrailingType TrailType { get; set; } = TrailingType.None;
-        public decimal TrailOffsetTicks { get; set; } = 0; // Abstand in Ticks (fÃ¼r FixedTicks oder als Basis fÃ¼r ATR)
+        public decimal TrailOffsetTicks { get; set; } = 0; // Abstand in Ticks (für FixedTicks oder als Basis für ATR)
         public decimal TrailActivateAfterTicks { get; set; } = 0; // Aktivierung in Ticks vom Entry
                                                                   // public decimal AtrMultiplier { get; set; } = 0; // Falls Sie einen ATR-Multiplikator wollen
-                                                                  // ... weitere Parameter, die fÃ¼r spezifische Trailing-Typen relevant sind
+                                                                  // ... weitere Parameter, die für spezifische Trailing-Typen relevant sind
     }
 
     public enum TrailingType
@@ -109,15 +109,15 @@ namespace MyNamespace.Strategies.TradeManagement
         None,       // Kein Trailing-Stop
         FixedTicks, // Fester Abstand in Ticks vom Best-Price
         ATR,        // Abstand basierend auf ATR
-        CandleLowHigh, // Wie Ihr aktueller Manager (Low-Tick fÃ¼r Long, High+Tick fÃ¼r Short)
-                       // ... weitere Trailing-Typen, falls Sie diese hinzufÃ¼gen mÃ¶chten
+        CandleLowHigh, // Wie Ihr aktueller Manager (Low-Tick für Long, High+Tick für Short)
+                       // ... weitere Trailing-Typen, falls Sie diese hinzufügen möchten
     }
 
     public class EarlyExitRule
     {
         // Level key, e.g. "POC", "VAH", "VAL", "DAY_HIGH" ...
         public string LevelKey { get; set; } = string.Empty;
-        // Wenn wahr: die gesamte Position auf dem Niveau schlieÃŸen (Gewinn mitnehmen). Wenn falsch: Stopp auf das Niveau verschieben (anziehen).
+        // Wenn wahr: die gesamte Position auf dem Niveau schließen (Gewinn mitnehmen). Wenn falsch: Stopp auf das Niveau verschieben (anziehen).
         public bool CloseAtLevel { get; set; } = false;
         // Gilt nur, wenn das Niveau innerhalb dieses Abstands (in Ticks) vom Einstieg liegt
         public decimal MaxDistanceTicks { get; set; } = decimal.MaxValue;
@@ -138,7 +138,7 @@ namespace MyNamespace.Strategies.TradeManagement
         public decimal Coh01 { get; set; }
         public decimal Tick { get; set; }
 
-        // NEU: Werte fÃ¼r VolatilitÃ¤t basierend auf VolPerSecond
+        // NEU: Werte für Volatilität basierend auf VolPerSecond
         public decimal CurrentVolPerSecond { get; set; }
         public decimal AvgVolPerSecond { get; set; }
 
@@ -149,11 +149,11 @@ namespace MyNamespace.Strategies.TradeManagement
 
         public Action<string> Logger { get; set; } = msg => Console.WriteLine(msg);  // Default-Logger; setze in Strategy: ctx.Logger = (s) => this.LogInfo(s);
 
-        // NEU: System-Status fÃ¼r separate TP/SL-Strategien
+        // NEU: System-Status für separate TP/SL-Strategien
         public bool EnableIsBlocked { get; set; } = true;           // Level-System aktiv?
         public bool EnableMicroCompositeSystem { get; set; } = true; // MicroComposite-System aktiv?
-        public bool WegFreiLong { get; set; } = true;              // Weg-Frei fÃ¼r Long-Trades
-        public bool WegFreiShort { get; set; } = true;             // Weg-Frei fÃ¼r Short-Trades
+        public bool WegFreiLong { get; set; } = true;              // Weg-Frei für Long-Trades
+        public bool WegFreiShort { get; set; } = true;             // Weg-Frei für Short-Trades
 
     }
 

@@ -1,7 +1,7 @@
 using System;
 using System.ComponentModel;
 using ATAS.DataFeedsCore;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 using MyNamespace.Strategies.Orderflow;
 using System.ComponentModel.DataAnnotations;
 using OFTParameter = OFT.Attributes.ParameterAttribute;
