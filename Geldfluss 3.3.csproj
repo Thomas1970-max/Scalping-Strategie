@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <RootNamespace>Goldfluss 3.3</RootNamespace>
+    <RootNamespace>Geldfluss 3.3</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
      <UseWPF>true</UseWPF>  
     <Nullable>enable</Nullable>

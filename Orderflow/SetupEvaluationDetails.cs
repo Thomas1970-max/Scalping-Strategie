@@ -1,14 +1,14 @@
-ï»¿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
-// Diese Klasse hÃ¤lt die zusammengestellten Hard- und Relevant-Conditions.
+// Diese Klasse hält die zusammengestellten Hard- und Relevant-Conditions.
 
 namespace MyNamespace.Strategies.Orderflow
 {
-    // Speichert Bewertungsergebnisse fÃ¼r harte und relevante Bedingungen
+    // Speichert Bewertungsergebnisse für harte und relevante Bedingungen
     public class SetupEvaluationDetails
     {
     }

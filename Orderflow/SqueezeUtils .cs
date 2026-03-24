@@ -2,7 +2,7 @@ using System;
 using System.Linq;
 // using ATAS.DataFeedsCore; // Nicht direkt in der Engine benötigt, aber für Modelle
 using MyNamespace.Strategies.Models;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 using Utils.Common.Logging; // LoggerHelper.Verwendung
 
 namespace MyNamespace.Strategies.Orderflow

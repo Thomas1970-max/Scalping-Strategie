@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Goldfluss 3.3.csproj" />
+    <ProjectReference Include="..\Geldfluss 3.3.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,19 +1,19 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Orderflow;
 using MyNamespace.Strategies.Models;
 using Utils.Common.Logging;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.MarketAnalysis
 {
     /// <summary>
-    /// Platzhalter fÃ¼r den Marktstrukturkontext.
-    /// Diese Klasse wird spÃ¤ter mit detaillierten Informationen Ã¼ber
-    /// signifikante Preislevel, Volumenprofile (HVNs, LVNs), VWAP, VAH/VAL/POC etc. gefÃ¼llt.
-    /// FÃ¼r die aktuelle Phase der Orderflow-Mustererkennung wird sie vorerst als leerer Kontext Ã¼bergeben.
+    /// Platzhalter für den Marktstrukturkontext.
+    /// Diese Klasse wird später mit detaillierten Informationen über
+    /// signifikante Preislevel, Volumenprofile (HVNs, LVNs), VWAP, VAH/VAL/POC etc. gefüllt.
+    /// Für die aktuelle Phase der Orderflow-Mustererkennung wird sie vorerst als leerer Kontext übergeben.
     /// </summary>
     public class MarketStructureContext
     {
@@ -1831,7 +1831,7 @@ namespace MyNamespace.Strategies.MarketAnalysis
         }
     }
 
-    // Beispiel fÃ¼r eine zukÃ¼nftige Hilfsklasse (muss nicht jetzt definiert werden)
+    // Beispiel für eine zukünftige Hilfsklasse (muss nicht jetzt definiert werden)
     /*
     public class PriceLevel
     {

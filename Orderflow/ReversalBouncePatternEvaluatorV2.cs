@@ -1,11 +1,11 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.MarketAnalysis;
 using MyNamespace.Strategies.Models;
 using Utils.Common.Logging;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.Orderflow
 {
@@ -442,7 +442,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return new ProximityEval { Factor = 1.0m, ReasonDe = "Zonenkontakt: JA" };
             }
 
-            // Wir werten die Nähe als Minimum aus Close-Nähe und Docht-Nähe.
+            // Wir werten die N�he als Minimum aus Close-N�he und Docht-N�he.
             // Long: Docht ist Low (wie nah kam der Tiefpunkt an zone.High?)
             // Short: Docht ist High (wie nah kam der Hochpunkt an zone.Low?)
             decimal close = curr.Close;
@@ -458,10 +458,10 @@ namespace MyNamespace.Strategies.Orderflow
             string bestFrom = distWickTicks <= distCloseTicks ? "Docht" : "Close";
 
             if (bestTicks <= 2)
-                return new ProximityEval { Factor = 1.0m, ReasonDe = $"Zonennähe: hoch (über {bestFrom}, Abstand {bestTicks} Ticks)" };
+                return new ProximityEval { Factor = 1.0m, ReasonDe = $"Zonenn�he: hoch (�ber {bestFrom}, Abstand {bestTicks} Ticks)" };
             if (bestTicks <= 6)
-                return new ProximityEval { Factor = 0.5m, ReasonDe = $"Zonennähe: mittel (über {bestFrom}, Abstand {bestTicks} Ticks)" };
-            return new ProximityEval { Factor = 0.0m, ReasonDe = $"Zonennähe: niedrig (Abstand {bestTicks} Ticks)" };
+                return new ProximityEval { Factor = 0.5m, ReasonDe = $"Zonenn�he: mittel (�ber {bestFrom}, Abstand {bestTicks} Ticks)" };
+            return new ProximityEval { Factor = 0.0m, ReasonDe = $"Zonenn�he: niedrig (Abstand {bestTicks} Ticks)" };
         }
 
         private sealed class SweepEval
@@ -526,15 +526,15 @@ namespace MyNamespace.Strategies.Orderflow
             string text;
             if (penetrationTicks <= 0)
             {
-                text = "Stop-Run: kein Stop-Run (kein Durchstich außerhalb der Zone) -> +0";
+                text = "Stop-Run: kein Stop-Run (kein Durchstich au�erhalb der Zone) -> +0";
             }
             else if (!inCorridor)
             {
-                text = $"Stop-Run: kein Stop-Run (Durchstich {penetrationTicks} Ticks ist nicht passend zur typischen Stop-Run-Größe) -> +0";
+                text = $"Stop-Run: kein Stop-Run (Durchstich {penetrationTicks} Ticks ist nicht passend zur typischen Stop-Run-Gr��e) -> +0";
             }
             else if (!reclaimed)
             {
-                text = $"Stop-Run: kein Stop-Run (Durchstich ok, aber keine Rückholung; Rückholung={reclaimTicks} Ticks) -> +0";
+                text = $"Stop-Run: kein Stop-Run (Durchstich ok, aber keine R�ckholung; R�ckholung={reclaimTicks} Ticks) -> +0";
             }
             else if (!volumeOk)
             {
@@ -542,7 +542,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
             else
             {
-                text = $"Stop-Run: Stop-Run erkannt (Durchstich {penetrationTicks} Ticks, Rückholung={reclaimTicks} Ticks) -> +{points:0.0}";
+                text = $"Stop-Run: Stop-Run erkannt (Durchstich {penetrationTicks} Ticks, R�ckholung={reclaimTicks} Ticks) -> +{points:0.0}";
             }
 
             return new SweepEval
@@ -601,7 +601,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
             var proxEval = absorption
                 ? EvaluateAbsorptionProximity(curr, zone, tickSize, dir)
-                : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
+                : new ProximityEval { Factor = 0m, ReasonDe = "Zonenn�he: n/v" };
             decimal absorptionPts = absorption ? (2m * proxEval.Factor) : 0m;
             score += absorptionPts;
             items.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorption ? $"Absorption({absorptionPattern}): JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
@@ -627,7 +627,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
             decimal uaToFaPts = tracker.SessionSawUaToFa ? 1m : 0m;
             score += uaToFaPts;
-            items.Add(new ScoreItem { Key = "UA→FA", Points = uaToFaPts, TextDe = tracker.SessionSawUaToFa ? "UA→FA: JA -> +1" : "UA→FA: NEIN -> +0" });
+            items.Add(new ScoreItem { Key = "UA?FA", Points = uaToFaPts, TextDe = tracker.SessionSawUaToFa ? "UA?FA: JA -> +1" : "UA?FA: NEIN -> +0" });
 
             int touchesW;
             int faAtZoneW;
@@ -677,7 +677,7 @@ namespace MyNamespace.Strategies.Orderflow
                 BaseScore = 0,
                 TotalScore = score,
                 Confidence = 0m,
-                BlockReasonDe = allowed ? string.Empty : "Verteidigung noch nicht bestätigt.",
+                BlockReasonDe = allowed ? string.Empty : "Verteidigung noch nicht best�tigt.",
                 Items = items
             };
         }
@@ -718,7 +718,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bool intentOk = awayTicks <= 0 || curr.PocDelta >= 0m;
                 if (!intentOk)
                     confirmPts = 0m;
-                items.Add(new ScoreItem { Key = "Bestätigung", Points = confirmPts, TextDe = intentOk ? $"Bestätigung (Long): Close {awayTicks} Ticks über Zone -> +{confirmPts:0.0}" : $"Bestätigung (Long): Close über Zone, aber Verkaufsdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0" });
+                items.Add(new ScoreItem { Key = "Best�tigung", Points = confirmPts, TextDe = intentOk ? $"Best�tigung (Long): Close {awayTicks} Ticks �ber Zone -> +{confirmPts:0.0}" : $"Best�tigung (Long): Close �ber Zone, aber Verkaufsdruck (POC? {curr.PocDelta:+0;-0;0}) -> +0" });
             }
             else
             {
@@ -727,7 +727,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bool intentOk = awayTicks <= 0 || curr.PocDelta <= 0m;
                 if (!intentOk)
                     confirmPts = 0m;
-                items.Add(new ScoreItem { Key = "Bestätigung", Points = confirmPts, TextDe = intentOk ? $"Bestätigung (Short): Close {awayTicks} Ticks unter Zone -> +{confirmPts:0.0}" : $"Bestätigung (Short): Close unter Zone, aber Kaufdruck (POCΔ {curr.PocDelta:+0;-0;0}) -> +0" });
+                items.Add(new ScoreItem { Key = "Best�tigung", Points = confirmPts, TextDe = intentOk ? $"Best�tigung (Short): Close {awayTicks} Ticks unter Zone -> +{confirmPts:0.0}" : $"Best�tigung (Short): Close unter Zone, aber Kaufdruck (POC? {curr.PocDelta:+0;-0;0}) -> +0" });
             }
             score += confirmPts;
 
@@ -904,7 +904,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
                                     $"Close={currentSnapshot.Close:F2}",
                                     $"AwayTicks={ConsumeAwayDistanceTicks}",
-                                    $"Reason: RetestAttempted und Preis ist weit genug weg → ConsumeZoneOnExpiry."
+                                    $"Reason: RetestAttempted und Preis ist weit genug weg ? ConsumeZoneOnExpiry."
                                 });
 
                             // Always print a full protocol when a valid session has started and we end/consume the zone.
@@ -926,7 +926,7 @@ namespace MyNamespace.Strategies.Orderflow
                                         MaxSessionBars,
                                         MaxConsecutiveBadCloses,
                                         MaxSessionPenetrationTicks,
-                                        outcome: "VERFALL – Zone verbraucht (AwayCleanup)",
+                                        outcome: "VERFALL � Zone verbraucht (AwayCleanup)",
                                         finalDecision: lastDec);
                                 }
                             }
@@ -948,7 +948,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Bounds=[{trackedZone.Low:F2}..{trackedZone.High:F2}]({trackedZone.Type})",
                                     $"Close={currentSnapshot.Close:F2}",
                                     $"AwayTicks={ConsumeAwayDistanceTicks}",
-                                    $"Reason: SessionActive=true → AwayCleanup wird übersprungen, damit die Session weiter geprüft werden kann."
+                                    $"Reason: SessionActive=true ? AwayCleanup wird �bersprungen, damit die Session weiter gepr�ft werden kann."
                                 });
                         }
                     }
@@ -968,7 +968,7 @@ namespace MyNamespace.Strategies.Orderflow
             // ============================================================
             try
             {
-                // Nur wenn keine aktive Session läuft (harte Regel: max 1 Session).
+                // Nur wenn keine aktive Session l�uft (harte Regel: max 1 Session).
                 bool anyActiveSession = false;
                 foreach (var kv in _trackersByZoneId)
                 {
@@ -994,7 +994,7 @@ namespace MyNamespace.Strategies.Orderflow
                     {
                         if (z == null)
                             continue;
-                        // RetroSeed: Auch PENDING-Zonen prüfen (IsConfirmed=false), nicht nur New/Ready/Triggered
+                        // RetroSeed: Auch PENDING-Zonen pr�fen (IsConfirmed=false), nicht nur New/Ready/Triggered
                         bool statusOk = z.Status == MarketStructureContext.ZoneStatus.New
                             || z.Status == MarketStructureContext.ZoneStatus.Ready
                             || z.Status == MarketStructureContext.ZoneStatus.Triggered
@@ -1009,13 +1009,13 @@ namespace MyNamespace.Strategies.Orderflow
                         if (z.IsConfirmed && z.CreatedBar != ctxZoneCreationBar)
                             continue;
 
-                        // Touch-Bar rückwirkend finden (bar-1 bevorzugt).
+                        // Touch-Bar r�ckwirkend finden (bar-1 bevorzugt).
                         OvSnapshot? touchCandidate = null;
                         bool touchesM1 = snapBarMinus1 != null && TouchesZone(snapBarMinus1, z);
                         bool touchesM2 = snapBarMinus2 != null && TouchesZone(snapBarMinus2, z);
 
                         // Wenn bar-2 UND bar-1 in der Zone sind, ist bar-2 der eigentliche Touch.
-                        // bar-1 ist dann die potenzielle Umkehrkerze, wenn sie in Traderichtung schließt.
+                        // bar-1 ist dann die potenzielle Umkehrkerze, wenn sie in Traderichtung schlie�t.
                         if (touchesM1 && touchesM2)
                         {
                             bool m1ClosesInTradeDir = _direction == OrderDirections.Buy
@@ -1042,7 +1042,7 @@ namespace MyNamespace.Strategies.Orderflow
                         retroZone = z;
                         retroTouchSnap = touchCandidate;
 
-                        // Wenn Touch bar-2 ist, ist bar-1 die zugehörige (potenzielle) Umkehrbar.
+                        // Wenn Touch bar-2 ist, ist bar-1 die zugeh�rige (potenzielle) Umkehrbar.
                         // Falls Touch bar-1 ist, gibt es keine separate historische Umkehrbar.
                         retroReversalSnap = touchCandidate == snapBarMinus2 ? snapBarMinus1 : null;
                         break;
@@ -1095,7 +1095,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 if (!stillNear0 && retroZone.IsConfirmed)
                                 {
                                     retroTracker.SessionActive = false;
-                                    retroTracker.SessionEndReason = "Retro-GO auf Touch-Bar, aber aktueller Bar nicht mehr zonennah → kein Entry.";
+                                    retroTracker.SessionEndReason = "Retro-GO auf Touch-Bar, aber aktueller Bar nicht mehr zonennah ? kein Entry.";
                                     return PatternEvaluationResult.NotDetected(Type, $"Zone {retroZone.Id}: retro signal missed (price moved away)");
                                 }
 
@@ -1109,7 +1109,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     MaxSessionBars,
                                     MaxConsecutiveBadCloses,
                                     MaxSessionPenetrationTicks,
-                                    "GO – Entry ausgelöst (Retro: Signalbar war Touch-Bar)",
+                                    "GO � Entry ausgel�st (Retro: Signalbar war Touch-Bar)",
                                     dec0);
 
                                 var reasons0 = new List<string>
@@ -1143,7 +1143,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     matched0, new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
                             }
 
-                            // Falls Umkehrbar bereits geschlossen vorhanden (Touch war bar-2): historisch prüfen.
+                            // Falls Umkehrbar bereits geschlossen vorhanden (Touch war bar-2): historisch pr�fen.
                             if (retroReversalSnap != null)
                             {
                                 var out1 = EvaluateActiveSession(
@@ -1157,7 +1157,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     if (!stillNear && retroZone.IsConfirmed)
                                     {
                                         retroTracker.SessionActive = false;
-                                        retroTracker.SessionEndReason = "Retro-GO in bar-1, aber aktueller Bar nicht mehr zonennah → kein Entry.";
+                                        retroTracker.SessionEndReason = "Retro-GO in bar-1, aber aktueller Bar nicht mehr zonennah ? kein Entry.";
                                         return PatternEvaluationResult.NotDetected(Type, $"Zone {retroZone.Id}: retro signal missed (price moved away)");
                                     }
 
@@ -1171,7 +1171,7 @@ namespace MyNamespace.Strategies.Orderflow
                                         MaxSessionBars,
                                         MaxConsecutiveBadCloses,
                                         MaxSessionPenetrationTicks,
-                                        "GO – Entry ausgelöst (Retro: Signalbar war bar-1)",
+                                        "GO � Entry ausgel�st (Retro: Signalbar war bar-1)",
                                         dec1);
 
                                     var reasons = new List<string>
@@ -1213,8 +1213,8 @@ namespace MyNamespace.Strategies.Orderflow
 
             // --- Candidate Selection ---
             // Harte Regel: maximal eine aktive Session insgesamt.
-            // Solange irgendeine Session aktiv ist, wird ausschließlich diese Session weiter evaluiert.
-            // Touches anderer Zonen starten keine neue Session und dürfen die aktive Session nicht verdrängen.
+            // Solange irgendeine Session aktiv ist, wird ausschlie�lich diese Session weiter evaluiert.
+            // Touches anderer Zonen starten keine neue Session und d�rfen die aktive Session nicht verdr�ngen.
             MarketStructureContext.Zone? candidateZone = null;
             bool candidateFromTouch = false;
 
@@ -1278,7 +1278,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 {
                                     $"Dir={_direction}",
                                     $"Zone={activeZoneId}",
-                                    $"Reason: Pending-Session und Zone ist nicht mehr live/eligible (missing oder Used) → Session wird sofort abgebrochen.",
+                                    $"Reason: Pending-Session und Zone ist nicht mehr live/eligible (missing oder Used) ? Session wird sofort abgebrochen.",
                                     $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
                                     $"zones.Count={zones.Count}"
                                 });
@@ -1302,7 +1302,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     {
                                         $"Dir={_direction}",
                                         $"Zone={activeZoneId}",
-                                        $"Reason: SessionActive=true aber Zone.Status=Used → Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
+                                        $"Reason: SessionActive=true aber Zone.Status=Used ? Session wird NICHT beendet. Fallback auf gepinnte Zone-Daten.",
                                         $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}"
                                     });
                             }
@@ -1320,7 +1320,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     {
                                         $"Dir={_direction}",
                                         $"Zone={activeZoneId}",
-                                        $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones → Fallback auf gepinnte Zone-Daten.",
+                                        $"Reason: SessionActive=true aber Zone nicht gefunden/eligible in ActiveZones ? Fallback auf gepinnte Zone-Daten.",
                                         $"PinnedBounds=[{activeSessionTracker.LastKnownZoneLow:F2}..{activeSessionTracker.LastKnownZoneHigh:F2}] Type={activeSessionTracker.LastKnownZoneType} Confirmed={activeSessionTracker.LastKnownZoneConfirmed}",
                                         $"zones.Count={zones.Count}"
                                     });
@@ -1345,7 +1345,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
             else
             {
-                // Keine aktive Session → Touch-Kandidaten prüfen
+                // Keine aktive Session ? Touch-Kandidaten pr�fen
                 var touchedZones = new List<MarketStructureContext.Zone>(4);
 
                 int zoneCountAll = 0;
@@ -1433,16 +1433,16 @@ namespace MyNamespace.Strategies.Orderflow
                         lines: new[]
                         {
                             $"Dir={_direction}",
-                            $"Mehrere Zonen wurden gleichzeitig berührt.",
-                            $"Berührte Zonen: {string.Join(", ", touchedZones.Select(t => $"#{t.Id} [{t.Low:F2}..{t.High:F2}] ({(t.IsConfirmed ? "bestätigt" : "noch nicht bestätigt")})"))}",
-                            $"Ich prüfe jetzt Zone #{candidateZone?.Id} (die erste in der Liste)."
+                            $"Mehrere Zonen wurden gleichzeitig ber�hrt.",
+                            $"Ber�hrte Zonen: {string.Join(", ", touchedZones.Select(t => $"#{t.Id} [{t.Low:F2}..{t.High:F2}] ({(t.IsConfirmed ? "best�tigt" : "noch nicht best�tigt")})"))}",
+                            $"Ich pr�fe jetzt Zone #{candidateZone?.Id} (die erste in der Liste)."
                         });
                 }
             }
 
             if (candidateZone == null)
             {
-                // Wenn bereits eine Session läuft, MUSS diese weiter evaluiert werden – auch ohne frischen Zonenkontakt.
+                // Wenn bereits eine Session l�uft, MUSS diese weiter evaluiert werden � auch ohne frischen Zonenkontakt.
                 ZoneTracker? active = null;
                 try
                 {
@@ -1531,7 +1531,7 @@ namespace MyNamespace.Strategies.Orderflow
                                         $"NearestOppZone={nearestOpp.Id}[{nearestOpp.Low:F2}..{nearestOpp.High:F2}]({nearestOpp.Type})",
                                         $"Blockiert: Markt ist zwischen Zone und starker Gegen-Zone eingeklemmt (Box/Sandwich).",
                                         $"Abstand={gapTicks} Ticks (Limit={compressionGapTicks}).",
-                                        $"Folge: Kein Entry-Check, um Seitwärts-Chaos zu vermeiden."
+                                        $"Folge: Kein Entry-Check, um Seitw�rts-Chaos zu vermeiden."
                                     });
                                 return PatternEvaluationResult.NotDetected(Type, $"CompressionGate: boxed between zones (gapTicks={gapTicks} <= {compressionGapTicks})");
                             }
@@ -1547,7 +1547,7 @@ namespace MyNamespace.Strategies.Orderflow
             tracker.LastKnownZoneConfirmed = candidateZone.IsConfirmed;
 
             // ============================================================
-            // AKTIVE SESSION WEITERFÜHREN (A oder B)
+            // AKTIVE SESSION WEITERF�HREN (A oder B)
             // ============================================================
             if (tracker.SessionActive)
             {
@@ -1594,7 +1594,7 @@ namespace MyNamespace.Strategies.Orderflow
                                     $"Dir={_direction}",
                                     $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
                                     $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
-                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband �berlappt"
                                 });
                                 tracker.SessionLastEvalBar = currentSnapshot.Bar;
                                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
@@ -1612,7 +1612,7 @@ namespace MyNamespace.Strategies.Orderflow
                             MaxSessionBars,
                             MaxConsecutiveBadCloses,
                             MaxSessionPenetrationTicks,
-                            "GO – Entry ausgelöst",
+                            "GO � Entry ausgel�st",
                             sessionDecision);
 
                         var reasons = new List<string>
@@ -1640,7 +1640,7 @@ namespace MyNamespace.Strategies.Orderflow
 
                     case SessionEvalOutcome.Invalidated:
                     {
-                        // Letzte Decision für Logging (kann null sein wenn Invalidierung vor Scoring kam)
+                        // Letzte Decision f�r Logging (kann null sein wenn Invalidierung vor Scoring kam)
                         var lastDec = sessionDecision ?? (tracker.SessionDecisionHistory?.Count > 0
                             ? tracker.SessionDecisionHistory[tracker.SessionDecisionHistory.Count - 1]
                             : null);
@@ -1654,15 +1654,15 @@ namespace MyNamespace.Strategies.Orderflow
                             MaxSessionBars,
                             MaxConsecutiveBadCloses,
                             MaxSessionPenetrationTicks,
-                            "ABBRUCH – Session invalidiert",
+                            "ABBRUCH � Session invalidiert",
                             lastDec);
 
                         if (tracker.SessionKind == SessionType.Immediate)
                         {
                             tracker.ImmediateDisabled = true;
-                            // Zone bleibt für Szenario B
+                            // Zone bleibt f�r Szenario B
                         }
-                        // Zone wird NICHT verbraucht – kann erneut getestet werden
+                        // Zone wird NICHT verbraucht � kann erneut getestet werden
                         return PatternEvaluationResult.NotDetected(Type,
                             $"Zone {candidateZone.Id}: session invalidated ({tracker.SessionEndReason})");
                     }
@@ -1682,13 +1682,13 @@ namespace MyNamespace.Strategies.Orderflow
                             MaxSessionBars,
                             MaxConsecutiveBadCloses,
                             MaxSessionPenetrationTicks,
-                            "VERFALL – Session abgelaufen ohne GO",
+                            "VERFALL � Session abgelaufen ohne GO",
                             lastDec);
 
                         if (tracker.SessionKind == SessionType.Immediate)
                         {
                             tracker.ImmediateDisabled = true;
-                            // Zone bleibt für Szenario B
+                            // Zone bleibt f�r Szenario B
                         }
                         // Zone wird NICHT verbraucht
                         return PatternEvaluationResult.NotDetected(Type,
@@ -1702,7 +1702,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // ============================================================
-            // KEIN TOUCH → nichts zu tun (kein Session-Start ohne Touch)
+            // KEIN TOUCH ? nichts zu tun (kein Session-Start ohne Touch)
             // ============================================================
             if (!candidateFromTouch)
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: no touch, no active session");
@@ -1725,7 +1725,7 @@ namespace MyNamespace.Strategies.Orderflow
                     $"Snap OHLC=({currentSnapshot.Open:F2},{currentSnapshot.High:F2},{currentSnapshot.Low:F2},{currentSnapshot.Close:F2})"
                 });
 
-            // Spezialfall: Zone erst ab ReadyBar aktiv, Markt war schon weg → direkt Retest-Modus
+            // Spezialfall: Zone erst ab ReadyBar aktiv, Markt war schon weg ? direkt Retest-Modus
             try
             {
                 if (!tracker.EntryTriggered && !tracker.RetestAttempted && !tracker.ImmediateAttempted)
@@ -1760,8 +1760,8 @@ namespace MyNamespace.Strategies.Orderflow
                                 lines: new[]
                                 {
                                     $"Zone ist neu aktiv ab ReadyBar={readyBar}, aber der Markt war davor schon weg.",
-                                    $"Seit ReadyBar gab es {awayClosesFromReady} Close(s) außerhalb der Zone in Folge (min={RetestMinAwayCloses}).",
-                                    $"Folge: Sofort-Einstieg (Szenario A) wird übersprungen → Retest (Szenario B)."
+                                    $"Seit ReadyBar gab es {awayClosesFromReady} Close(s) au�erhalb der Zone in Folge (min={RetestMinAwayCloses}).",
+                                    $"Folge: Sofort-Einstieg (Szenario A) wird �bersprungen ? Retest (Szenario B)."
                                 });
                         }
                     }
@@ -1789,7 +1789,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"FirstTouchTime={tracker.FirstTouchTime:O}",
                             $"Now={currentSnapshot.Time:O}",
                             $"WaitMinutes={wait.TotalMinutes:F1} Limit={RetestWaitMinutesMax}",
-                            $"Reason: Zu lange auf Retest gewartet → ConsumeZoneOnExpiry."
+                            $"Reason: Zu lange auf Retest gewartet ? ConsumeZoneOnExpiry."
                         });
                     currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                     _trackersByZoneId.Remove(candidateZone.Id);
@@ -1814,7 +1814,7 @@ namespace MyNamespace.Strategies.Orderflow
                         $"FirstTouchBar={tracker.FirstTouchBar}",
                         $"CurrentBar={currentSnapshot.Bar}",
                         $"BarsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar} Limit={MaxBarsAfterFirstTouch}",
-                        $"Reason: Zu viele Bars seit FirstTouch → ConsumeZoneOnExpiry."
+                        $"Reason: Zu viele Bars seit FirstTouch ? ConsumeZoneOnExpiry."
                     });
                 currentMarketStructureContext.ConsumeZoneOnExpiry(candidateZone.Id);
                 _trackersByZoneId.Remove(candidateZone.Id);
@@ -1828,7 +1828,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // ============================================================
-            // SZENARIO A: Sofort-Entry (Zone noch nicht bestätigt)
+            // SZENARIO A: Sofort-Entry (Zone noch nicht best�tigt)
             // ============================================================
             if (!tracker.Confirmed)
             {
@@ -1863,7 +1863,7 @@ namespace MyNamespace.Strategies.Orderflow
                         && reclaimedInside
                         && (!candidateZone.IsExternal || approachOk);
 
-                    // Armed-Moment → Session starten (statt One-Shot)
+                    // Armed-Moment ? Session starten (statt One-Shot)
                     if (!tracker.ImmediateAttempted && (armedStopRun || armedTouch))
                     {
                         tracker.ImmediateAttempted = true;
@@ -1911,7 +1911,7 @@ namespace MyNamespace.Strategies.Orderflow
                                         $"Dir={_direction}",
                                         $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
                                         $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
-                                        $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                        $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband �berlappt"
                                     });
                                     tracker.SessionLastEvalBar = currentSnapshot.Bar;
                                     return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
@@ -1929,7 +1929,7 @@ namespace MyNamespace.Strategies.Orderflow
                                 MaxSessionBars,
                                 MaxConsecutiveBadCloses,
                                 MaxSessionPenetrationTicks,
-                                "GO – Entry ausgelöst",
+                                "GO � Entry ausgel�st",
                                 firstDecision);
 
                             var reasonsA = new List<string>
@@ -1955,9 +1955,9 @@ namespace MyNamespace.Strategies.Orderflow
                                 new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
                         }
 
-                        // Session läuft weiter → nächste Bars werden über den Session-Block oben evaluiert
+                        // Session l�uft weiter ? n�chste Bars werden �ber den Session-Block oben evaluiert
                         return PatternEvaluationResult.NotDetected(Type,
-                            $"Zone {candidateZone.Id}: Szenario A Session gestartet, warte auf Bestätigung");
+                            $"Zone {candidateZone.Id}: Szenario A Session gestartet, warte auf Best�tigung");
                     }
                 }
 
@@ -1975,11 +1975,11 @@ namespace MyNamespace.Strategies.Orderflow
                             $"Type={candidateZone.Type}",
                             $"State={(candidateZone.IsConfirmed ? "CONFIRMED" : "PENDING")}",
                             $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
-                            $"Rule: Nach FirstTouch wird erst weiter geprüft, wenn der Markt erkennbar von der Zone weg gelaufen ist (MovedAway).",
+                            $"Rule: Nach FirstTouch wird erst weiter gepr�ft, wenn der Markt erkennbar von der Zone weg gelaufen ist (MovedAway).",
                             $"Folge: Kein Session/Entry-Check auf dieser Bar."
                         });
 
-                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: erste Berührung – warte auf Wegbewegung");
+                    return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: erste Ber�hrung � warte auf Wegbewegung");
                 }
 
                 tracker.MovedAwaySeen = true;
@@ -1997,7 +1997,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"Type={candidateZone.Type}",
                             $"State=PENDING",
                             $"Bounds=[{candidateZone.Low:F2}..{candidateZone.High:F2}]",
-                            $"Rule: Retest (Szenario B) wird erst geprüft, wenn die Zone durch ZigZag bestätigt ist.",
+                            $"Rule: Retest (Szenario B) wird erst gepr�ft, wenn die Zone durch ZigZag best�tigt ist.",
                             $"Folge: Kein Entry-Check auf dieser Bar."
                         });
 
@@ -2037,7 +2037,7 @@ namespace MyNamespace.Strategies.Orderflow
                                         stage: "Retest.SessionStart.OnConfirmTouch",
                                         lines: new[]
                                         {
-                                            $"Zone wurde in dieser Touch-Bar bestätigt und Szenario A wurde vorher übersprungen (FromReadyBar) → Retest-Session wird sofort gestartet.",
+                                            $"Zone wurde in dieser Touch-Bar best�tigt und Szenario A wurde vorher �bersprungen (FromReadyBar) ? Retest-Session wird sofort gestartet.",
                                             $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}",
                                             $"awayClosesInRow={awayClosesNow} (min={RetestMinAwayCloses})"
                                         });
@@ -2085,7 +2085,7 @@ namespace MyNamespace.Strategies.Orderflow
                                                     $"Dir={_direction}",
                                                     $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
                                                     $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
-                                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                                                    $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband �berlappt"
                                                 });
                                                 tracker.SessionLastEvalBar = currentSnapshot.Bar;
                                                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
@@ -2103,7 +2103,7 @@ namespace MyNamespace.Strategies.Orderflow
                                             MaxSessionBars,
                                             MaxConsecutiveBadCloses,
                                             MaxSessionPenetrationTicks,
-                                            "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)",
+                                            "GO � Entry ausgel�st (Sofort auf Retest-Touch-Bar)",
                                             retestDecisionNow);
 
                                         var reasonsNow = new List<string>
@@ -2141,14 +2141,14 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // ============================================================
-            // SZENARIO B: Retest (Zone ist bestätigt)
+            // SZENARIO B: Retest (Zone ist best�tigt)
             // ============================================================
             if (!candidateZone.IsConfirmed)
             {
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: pending; retest blocked until zigzag confirmation");
             }
 
-            // Bestätigte Zone, aber kein Touch (oder Touch von falscher Seite) → warten + Swing-Invalidierung
+            // Best�tigte Zone, aber kein Touch (oder Touch von falscher Seite) ? warten + Swing-Invalidierung
             bool touchNowSession = TouchesZone(currentSnapshot, candidateZone);
             bool approachNowOk = prevClosed == null || (_direction == OrderDirections.Buy
                 ? prevClosed.Close >= (candidateZone.High - tickSize)
@@ -2216,7 +2216,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: confirmed, waiting retest touch");
             }
 
-            // Retest-Touch erkannt → Gating-Checks
+            // Retest-Touch erkannt ? Gating-Checks
             if (currentSnapshot.Bar - tracker.FirstTouchBar < MinBarsBetweenFirstTouchAndRetest)
             {
                 LogExplainOnce(
@@ -2225,7 +2225,7 @@ namespace MyNamespace.Strategies.Orderflow
                     stage: "Retest.BlockedTooEarly",
                     lines: new[]
                     {
-                        $"Retest-Touch erkannt, aber zu früh nach FirstTouch.",
+                        $"Retest-Touch erkannt, aber zu fr�h nach FirstTouch.",
                         $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber}",
                         $"firstTouchBar={tracker.FirstTouchBar} -> barsSinceFirstTouch={currentSnapshot.Bar - tracker.FirstTouchBar} (min={MinBarsBetweenFirstTouchAndRetest})"
                     });
@@ -2248,7 +2248,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: retest ignored (awayClosesInRow={awayCloses} < {RetestMinAwayCloses})");
             }
 
-            // Retest-Touch ist valide → Session starten (statt One-Shot)
+            // Retest-Touch ist valide ? Session starten (statt One-Shot)
             tracker.RetestAttempted = true;
             tracker.RetestBar = currentSnapshot.Bar;
             tracker.RetestAttemptTime = currentSnapshot.Time;
@@ -2258,7 +2258,7 @@ namespace MyNamespace.Strategies.Orderflow
                 stage: "Retest.SessionStart",
                 lines: new[]
                 {
-                    $"Retest valide → Retest-Session wird gestartet.",
+                    $"Retest valide ? Retest-Session wird gestartet.",
                     $"BarIdx={currentSnapshot.Bar} ChartBar={currentSnapshot.ChartBarNumber} Time={currentSnapshot.Time:O}"
                 });
             StartSession(tracker, SessionType.Retest, currentSnapshot);
@@ -2305,7 +2305,7 @@ namespace MyNamespace.Strategies.Orderflow
                             $"Dir={_direction}",
                             $"CandidateZone={candidateZone.Id}({candidateZone.Type}) [{candidateZone.Low:F2}..{candidateZone.High:F2}]",
                             $"OppStrongZone={oppStrong.Id}({oppStrong.Type}) [{oppStrong.Low:F2}..{oppStrong.High:F2}]",
-                            $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband überlappt"
+                            $"Rule: Kein Entry, wenn starke Gegen-Zone im gleichen Preisband �berlappt"
                         });
                         tracker.SessionLastEvalBar = currentSnapshot.Bar;
                         return PatternEvaluationResult.NotDetected(Type, $"Zone {candidateZone.Id}: entry blocked by strong opposite overlap (zone {oppStrong.Id})");
@@ -2323,7 +2323,7 @@ namespace MyNamespace.Strategies.Orderflow
                     MaxSessionBars,
                     MaxConsecutiveBadCloses,
                     MaxSessionPenetrationTicks,
-                    "GO – Entry ausgelöst (Sofort auf Retest-Touch-Bar)",
+                    "GO � Entry ausgel�st (Sofort auf Retest-Touch-Bar)",
                     retestDecision);
 
                 var reasons = new List<string>
@@ -2349,9 +2349,9 @@ namespace MyNamespace.Strategies.Orderflow
                     new Dictionary<string, object>(), new List<EvaluatedConditionDetail>(), new List<EvaluatedConditionDetail>());
             }
 
-            // Session läuft weiter → nächste Bars werden über den Session-Block oben evaluiert
+            // Session l�uft weiter ? n�chste Bars werden �ber den Session-Block oben evaluiert
             return PatternEvaluationResult.NotDetected(Type,
-                $"Zone {candidateZone.Id}: Szenario B Session gestartet, warte auf Bestätigung");
+                $"Zone {candidateZone.Id}: Szenario B Session gestartet, warte auf Best�tigung");
         }
 
         private void StartSession(ZoneTracker tracker, SessionType kind, OvSnapshot snap)
@@ -2476,7 +2476,7 @@ namespace MyNamespace.Strategies.Orderflow
                 return SessionEvalOutcome.Expired;
             }
 
-            // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der nächste Chart-Bar Umkehrbar sein ---
+            // --- Regel: Wenn Touch-Bar nicht Umkehrbar war, muss der n�chste Chart-Bar Umkehrbar sein ---
             if (!tracker.SessionTouchWasReversal)
             {
                 if (closeInDirectionNow)
@@ -2487,8 +2487,8 @@ namespace MyNamespace.Strategies.Orderflow
                 {
                     tracker.SessionActive = false;
                     tracker.SessionEndReason = _direction == OrderDirections.Buy
-                        ? $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schließt kein Bar bullisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})."
-                        : $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schließt kein Bar bärisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2}).";
+                        ? $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schlie�t kein Bar bullisch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2})."
+                        : $"Session abgebrochen: Touch-Bar war nicht Umkehrbar, und bis Bar {reversalDeadlineOffset + 1} schlie�t kein Bar b�risch (O={currentSnapshot.Open:F2} C={currentSnapshot.Close:F2}).";
 
                     var exitDec = CreateExitDecision(tracker.SessionEndReason);
                     decision = exitDec;
@@ -2541,7 +2541,7 @@ namespace MyNamespace.Strategies.Orderflow
             if (tracker.SessionMaxPenetrationTicks > maxSessionPenetrationTicks)
             {
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"Session abgebrochen: Penetration {tracker.SessionMaxPenetrationTicks} Ticks übersteigt Limit ({maxSessionPenetrationTicks} Ticks).";
+                tracker.SessionEndReason = $"Session abgebrochen: Penetration {tracker.SessionMaxPenetrationTicks} Ticks �bersteigt Limit ({maxSessionPenetrationTicks} Ticks).";
 
                 var exitDec = CreateExitDecision(tracker.SessionEndReason);
                 decision = exitDec;
@@ -2582,7 +2582,7 @@ namespace MyNamespace.Strategies.Orderflow
             }
 
             // ================================================================
-            // NEUE ENTRY-LOGIK: Signalbar-Prüfung (UF→FA + Close + POC + Absorption)
+            // NEUE ENTRY-LOGIK: Signalbar-Pr�fung (UF?FA + Close + POC + Absorption)
             // ================================================================
             OvSnapshot? prev = null;
             if (history.TryGetByBar(currentSnapshot.Bar - 1, out var prevF) && prevF?.Snapshot != null)
@@ -2630,7 +2630,7 @@ namespace MyNamespace.Strategies.Orderflow
                 if (patternDNow)
                     absorptionPatternLog = AbsorptionPattern.D;
 
-                // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
+                // Historische Absorption (prev/prevPrev) z�hlt nur Pattern A/B.
                 AbsorptionPattern absorptionPatternLogPrev = (prevPrev != null && prev3 != null)
                     ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
                     : AbsorptionPattern.None;
@@ -2641,7 +2641,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasAbsorptionInCurr = absorptionPatternLog != AbsorptionPattern.None;
 
                 // Bestand (1 Bar): Wenn Pattern C auf der Umkehrkerze true war,
-                // dann darf die restliche Signal-Logik im nächsten Bar nachziehen.
+                // dann darf die restliche Signal-Logik im n�chsten Bar nachziehen.
                 bool hasCarryOverFromPatternC = tracker.SessionLastPatternCBar >= 0
                     && currentSnapshot.Bar == tracker.SessionLastPatternCBar + 1;
 
@@ -2654,7 +2654,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             var proxEval = absorptionLog
                 ? EvaluateAbsorptionProximity(currentSnapshot, zone, tickSize, _direction)
-                : new ProximityEval { Factor = 0m, ReasonDe = "Zonennähe: n/v" };
+                : new ProximityEval { Factor = 0m, ReasonDe = "Zonenn�he: n/v" };
             decimal absorptionPts = absorptionLog ? (2m * proxEval.Factor) : 0m;
             logItems.Add(new ScoreItem { Key = "Absorption", Points = absorptionPts, TextDe = absorptionLog ? $"Absorption({absorptionPatternLog}): JA, {proxEval.ReasonDe} -> +{absorptionPts:0.0}" : "Absorption: NEIN -> +0" });
             if (absorptionLog)
@@ -2675,7 +2675,7 @@ namespace MyNamespace.Strategies.Orderflow
                         tracker.SessionUaToFaBar = currentSnapshot.Bar;
                 }
             }
-            logItems.Add(new ScoreItem { Key = "UA→FA", Points = tracker.SessionSawUaToFa ? 1m : 0m, TextDe = tracker.SessionSawUaToFa ? $"UA→FA: JA (Bar {tracker.SessionUaToFaBar}) -> +1" : "UA→FA: NEIN -> +0" });
+            logItems.Add(new ScoreItem { Key = "UA?FA", Points = tracker.SessionSawUaToFa ? 1m : 0m, TextDe = tracker.SessionSawUaToFa ? $"UA?FA: JA (Bar {tracker.SessionUaToFaBar}) -> +1" : "UA?FA: NEIN -> +0" });
 
             int touchesW;
             int faAtZoneW;
@@ -2688,7 +2688,7 @@ namespace MyNamespace.Strategies.Orderflow
 
             // ================================================================
             // HARTE ENTRY-KRITERIEN (neu):
-            // 1) UF→FA: UF kann früher in der Session vorkommen, FA muss in der Umkehrkerze sein
+            // 1) UF?FA: UF kann fr�her in der Session vorkommen, FA muss in der Umkehrkerze sein
             // 2) Close in Traderichtung (Long: Close > Open, Short: Close < Open)
             // 3) Kerzen-POC Position
             // 4) Absorption im Signalbar
@@ -2701,10 +2701,10 @@ namespace MyNamespace.Strategies.Orderflow
                 ? currentSnapshot.Close >= currentSnapshot.Open
                 : currentSnapshot.Close <= currentSnapshot.Open;
 
-            // Kriterium 1: UF→FA (Session-Bestätigung):
+            // Kriterium 1: UF?FA (Session-Best�tigung):
             // - UF muss in der Kerze direkt vor der Drehkerze sein
             // - FA muss in der Drehkerze sein (Richtungswechsel)
-            // - nach Bestätigung gilt UF→FA als erfüllt für spätere Signal-Kerzen innerhalb der Session
+            // - nach Best�tigung gilt UF?FA als erf�llt f�r sp�tere Signal-Kerzen innerhalb der Session
             bool prevHadUf = prev != null && IsUnfinishedAuction(prev, thresholds, _direction);
             bool currHasFa = IsFinishedAuction(currentSnapshot, thresholds, _direction);
             bool prevCloseInDirection = prev != null && (_direction == OrderDirections.Buy
@@ -2748,15 +2748,15 @@ namespace MyNamespace.Strategies.Orderflow
             bool ufToFaLatchOk = tracker.SessionLatchUfToFa;
             logItems.Add(new ScoreItem
             {
-                Key = "Signal_UF→FA",
+                Key = "Signal_UF?FA",
                 Points = ufToFaLatchOk ? 1m : 0m,
                 TextDe = ufToFaLatchOk
                     ? (tracker.SessionLatchUfToFaBar == currentSnapshot.Bar
-                        ? $"Signal UF→FA: JA (bestätigt JETZT auf Drehkerze {currentSnapshot.Bar} | UF in prev-Bar {prev!.Bar})"
-                        : $"Signal UF→FA: JA (bereits bestätigt in Bar {tracker.SessionLatchUfToFaBar})")
+                        ? $"Signal UF?FA: JA (best�tigt JETZT auf Drehkerze {currentSnapshot.Bar} | UF in prev-Bar {prev!.Bar})"
+                        : $"Signal UF?FA: JA (bereits best�tigt in Bar {tracker.SessionLatchUfToFaBar})")
                     : (ufToFaNeutralized
-                        ? $"Signal UF→FA: NEIN (neutralisiert: {(_direction == OrderDirections.Buy ? "tieferes Tief" : "höheres Hoch")}) nach Drehkerze)"
-                        : $"Signal UF→FA: NEIN (Drehkerze={isTurnCandle}, Prev UF={prevHadUf}, aktuell FA={currHasFa}, PriceProgress={priceProgressOkUfToFa})")
+                        ? $"Signal UF?FA: NEIN (neutralisiert: {(_direction == OrderDirections.Buy ? "tieferes Tief" : "h�heres Hoch")}) nach Drehkerze)"
+                        : $"Signal UF?FA: NEIN (Drehkerze={isTurnCandle}, Prev UF={prevHadUf}, aktuell FA={currHasFa}, PriceProgress={priceProgressOkUfToFa})")
             });
 
             logItems.Add(new ScoreItem
@@ -2783,7 +2783,7 @@ namespace MyNamespace.Strategies.Orderflow
                 if (patternDNow)
                     absCurr = AbsorptionPattern.D;
 
-                // Historische Absorption (prev/prevPrev) zählt nur Pattern A/B.
+                // Historische Absorption (prev/prevPrev) z�hlt nur Pattern A/B.
                 absPrev = (prevPrev != null && prev3 != null)
                     ? DetectAbsorptionPattern(prev3, prevPrev, prev, zone, tickSize, _direction, absNetDeltaMinSession, allowPatternC: false)
                     : AbsorptionPattern.None;
@@ -2794,7 +2794,7 @@ namespace MyNamespace.Strategies.Orderflow
                 bool hasAbsorptionInCurr = absCurr != AbsorptionPattern.None;
 
                 // Bestand (1 Bar): Wenn Pattern C auf der Umkehrkerze true war,
-                // dann darf die restliche Signal-Logik im nächsten Bar nachziehen.
+                // dann darf die restliche Signal-Logik im n�chsten Bar nachziehen.
                 bool hasCarryOverFromPatternC = tracker.SessionLastPatternCBar >= 0
                     && currentSnapshot.Bar == tracker.SessionLastPatternCBar + 1;
 
@@ -2849,7 +2849,7 @@ namespace MyNamespace.Strategies.Orderflow
             const decimal RejPocMinFrac = 0.35m;
             if (_direction == OrderDirections.Buy)
             {
-                // Long: POC muss in unterer Hälfte liegen (POC <= Mitte)
+                // Long: POC muss in unterer H�lfte liegen (POC <= Mitte)
                 pocPositionOk = pocBar.CandlePocPrice <= barMid;
                 bool rejectionLong = false;
                 bool pocOverrideOk = false;
@@ -2865,15 +2865,15 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool pocOk = pocPositionOk || pocOverrideOk;
                 pocOkFinal = pocOk && (!requireCurrPocDelta || currPocDeltaOk);
-                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: untere H�lfte ? {(pocPositionOk ? "JA" : "NEIN")}";
                 if (!pocPositionOk && pocOverrideOk)
                     pocPosText += $" | Override=RejectionLong (Body={pocBody:F2}, Range={pocRange:F2}, WickL={pocLowerWick:F2})";
                 if (requireCurrPocDelta)
-                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
+                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} ? {(currPocDeltaOk ? "JA" : "NEIN")}";
             }
             else
             {
-                // Short: POC muss in oberer Hälfte liegen (POC >= Mitte)
+                // Short: POC muss in oberer H�lfte liegen (POC >= Mitte)
                 pocPositionOk = pocBar.CandlePocPrice >= barMid;
                 bool rejectionShort = false;
                 bool pocOverrideOk = false;
@@ -2889,11 +2889,11 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool pocOk = pocPositionOk || pocOverrideOk;
                 pocOkFinal = pocOk && (!requireCurrPocDelta || currPocDeltaOk);
-                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere Hälfte → {(pocPositionOk ? "JA" : "NEIN")}";
+                pocPosText = $"POC[{pocBarText}]={pocBar.CandlePocPrice:F2}, Mitte={barMid:F2}, Soll: obere H�lfte ? {(pocPositionOk ? "JA" : "NEIN")}";
                 if (!pocPositionOk && pocOverrideOk)
                     pocPosText += $" | Override=RejectionShort (Body={pocBody:F2}, Range={pocRange:F2}, WickU={pocUpperWick:F2})";
                 if (requireCurrPocDelta)
-                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} → {(currPocDeltaOk ? "JA" : "NEIN")}";
+                    pocPosText += $" | PocDelta[curr]={currentSnapshot.PocDelta:+0;-0;0} ? {(currPocDeltaOk ? "JA" : "NEIN")}";
             }
             logItems.Add(new ScoreItem { Key = "Signal_POC", Points = pocOkFinal ? 1m : 0m, TextDe = $"Signal POC-Position: {pocPosText}" });
 
@@ -2929,22 +2929,22 @@ namespace MyNamespace.Strategies.Orderflow
                     : (string.IsNullOrEmpty(absDbg) ? "Signal Absorption: NEIN" : $"Signal Absorption: NEIN | {absDbg}")
             });
 
-            // Alle 4 Kriterien müssen erfüllt sein
+            // Alle 4 Kriterien m�ssen erf�llt sein
             isSignalBar = ufToFaLatchOk && pocLatchOk && absorptionLatchOk && closeInDirection;
 
             if (!isSignalBar)
             {
                 var missing = new List<string>(4);
-                if (!ufToFaLatchOk) missing.Add("UF→FA");
+                if (!ufToFaLatchOk) missing.Add("UF?FA");
                 if (!closeInDirection) missing.Add("Close in Richtung");
                 if (!pocLatchOk) missing.Add("POC-Position");
                 if (!absorptionLatchOk) missing.Add("Absorption");
                 signalBlockReason = $"Kein Signalbar: fehlend [{string.Join(", ", missing)}]";
             }
 
-            // Score für Logging (Summe der Info-Punkte, NICHT entry-relevant)
+            // Score f�r Logging (Summe der Info-Punkte, NICHT entry-relevant)
             decimal logScore = logItems.Sum(x => x.Points);
-            logItems.Add(new ScoreItem { Key = "Signal_Check", Points = isSignalBar ? 1m : 0m, TextDe = isSignalBar ? "★ SIGNALBAR ERKANNT → Entry GO" : signalBlockReason });
+            logItems.Add(new ScoreItem { Key = "Signal_Check", Points = isSignalBar ? 1m : 0m, TextDe = isSignalBar ? "? SIGNALBAR ERKANNT ? Entry GO" : signalBlockReason });
 
             decimal confidence = isSignalBar ? 0.75m : 0m;
             var dec = new DecisionResult
@@ -2979,7 +2979,7 @@ namespace MyNamespace.Strategies.Orderflow
                 tracker.SessionAbsorptionBar = currentSnapshot.Bar;
                 tracker.SessionAbsorptionPocPrice = currentSnapshot.CandlePocPrice;
                 tracker.SessionActive = false;
-                tracker.SessionEndReason = $"GO – Signalbar erkannt bei Session-Bar {sessionBarNr}.";
+                tracker.SessionEndReason = $"GO � Signalbar erkannt bei Session-Bar {sessionBarNr}.";
                 return SessionEvalOutcome.EntryGo;
             }
 
@@ -3005,7 +3005,7 @@ namespace MyNamespace.Strategies.Orderflow
                     return;
 
                 var lines = new List<string>(96);
-                string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "BÄRISCH (Verkauf)";
+                string dirDe = _direction == OrderDirections.Buy ? "BULLISCH (Kauf)" : "B�RISCH (Verkauf)";
                 int endBarForReport = currentSnapshot.Bar;
                 if (tracker.SessionDecisionBars != null && tracker.SessionDecisionBars.Count > 0)
                 {
@@ -3025,24 +3025,24 @@ namespace MyNamespace.Strategies.Orderflow
                     endBarForReport = maxEndBar;
 
                 int sessionBars = (endBarForReport - tracker.SessionStartBar) + 1;
-                string zoneStatusDe = zone.IsConfirmed ? "BESTÄTIGT" : "PENDING";
+                string zoneStatusDe = zone.IsConfirmed ? "BEST�TIGT" : "PENDING";
                 string phaseDe = tracker.SessionPhase == ReversalPhase.Defense
                     ? "Verteidigung"
-                    : (tracker.SessionPhase == ReversalPhase.Touch ? "Touch" : "Bestätigung");
+                    : (tracker.SessionPhase == ReversalPhase.Touch ? "Touch" : "Best�tigung");
 
-                lines.Add("═══════════════════════════════════════════════════════════");
+                lines.Add("-----------------------------------------------------------");
                 lines.Add($"REVERSAL-REPORT | {dirDe} | Zone #{zone.Id} | {zoneStatusDe}");
                 lines.Add($"Bereich: {zone.Low:F2} bis {zone.High:F2} | Dauer: {sessionBars} Bars");
                 if (tracker.SessionLatchUfToFa && tracker.SessionLatchUfToFaBar >= 0)
-                    lines.Add($"UF→FA: bestätigt in Session (Latch) bei {FormatBarLabel(tracker.SessionLatchUfToFaBar, history)}");
+                    lines.Add($"UF?FA: best�tigt in Session (Latch) bei {FormatBarLabel(tracker.SessionLatchUfToFaBar, history)}");
                 if (tracker.SessionActive && tracker.SessionSawUaToFa && tracker.SessionUaToFaBar >= 0)
-                    lines.Add($"UA→FA: gesehen in Session (Latch) bei {FormatBarLabel(tracker.SessionUaToFaBar, history)}");
+                    lines.Add($"UA?FA: gesehen in Session (Latch) bei {FormatBarLabel(tracker.SessionUaToFaBar, history)}");
                 lines.Add($"PHASE: {phaseDe} | Druck vorhanden={(tracker.SessionPressureSeen ? "JA" : "NEIN")} | strongDefense={tracker.SessionStrongDefenseCount}/2");
 
                 if (tracker.SessionAbsorptionConfirmed)
-                    lines.Add($"ABSORPTION: bestätigt bei {FormatBarLabel(tracker.SessionAbsorptionBar, history)} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
+                    lines.Add($"ABSORPTION: best�tigt bei {FormatBarLabel(tracker.SessionAbsorptionBar, history)} | AbsorptionPOC={tracker.SessionAbsorptionPocPrice:F2}");
                 lines.Add($"Szenario: {tracker.SessionKind} | Status: {outcome.ToUpperInvariant()}");
-                lines.Add("═══════════════════════════════════════════════════════════");
+                lines.Add("-----------------------------------------------------------");
                 lines.Add(string.Empty);
 
                 lines.Add("STORYLINE:");
@@ -3070,7 +3070,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (b == confirmStartBar && hasConfirmChapter)
                     {
                         lines.Add(string.Empty);
-                        lines.Add("BESTÄTIGUNG:");
+                        lines.Add("BEST�TIGUNG:");
                     }
 
                     OvSnapshot? s = null;
@@ -3084,7 +3084,7 @@ namespace MyNamespace.Strategies.Orderflow
                     if (s == null)
                         continue;
 
-                    string color = s.Close >= s.Open ? "↑" : "↓";
+                    string color = s.Close >= s.Open ? "?" : "?";
                     string barLabel = s.ChartBarNumber > 0 ? $"K{s.ChartBarNumber}" : $"B{b}";
                     bool closeInZone = s.Close >= zone.Low && s.Close <= zone.High;
 
@@ -3124,12 +3124,12 @@ namespace MyNamespace.Strategies.Orderflow
                         if (_direction == OrderDirections.Buy)
                             pos = s.Close > zone.High ? "AUSBRUCH" : "UNTER Zone";
                         else
-                            pos = s.Close < zone.Low ? "AUSBRUCH" : "ÜBER Zone";
+                            pos = s.Close < zone.Low ? "AUSBRUCH" : "�BER Zone";
                     }
 
                     string phaseLabel = hasDecision
                         ? (barPhase == ReversalPhase.Confirm
-                            ? "[Bestätigung]"
+                            ? "[Best�tigung]"
                             : (b == tracker.SessionStartBar ? "[TouchVerteidigung]" : "[Verteidigung]"))
                         : (barNumber == 1 ? "[Touch]" : "");
 
@@ -3181,19 +3181,19 @@ namespace MyNamespace.Strategies.Orderflow
                             closeMismatch = $" | CLOSE_MISMATCH claimed={(signalCloseClaimedOk.Value ? "+" : "0")} actualO={s.Open:F2} actualC={s.Close:F2}";
                     }
 
-                    lines.Add($"{barLabel}: {color} Δ{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}{absExtra}{closeMismatch}".TrimEnd());
+                    lines.Add($"{barLabel}: {color} ?{s.PocDelta:+0;-0;0} | {pos.PadRight(10)} | {phaseLabel}{checks}{absExtra}{closeMismatch}".TrimEnd());
 
                     prevPrevSnap = prevSnap;
                     prevSnap = s;
                 }
 
                 lines.Add(string.Empty);
-                string emoji = (finalDecision?.Entry == true) ? "🟢 GO" : "🔴 NO-GO";
+                string emoji = (finalDecision?.Entry == true) ? "?? GO" : "?? NO-GO";
                 lines.Add($"FAZIT: {emoji}");
 
                 if (finalDecision?.Entry != true)
                 {
-                    string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Zu wenig Bestätigung";
+                    string grund = finalDecision?.BlockReasonDe ?? tracker.SessionEndReason ?? "Zu wenig Best�tigung";
                     if (!string.IsNullOrEmpty(grund) && grund.StartsWith("Session abgelaufen", StringComparison.OrdinalIgnoreCase))
                     {
                         var lastMissing = tracker.SessionDecisionHistory?
@@ -3201,14 +3201,14 @@ namespace MyNamespace.Strategies.Orderflow
                         if (!string.IsNullOrEmpty(lastMissing?.BlockReasonDe))
                             grund = lastMissing!.BlockReasonDe;
                     }
-                    lines.Add($"GRUND FÜR ABLEHNUNG: {grund}");
+                    lines.Add($"GRUND F�R ABLEHNUNG: {grund}");
                 }
                 else
                 {
                     lines.Add("ENTSCHEIDUNG: Der Trend hat offiziell gedreht. Einstieg legitimiert.");
                 }
 
-                lines.Add("═══════════════════════════════════════════════════════════");
+                lines.Add("-----------------------------------------------------------");
 
                 LogExplainMultilineOnce(
                     currentSnapshot.Bar,
@@ -4042,7 +4042,7 @@ namespace MyNamespace.Strategies.Orderflow
                     ? (curr.PocDelta >= -tol)
                     : (curr.PocDelta <= tol);
                 if (!pocDeltaOk)
-                    return $"POC-Delta nicht neutralisiert (POCΔ={curr.PocDelta:+0;-0;0}, Tol=±{tol:0})";
+                    return $"POC-Delta nicht neutralisiert (POC?={curr.PocDelta:+0;-0;0}, Tol=�{tol:0})";
 
                 const decimal NearMaxFrac = 0.85m;
                 if (dir == OrderDirections.Buy)
@@ -4206,19 +4206,19 @@ namespace MyNamespace.Strategies.Orderflow
             {
                 bool hasSellImb = curr.StackedSellImbBottomCount > 0 && curr.NetDeltaTotal < 0m;
                 if (!hasSellImb)
-                    return "Kein klares Verkäufer-Ungleichgewicht am Tief (Sell-Imbalance fehlt)";
+                    return "Kein klares Verk�ufer-Ungleichgewicht am Tief (Sell-Imbalance fehlt)";
 
                 decimal exBid = curr.BidAtLow;
                 decimal exAsk = curr.AskAtLow;
                 decimal exTot = exBid + exAsk;
                 if (exTot <= 0m)
-                    return "Keine aussagekräftigen Extrem-Orders am Tief (Bid/Ask fehlt)";
+                    return "Keine aussagekr�ftigen Extrem-Orders am Tief (Bid/Ask fehlt)";
                 decimal exShare = exTot / vol;
                 if (exShare < MinExtremeShare)
                     return "Extrem-Volumen am Tief ist zu klein (relativ zum Gesamtvolumen)";
                 decimal dom = exBid / exTot;
                 if (dom < MinExtremeDomRatio)
-                    return "Am Tief dominieren die Käufer nicht genug (Bid-Anteil zu klein)";
+                    return "Am Tief dominieren die K�ufer nicht genug (Bid-Anteil zu klein)";
 
                 bool noFurtherDownByPrev = curr.Low >= prev.Low - (oneTick * MaxSweepTicks);
                 bool noFurtherDownByZone = curr.Low >= z.Low - (oneTick * MaxSweepTicks);
@@ -4228,33 +4228,33 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool goodRecovery = ((curr.Close - curr.Low) / candleHeight) >= MinRecoveryRatio;
                 if (!goodRecovery)
-                    return "Zu wenig Erholung vom Tief (Rücklauf zu klein)";
+                    return "Zu wenig Erholung vom Tief (R�cklauf zu klein)";
 
                 decimal zoneHeight = z.High - z.Low;
                 bool rejectionCandle = curr.Close >= (curr.Low + candleHeight * 0.50m);
                 bool rejectionZone = zoneHeight > 0m && curr.Close >= (z.Low + zoneHeight * 0.33m);
                 bool rejection = rejectionCandle || rejectionZone;
                 if (!rejection)
-                    return "Kein klares Zurückweisen (Close zu schwach)";
+                    return "Kein klares Zur�ckweisen (Close zu schwach)";
 
                 return string.Empty;
             }
 
             bool hasBuyImb = curr.StackedBuyImbTopCount > 0 && curr.NetDeltaTotal > 0m;
             if (!hasBuyImb)
-                return "Kein klares Käufer-Ungleichgewicht am Hoch (Buy-Imbalance fehlt)";
+                return "Kein klares K�ufer-Ungleichgewicht am Hoch (Buy-Imbalance fehlt)";
 
             decimal exAskS = curr.AskAtHigh;
             decimal exBidS = curr.BidAtHigh;
             decimal exTotS = exBidS + exAskS;
             if (exTotS <= 0m)
-                return "Keine aussagekräftigen Extrem-Orders am Hoch (Bid/Ask fehlt)";
+                return "Keine aussagekr�ftigen Extrem-Orders am Hoch (Bid/Ask fehlt)";
             decimal exShareS = exTotS / vol;
             if (exShareS < MinExtremeShare)
                 return "Extrem-Volumen am Hoch ist zu klein (relativ zum Gesamtvolumen)";
             decimal domS = exAskS / exTotS;
             if (domS < MinExtremeDomRatio)
-                return "Am Hoch dominieren die Verkäufer nicht genug (Ask-Anteil zu klein)";
+                return "Am Hoch dominieren die Verk�ufer nicht genug (Ask-Anteil zu klein)";
 
             bool noFurtherUpByPrev = curr.High <= prev.High + (oneTick * MaxSweepTicks);
             bool noFurtherUpByZone = curr.High <= z.High + (oneTick * MaxSweepTicks);
@@ -4264,14 +4264,14 @@ namespace MyNamespace.Strategies.Orderflow
 
             bool goodRecoveryS = ((curr.High - curr.Close) / candleHeight) >= MinRecoveryRatio;
             if (!goodRecoveryS)
-                return "Zu wenig Rücklauf vom Hoch (Erholung zu klein)";
+                return "Zu wenig R�cklauf vom Hoch (Erholung zu klein)";
 
             decimal zoneHeightS = z.High - z.Low;
             bool rejectionCandleS = curr.Close <= (curr.High - candleHeight * 0.50m);
             bool rejectionZoneS = zoneHeightS > 0m && curr.Close <= (z.High - zoneHeightS * 0.33m);
             bool rejectionS = rejectionCandleS || rejectionZoneS;
             if (!rejectionS)
-                return "Kein klares Zurückweisen (Close zu schwach)";
+                return "Kein klares Zur�ckweisen (Close zu schwach)";
 
             return string.Empty;
         }
@@ -4327,12 +4327,12 @@ namespace MyNamespace.Strategies.Orderflow
                 decimal exAsk = curr.AskAtLow;
                 decimal exTot = exBid + exAsk;
                 if (exTot <= 0m)
-                    return "Keine aussagekräftigen Extrem-Orders am Tief (Bid/Ask fehlt)";
+                    return "Keine aussagekr�ftigen Extrem-Orders am Tief (Bid/Ask fehlt)";
                 if ((exTot / vol) < MinExtremeShare)
                     return "Extrem-Volumen am Tief ist zu klein (relativ zum Gesamtvolumen)";
                 decimal dom = exBid / exTot;
                 if (dom < MinExtremeDomRatio)
-                    return "Am Tief dominieren die Käufer nicht genug (Bid-Anteil zu klein)";
+                    return "Am Tief dominieren die K�ufer nicht genug (Bid-Anteil zu klein)";
 
                 if (usingPrevPrev)
                 {
@@ -4343,17 +4343,17 @@ namespace MyNamespace.Strategies.Orderflow
 
                 bool currBullish = curr.Close >= curr.Open;
                 if (!currBullish)
-                    return "Reversal-Bar ist nicht bullisch (Close nicht über Open)";
+                    return "Reversal-Bar ist nicht bullisch (Close nicht �ber Open)";
 
                 decimal refLow = Math.Max(pushBar.Low, z.Low);
                 bool penetrated = curr.Low < refLow;
                 if (penetrated && curr.Close < refLow)
-                    return "Stich wurde nicht zurückgeholt (Close nicht über Zone/Referenz)";
+                    return "Stich wurde nicht zur�ckgeholt (Close nicht �ber Zone/Referenz)";
 
                 decimal recoveryRatio = (curr.Close - curr.Low) / candleHeight;
                 decimal minRecovery = penetrated ? MinRecoveryRatioPenetration : MinRecoveryRatio;
                 if (recoveryRatio < minRecovery)
-                    return "Zu wenig Erholung vom Tief (Rücklauf zu klein)";
+                    return "Zu wenig Erholung vom Tief (R�cklauf zu klein)";
 
                 return string.Empty;
             }
@@ -4379,12 +4379,12 @@ namespace MyNamespace.Strategies.Orderflow
             decimal exBidS = curr.BidAtHigh;
             decimal exTotS = exBidS + exAskS;
             if (exTotS <= 0m)
-                return "Keine aussagekräftigen Extrem-Orders am Hoch (Bid/Ask fehlt)";
+                return "Keine aussagekr�ftigen Extrem-Orders am Hoch (Bid/Ask fehlt)";
             if ((exTotS / vol) < MinExtremeShare)
                 return "Extrem-Volumen am Hoch ist zu klein (relativ zum Gesamtvolumen)";
             decimal domS = exAskS / exTotS;
             if (domS < MinExtremeDomRatio)
-                return "Am Hoch dominieren die Verkäufer nicht genug (Ask-Anteil zu klein)";
+                return "Am Hoch dominieren die Verk�ufer nicht genug (Ask-Anteil zu klein)";
 
             if (usingPrevPrevS)
             {
@@ -4395,17 +4395,17 @@ namespace MyNamespace.Strategies.Orderflow
 
             bool currBearish = curr.Close <= curr.Open;
             if (!currBearish)
-                return "Reversal-Bar ist nicht bärisch (Close nicht unter Open)";
+                return "Reversal-Bar ist nicht b�risch (Close nicht unter Open)";
 
             decimal refHigh = Math.Min(pushBarS.High, z.High);
             bool penetratedS = curr.High > refHigh;
             if (penetratedS && curr.Close > refHigh)
-                return "Stich wurde nicht zurückgeholt (Close nicht unter Zone/Referenz)";
+                return "Stich wurde nicht zur�ckgeholt (Close nicht unter Zone/Referenz)";
 
             decimal recoveryRatioS = (curr.High - curr.Close) / candleHeight;
             decimal minRecoveryS = penetratedS ? MinRecoveryRatioPenetration : MinRecoveryRatio;
             if (recoveryRatioS < minRecoveryS)
-                return "Zu wenig Rücklauf vom Hoch (Erholung zu klein)";
+                return "Zu wenig R�cklauf vom Hoch (Erholung zu klein)";
 
             return string.Empty;
         }

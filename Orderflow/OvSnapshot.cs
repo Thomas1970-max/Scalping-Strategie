@@ -1,9 +1,9 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.Orderflow
 {
@@ -57,27 +57,27 @@ namespace MyNamespace.Strategies.Orderflow
         public decimal CumulativeVolume;
         public decimal BarDeltaPerVolume;
         // NEU: Stacked Imbalance Metriken
-        public int StackedBuyImbCount;          // lÃ¤ngster Buy-Stack irgendwo im Bar
-        public int StackedSellImbCount;         // lÃ¤ngster Sell-Stack irgendwo im Bar
+        public int StackedBuyImbCount;          // längster Buy-Stack irgendwo im Bar
+        public int StackedSellImbCount;         // längster Sell-Stack irgendwo im Bar
         public int StackedBuyImbTopCount;       // Buy-Stack direkt unter High (anchored)
-        public int StackedSellImbBottomCount;   // Sell-Stack direkt Ã¼ber Low (anchored)
+        public int StackedSellImbBottomCount;   // Sell-Stack direkt über Low (anchored)
         public decimal ImbalanceScore;
         public string ImbalanceScoreLabel = string.Empty;
         // NEU: Parameter zur Nachvollziehbarkeit
         public decimal StackedImbRatioPct;          // z.B. 300 => 3.0x
-        public int StackedImbRangeMin;          // MindestlÃ¤nge Stack
+        public int StackedImbRangeMin;          // Mindestlänge Stack
         public decimal StackedImbMinVolPerLevel;// MinVol pro Level
-        public int StackedImbMaxDepthTicks;     // Tiefe fÃ¼r anchored-Check
+        public int StackedImbMaxDepthTicks;     // Tiefe für anchored-Check
         
-        // ðŸŸ¢ NEU: SPATIAL-DELTA PROPERTIES
-        public decimal TopDeltaRatio;           // 0=100% rot, 0.5=neutral, 1=100% grÃ¼n
-        public decimal BottomDeltaRatio;        // 0=100% rot, 0.5=neutral, 1=100% grÃ¼n
+        // ?? NEU: SPATIAL-DELTA PROPERTIES
+        public decimal TopDeltaRatio;           // 0=100% rot, 0.5=neutral, 1=100% grün
+        public decimal BottomDeltaRatio;        // 0=100% rot, 0.5=neutral, 1=100% grün
         public string TopDominance = "NEUTRAL";             // "GREEN"/"RED"/"NEUTRAL"
         public string BottomDominance = "NEUTRAL";          // "GREEN"/"RED"/"NEUTRAL"
         public decimal NetDeltaTotal;           // Ask-gesamt - Bid-gesamt
         public bool IsPerfectLongSetup;         // Automatische Erkennung
         public bool IsPerfectShortSetup;        // Automatische Erkennung
-        public string PerfectSetupReason = "";       // BegrÃ¼ndung fÃ¼r Perfect Setup
+        public string PerfectSetupReason = "";       // Begründung für Perfect Setup
 
         public decimal UpperWickDeltaRatio;
         public decimal LowerWickDeltaRatio;

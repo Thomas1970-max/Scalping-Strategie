@@ -4,7 +4,7 @@ using System.Linq;
 using ATAS.DataFeedsCore;
 using MyNamespace.Strategies.Models;
 using Utils.Common.Logging;
-using static MyNamespace.Strategies.Goldfluss3_3;
+using static MyNamespace.Strategies.Geldfluss3_3;
 
 namespace MyNamespace.Strategies.Orderflow
 {

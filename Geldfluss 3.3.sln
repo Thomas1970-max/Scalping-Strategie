@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Goldfluss 3.3", "Goldfluss 3.3.csproj", "{D94DF824-840D-BA7C-4484-633CEF598512}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Geldfluss 3.3", "Geldfluss 3.3.csproj", "{D94DF824-840D-BA7C-4484-633CEF598512}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Scalping-Strategie.Tests", "Scalping-Strategie.Tests\Scalping-Strategie.Tests.csproj", "{DE37BBB3-E712-46D5-89BB-6E5B6F6CECCF}"
 EndProject
