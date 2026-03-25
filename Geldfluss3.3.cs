@@ -35,9 +35,13 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Reflection;
 using System.Xml.Linq;
 using Utils.Common;
 using DevExpress.Xpf.Core.Native;
+using MyNamespace.Strategies.MarketAnalysis;
+using MyNamespace.Strategies;
+using System.Collections.Generic;
 using System.Collections;
 using System.Windows.Input;
 using System.Windows.Controls.Primitives;
@@ -48,6 +52,8 @@ using System.Windows.Documents;
 using System.Windows.Controls;
 using System.Windows.Ink;
 using System.Globalization;
+using System.Reflection; // F?r den Property-Dump
+using System.Collections.Generic; // Neu: F?r das Dictionary
 
 
 // Stellen Sie sicher, dass dieser Namespace korrekt ist oder ?ndern Sie ihn bei Bedarf
@@ -705,7 +711,7 @@ namespace MyNamespace.Strategies
         [DisplayName("Wick-Min. an Volatilität koppeln")]
         [Description("Wenn aktiv, wird die Wick-Mindestlänge automatisch je Volatilitäts-Regime skaliert (Slow/Normal/Fast).")]
         [DefaultValue(true)]
-        public bool MarketStructureAdaptiveWickByRegime { get; set; } = true;
+        public bool MarketStructureAdaptiveWickByRegime { get; set; } = false;
 
         [OFTParameter]
         [Category("MarketStructure")]
@@ -734,7 +740,7 @@ namespace MyNamespace.Strategies
         [Description("Blockiert Entry + Story, wenn bestätigte SUP/RES-Zonen zu nah beieinander liegen (Gap in Ticks).")]
         [DefaultValue(12)]
         [Range(0, 100)]
-        public int ReversalCompressionGapTicks { get; set; } = 12;
+        public int ReversalCompressionGapTicks { get; set; } = 8;
 
         [OFTParameter]
         [Category("Continuation Settings")]
@@ -1472,6 +1478,28 @@ namespace MyNamespace.Strategies
                                     recentOf: null,
                                     allowZoneCreation: true,
                                     allowZoneLifecycle: false);
+
+                                try
+                                {
+                                    int maxId = -1;
+                                    var zonesNow = _marketStructureContext.ActiveZones;
+                                    if (zonesNow != null)
+                                    {
+                                        for (int zi = 0; zi < zonesNow.Count; zi++)
+                                        {
+                                            var z = zonesNow[zi];
+                                            if (z == null) continue;
+                                            if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                            if (z.Id > maxId) maxId = z.Id;
+                                        }
+                                    }
+                                    if (maxId > _msTick900LastSeenMaxZoneId)
+                                    {
+                                        _msTick900LastSeenMaxZoneId = maxId;
+                                        System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
+                                    }
+                                }
+                                catch { }
                             }
                         }
 
@@ -1556,6 +1584,28 @@ namespace MyNamespace.Strategies
                                         recentOf: null,
                                         allowZoneCreation: true,
                                         allowZoneLifecycle: false);
+
+                                    try
+                                    {
+                                        int maxId = -1;
+                                        var zonesNow = _marketStructureContext.ActiveZones;
+                                        if (zonesNow != null)
+                                        {
+                                            for (int zi = 0; zi < zonesNow.Count; zi++)
+                                            {
+                                                var z = zonesNow[zi];
+                                                if (z == null) continue;
+                                                if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                                if (z.Id > maxId) maxId = z.Id;
+                                            }
+                                        }
+                                        if (maxId > _msTick900LastSeenMaxZoneId)
+                                        {
+                                            _msTick900LastSeenMaxZoneId = maxId;
+                                            System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
+                                        }
+                                    }
+                                    catch { }
                                 }
                             }
 
@@ -1871,8 +1921,33 @@ namespace MyNamespace.Strategies
                 return sessionStart;
             }
 
-            int startBar = FindCurrentSessionStartBarForSwingSeed();
-            var candle = GetCandle(startBar);
+            if (CurrentBar < 0)
+                return referenceTime;
+
+            int startBar;
+            try
+            {
+                startBar = FindCurrentSessionStartBarForSwingSeed();
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return referenceTime;
+            }
+            if (startBar < 0)
+                return referenceTime;
+            if (startBar > CurrentBar)
+                startBar = Math.Max(0, CurrentBar);
+
+            ATAS.Indicators.IndicatorCandle candle;
+            try
+            {
+                candle = GetCandle(startBar);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return referenceTime;
+            }
+
             return candle != null ? candle.Time : referenceTime;
         }
 
@@ -1881,7 +1956,17 @@ namespace MyNamespace.Strategies
             var last = Math.Max(0, CurrentBar - 1);
             for (int i = last; i >= 0; i--)
             {
-                if (IsNewSession(i))
+                bool isNew;
+                try
+                {
+                    isNew = IsNewSession(i);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    continue;
+                }
+
+                if (isNew)
                     return i;
             }
 
@@ -4891,7 +4976,7 @@ namespace MyNamespace.Strategies
         [Display(Name = "Timeout (Bars)", GroupName = "Order Timeout", Order = 110)]
         [Range(1, 100, ErrorMessage = "Please enter a value between 1 and 100.")]
         [Description("Anzahl der Bars, nach denen eine nicht gef?llte Entry-Order gel?scht wird.")] // F?ge Beschreibung hinzu
-        public int OrderTimeoutBars { get; set; } = 2;
+        public int OrderTimeoutBars { get; set; } = 1;
 
         [OFTParameter]
         [Category("CSV Export")]
@@ -5034,6 +5119,9 @@ namespace MyNamespace.Strategies
         private const int MsTick900MaxLiveBuffer = 200000;
         private readonly List<MarketDataArg> _msTick900LiveTradeBuffer = new List<MarketDataArg>(4096);
         private readonly List<TickCandle> _msTick900ClosedCandles = new List<TickCandle>(4096);
+
+        private int _msTick900ZonesDirtyFlag = 0;
+        private int _msTick900LastSeenMaxZoneId = -1;
         
         private DateTimeKind? _msChartTimeKind;
         private DateTime _msLastLiveTradeWallClockUtc;
@@ -5053,6 +5141,16 @@ namespace MyNamespace.Strategies
         private int _lastSeenMarketStructureMaxReadyZoneId = -1;
         private int _lastIntrabarZoneTriggerClosed = -1;
 
+        private int _lastIntrabarZoneTriggerMaxPendingId = -1;
+
+        private int _lastPendingZonesLogClosed = -1;
+
+        private int _deferredIntrabarPendingEvalClosed = -1;
+        private int _deferredIntrabarPendingEvalMaxPendingId = -1;
+        private bool _deferredIntrabarPendingEvalTick900Dirty;
+
+        private int _lastOnCalculateBar = -1;
+        private decimal _lastOnCalculateValue;
         readonly object _ofFeaturesSync = new object();
         private readonly List<int> _ofFeaturesBarList;
         private readonly Dictionary<int, int> _ofFeaturesBarMap = new Dictionary<int, int>(); // fungiert als Set (Wert wird nicht verwendet)
@@ -5598,12 +5696,20 @@ namespace MyNamespace.Strategies
         private bool _evalPositive = false;          // Ergebnis der Evaluation
         private bool _intrabarReclaimed = false;     // Reclaim-Kriterium erf?llt?
         private bool _dwellOk = false;               // Dwell-Kriterium erf?llt?
+        private bool _intrabarImmediatePlaceMode = false;
+        private int _intrabarImmediatePlaceBar = -1;
 
         // Entry-Kontext
         private bool _entryIsLong = false;           // true = Long, false = Short
         private int _signalBarIndex = -1;
         private decimal _signalBarHigh = 0m;
         private decimal _signalBarLow = 0m;
+
+        private int _lastEntryAttemptSetupBar = -1;
+
+        private int _lastPendingSignalBarPlaced = -1;
+
+        private int _entryTimeoutStartBarIndex = -1;
 
         private int _entryBandIdx = 0;               // 1 oder 2
         private decimal _entryBandLevel = 0m;        // LB/UB je Richtung
@@ -5779,7 +5885,7 @@ namespace MyNamespace.Strategies
                  Description = "Abstand in Ticks vom VWAP für Blockade (empfohlen: 6 für ES)",
                  Order = 3)]
         [Range(1, 50, ErrorMessage = "Wert zwischen 1 und 50")]
-        public int VwapProximityTicks { get; set; } = 6;
+        public int VwapProximityTicks { get; set; } = 8;
 
         [Display(Name = "Round Numbers Stufen",
          GroupName = "Level-Parameter",
@@ -7068,7 +7174,15 @@ namespace MyNamespace.Strategies
                     else
                     {
                         var localTime = NormalizeToChartTime(args.Time);
-                        var sessStart = GetSessionStartTimeForSwingSeed(localTime);
+                        DateTime sessStart;
+                        try
+                        {
+                            sessStart = GetSessionStartTimeForSwingSeed(localTime);
+                        }
+                        catch (ArgumentOutOfRangeException)
+                        {
+                            sessStart = localTime;
+                        }
                         if (_msTick900BucketSessionStart == DateTime.MinValue)
                             _msTick900BucketSessionStart = sessStart;
                         else if (sessStart != _msTick900BucketSessionStart)
@@ -7152,6 +7266,9 @@ namespace MyNamespace.Strategies
                                 {
                                     this.LogInfo($"[Tick900-INTRABAR-ZONE-CREATED] Ready zone created (maxReadyId {maxReadyZoneIdAfter} > {maxReadyZoneIdBefore}) msTick900Bar={_msTick900Bar}, chartBar={CurrentBar}");
                                     _lastSeenMarketStructureMaxReadyZoneId = Math.Max(_lastSeenMarketStructureMaxReadyZoneId, maxReadyZoneIdAfter);
+                                    
+                                    // Setze Dirty-Flag, damit der Intrabar-Pfad in OnCalculate SOFORT anspringt
+                                    System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 1);
                                 }
                             }
                             catch { }
@@ -7163,6 +7280,8 @@ namespace MyNamespace.Strategies
                 }
                 catch (Exception ex)
                 {
+                    if (ex is ArgumentOutOfRangeException)
+                        return;
                     this.LogWarn($"[Tick900->MarketStructure] Update failed: {ex}");
                 }
             }
@@ -9883,6 +10002,15 @@ namespace MyNamespace.Strategies
         {
             try
             {
+                _lastOnCalculateBar = bar;
+                _lastOnCalculateValue = value;
+                var c = GetCandle(bar);
+                if (c == null) // Explizite Null-Pr?fung f?r aktuelle Kerze
+                {
+                    this.LogWarn($"OnCalculate: Aktuelle Kerze f?r Bar {bar} ist null. ?berspringe weitere Verarbeitung.");
+                    return;
+                }
+
                 if (UseTick900ForMarketStructure && !_msLeaderElectionAttempted)
                     TryAcquireMarketStructureLeadership();
 
@@ -9903,13 +10031,6 @@ namespace MyNamespace.Strategies
                 CheckAndRecreateCsvWriterIfNeeded();
 
                 int b = bar;
-
-            var c = GetCandle(bar);
-            if (c == null) // Explizite Null-Pr?fung f?r aktuelle Kerze
-            {
-                this.LogWarn($"OnCalculate: Aktuelle Kerze f?r Bar {bar} ist null. ?berspringe weitere Verarbeitung.");
-                return;
-            }
 
             var p = (b > 0) ? GetCandle(b - 1) : c;
             if (p == null) // Explizite Null-Pr?fung f?r vorherige Kerze
@@ -11108,7 +11229,20 @@ namespace MyNamespace.Strategies
             // 2) Snapshot aus den gefilterten Levels bauen
             _currentLevelsSnapshot = BuildLevelsSnapshot(_untouchedLevels);
 
-            if (stopTick) return;
+            if (stopTick)
+            {
+                bool forceIntrabarPendingPass = false;
+                try
+                {
+                    forceIntrabarPendingPass = System.Threading.Interlocked.CompareExchange(ref _msTick900ZonesDirtyFlag, 0, 0) == 1;
+                }
+                catch { forceIntrabarPendingPass = false; }
+
+                if (!forceIntrabarPendingPass)
+                    return;
+
+                this.LogDebug("[OnCalculate] stopTick bypassed because msTick900ZonesDirtyFlag=1 -> continue to intrabar pending evaluation.");
+            }
 
             // 3) Entry-Blocker berechnen
             var entryProxPx = ProximityTicksForEntry * _tickSize;
@@ -11312,10 +11446,14 @@ namespace MyNamespace.Strategies
             {
                 if (_marketStructureContext != null && bar > 0 && _currentLevelsSnapshot != null && _hasOvLastClosed && ovSnapshot != null)
                 {
-                    int maxReadyZoneId = -1;
+                                        bool tick900Dirty = System.Threading.Interlocked.Exchange(ref _msTick900ZonesDirtyFlag, 0) == 1;
+                                        int maxReadyZoneId = -1;
+                    int pendingCount = 0;
+                    int activeCount = 0;
                     try
                     {
                         var zonesNow = _marketStructureContext.ActiveZones;
+                        activeCount = zonesNow != null ? zonesNow.Count : 0;
                         if (zonesNow != null && zonesNow.Count > 0)
                         {
                             for (int zi = 0; zi < zonesNow.Count; zi++)
@@ -11327,6 +11465,7 @@ namespace MyNamespace.Strategies
                                     continue;
                                 if (z.IsConfirmed)
                                     continue;
+                                pendingCount++;
                                 if (z.Id > maxReadyZoneId)
                                     maxReadyZoneId = z.Id;
                             }
@@ -11334,27 +11473,287 @@ namespace MyNamespace.Strategies
                     }
                     catch { maxReadyZoneId = -1; }
 
-                    int closedNow = bar - 1;
-                    bool newZoneEvent = maxReadyZoneId >= 0 && maxReadyZoneId > _lastSeenMarketStructureMaxReadyZoneId;
-                    bool notAlreadyTriggeredForClosed = closedNow != _lastIntrabarZoneTriggerClosed;
-                    if (newZoneEvent && closedNow >= 0 && notAlreadyTriggeredForClosed)
+                    int currentBarNow = bar;
+                    int evalBar = currentBarNow - 1; // Evaluieren der GESCHLOSSENEN Kerze retroaktiv
+                    int closedNow = currentBarNow - 1;
+                    if (closedNow >= 0 && closedNow != _lastPendingZonesLogClosed)
                     {
-                        this.LogInfo($"[OnCalculate-INTRABAR-ZONE] New ready zone detected (maxReadyZoneId {maxReadyZoneId} > {_lastSeenMarketStructureMaxReadyZoneId}) at bar={bar} -> EvaluateSignalsAndOrders(closed={closedNow})");
-                        EvaluateSignalsAndOrders(
-                            closedNow,
-                            ovSnapshot,
-                            _ofFeaturesHistory,
-                            _currentLevelsSnapshot.IsBlockedLong,
-                            _currentLevelsSnapshot.IsBlockedShort,
-                            _currentLevelsSnapshot,
-                            _currentLevelsSnapshot.CurrentPOC,
-                            _currentLevelsSnapshot.CurrentVAH,
-                            _currentLevelsSnapshot.CurrentVAL,
-                            _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
-                            new MyNamespace.Strategies.Models.DetectedOrderflowPattern(),
-                            _currentMarketStateV2,
-                            _currentVwapSnapshot?.Current ?? 0m);
-                        _lastIntrabarZoneTriggerClosed = closedNow;
+                        this.LogInfo("[OnCalculate-PENDING-ZONES] bar=" + bar + " closed=" + closedNow + " activeZones=" + activeCount + " pendingUnconfirmed=" + pendingCount + " maxPendingId=" + maxReadyZoneId);
+                        _lastPendingZonesLogClosed = closedNow;
+                    }
+
+                    bool notAlreadyTriggeredForEvalBar = evalBar != _lastIntrabarZoneTriggerClosed;
+                    bool newPendingZoneAppearedSameEvalBar = (evalBar == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId);
+                    if (pendingCount > 0 && evalBar >= 0 && (tick900Dirty || notAlreadyTriggeredForEvalBar || newPendingZoneAppearedSameEvalBar))
+                    {
+                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones present (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + evalBar + ")");
+
+                        OvSnapshot ovForEvalBar = null;
+                        try
+                        {
+                            if (ovSnapshot != null && ovSnapshot.Bar == evalBar)
+                                ovForEvalBar = ovSnapshot;
+                            else if (_ovSnapshotHistory != null && !_ovSnapshotHistory.IsEmpty)
+                            {
+                                int maxScan = 80;
+                                int count = 0;
+                                for (int off = 0; off >= -maxScan; off--)
+                                {
+                                    if (!_ovSnapshotHistory.TryGetRelative(off, out var s) || s == null)
+                                        break;
+                                    if (s.Bar == evalBar)
+                                    {
+                                        ovForEvalBar = s;
+                                        break;
+                                    }
+                                    count++;
+                                    if (count > maxScan)
+                                        break;
+                                }
+                            }
+                        }
+                        catch { ovForEvalBar = null; }
+
+                        if (ovForEvalBar == null)
+                        {
+                            try
+                            {
+                                var cc = GetCandle(evalBar);
+                                if (cc != null)
+                                {
+                                    decimal candlePocPrice = cc.Close;
+                                    decimal pocDelta = 0m;
+                                    try
+                                    {
+                                        var pocPvi = cc.MaxVolumePriceInfo;
+                                        if (pocPvi != null)
+                                        {
+                                            candlePocPrice = (decimal)pocPvi.Price;
+                                            pocDelta = (decimal)pocPvi.Ask - (decimal)pocPvi.Bid;
+                                        }
+                                    }
+                                    catch { }
+
+                                    var lowPvi = cc.GetPriceVolumeInfo(cc.Low);
+                                    var highPvi = cc.GetPriceVolumeInfo(cc.High);
+                                    decimal bidAtLow = lowPvi != null ? (decimal)lowPvi.Bid : 0m;
+                                    decimal askAtLow = lowPvi != null ? (decimal)lowPvi.Ask : 0m;
+                                    decimal bidAtHigh = highPvi != null ? (decimal)highPvi.Bid : 0m;
+                                    decimal askAtHigh = highPvi != null ? (decimal)highPvi.Ask : 0m;
+
+                                    ovForEvalBar = new OvSnapshot
+                                    {
+                                        Bar = evalBar,
+                                        ChartBarNumber = evalBar + 1,
+                                        SessionBarNumber = evalBar + 1,
+                                        Open = cc.Open,
+                                        High = cc.High,
+                                        Low = cc.Low,
+                                        Time = cc.Time,
+                                        Close = cc.Close,
+                                        Volume = cc.Volume,
+                                        Delta = cc.Delta,
+                                        Ask = cc.Ask,
+                                        Bid = cc.Bid,
+                                        BestAskPrice = Security?.BestAskPrice ?? 0m,
+                                        BestBidPrice = Security?.BestBidPrice ?? 0m,
+                                        CandlePocPrice = candlePocPrice,
+                                        PocDelta = pocDelta,
+                                        BidAtLow = bidAtLow,
+                                        AskAtLow = askAtLow,
+                                        BidAtHigh = bidAtHigh,
+                                        AskAtHigh = askAtHigh,
+                                    };
+                                }
+                            }
+                            catch { ovForEvalBar = null; }
+                        }
+
+                        MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternIntrabar = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
+
+                        // Berechne MarketRegime für evalBar (forming bar)
+                        MarketRegime localRegimeForEvalBar = MarketRegime.None;
+                        MarketRegimeDetails localRegimeDetailsForEvalBar = null;
+                        try
+                        {
+                            var cRegIntra = GetCandle(evalBar);
+                            var pRegIntra = GetCandle(evalBar - 1);
+                            if (cRegIntra != null && pRegIntra != null && ovForEvalBar != null)
+                            {
+                                var cndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(cRegIntra, ovForEvalBar?.NetDeltaTotal ?? 0m);
+                                var prevCndlIntra = new MyNamespace.Strategies.MarketAnalysis.IndicatorCandleAdapter(pRegIntra, ovForEvalBar?.NetDeltaTotal ?? 0m);
+                                localRegimeDetailsForEvalBar = _marketRegimeEvaluator.GetCurrentMarketRegime(evalBar, ovForEvalBar, _myClusterStatistic, cndlIntra, prevCndlIntra);
+                                if (localRegimeDetailsForEvalBar != null)
+                                    localRegimeForEvalBar = localRegimeDetailsForEvalBar.Regime;
+                            }
+                        }
+                        catch (Exception exRegime)
+                        {
+                            this.LogWarn($"[OnCalculate-INTRABAR-PENDING] MarketRegime compute failed: {exRegime.Message}");
+                        }
+
+                        // Berechne MarketStateV2 für evalBar (forming bar)
+                        MyNamespace.Strategies.Models.MarketStateV2 localMarketStateForEvalBar = null;
+                        try
+                        {
+                            if (_marketStateEngineV2 != null && ovForEvalBar != null && _currentVwapSnapshot != null)
+                            {
+                                var htfSwingHigh = _marketStructureContext?.LastConfirmedSwingHigh;
+                                var htfSwingLow = _marketStructureContext?.LastConfirmedSwingLow;
+                                bool isInHtfZone = _marketStructureContext != null && _marketStructureContext.IsInAnyActiveZone(ovForEvalBar.Close, _tickSize, bufferTicks: 2);
+                                var htfZoneType = _marketStructureContext != null
+                                    ? _marketStructureContext.GetHtfZoneType(ovForEvalBar.Close, _tickSize, bufferTicks: 2)
+                                    : MyNamespace.Strategies.Models.HtfZoneType.None;
+
+                                var v2InputIntra = new MyNamespace.Strategies.Models.MarketStateInputV2(
+                                    bar: evalBar,
+                                    high: ovForEvalBar.High,
+                                    low: ovForEvalBar.Low,
+                                    close: ovForEvalBar.Close,
+                                    vwap: _currentVwapSnapshot.Current,
+                                    upperBand1: _currentVwapSnapshot.UpperBand1,
+                                    lowerBand1: _currentVwapSnapshot.LowerBand1,
+                                    upperBand2: _currentVwapSnapshot.UpperBand2,
+                                    lowerBand2: _currentVwapSnapshot.LowerBand2,
+                                    upperBand3: _currentVwapSnapshot.UpperBand3,
+                                    lowerBand3: _currentVwapSnapshot.LowerBand3,
+                                    currentVah: _currentLevelsSnapshot?.CurrentVAH ?? 0m,
+                                    currentVal: _currentLevelsSnapshot?.CurrentVAL ?? 0m,
+                                    candlePocPrice: ovForEvalBar.CandlePocPrice,
+                                    regime: localRegimeForEvalBar,
+                                    htfSwingHigh: htfSwingHigh,
+                                    htfSwingLow: htfSwingLow,
+                                    isInHtfZone: isInHtfZone,
+                                    htfZoneType: htfZoneType);
+
+                                localMarketStateForEvalBar = _marketStateEngineV2.Update(v2InputIntra);
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING] Computed MarketState for evalBar={evalBar}: Bias={localMarketStateForEvalBar?.Bias} Phase={localMarketStateForEvalBar?.Phase}");
+                            }
+                        }
+                        catch (Exception exState)
+                        {
+                            this.LogWarn($"[OnCalculate-INTRABAR-PENDING] MarketStateV2 compute failed: {exState.Message}");
+                        }
+
+                        // Fallback auf globale Werte wenn lokale Berechnung fehlschlägt
+                        if (localMarketStateForEvalBar == null)
+                            localMarketStateForEvalBar = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegimeForEvalBar };
+
+                        try
+                        {
+                            if (_patternRunner == null)
+                            {
+                                // skip detection - patternRunner not initialized
+                            }
+                            else if (_ofFeaturesHistory == null)
+                            {
+                                // skip detection - ofFeaturesHistory not initialized
+                            }
+                            else
+                            {
+                                OfFeatures featIntrabar = null;
+                                try
+                                {
+                                    if (_ofFeaturesByBar != null)
+                                        _ofFeaturesByBar.TryGetValue(evalBar, out featIntrabar);
+                                }
+                                catch { featIntrabar = null; }
+
+                                if (featIntrabar == null)
+                                {
+                                    try { _ofFeaturesHistory.TryGetByBar(evalBar, out featIntrabar); }
+                                    catch { featIntrabar = null; }
+                                }
+
+                                if (featIntrabar == null)
+                                {
+                                    try
+                                    {
+                                        OvSnapshot snapForEval = null;
+                                        try
+                                        {
+                                            snapForEval = ovForEvalBar;
+                                        }
+                                        catch { snapForEval = null; }
+
+                                        if (_featureCalculator != null && snapForEval != null)
+                                        {
+                                            var forced = _featureCalculator.ComputeFeaturesForLastBar(snapForEval);
+                                            if (forced != null)
+                                            {
+                                                AddFeatureAndSync(forced);
+                                                featIntrabar = forced;
+                                            }
+                                        }
+                                        else if (snapForEval == null)
+                                        {
+                                            // No OvSnapshot available - cannot force OfFeatures
+                                        }
+                                    }
+                                    catch (Exception)
+                                    {
+                                        // Forced OfFeatures compute failed - ignore
+                                    }
+                                }
+
+                                if (featIntrabar != null)
+                                {
+                                    if (featIntrabar != null && featIntrabar.Snapshot != null && !_ofFeaturesByBar.ContainsKey(evalBar))
+                                    {
+                                        _ofFeaturesByBar[evalBar] = featIntrabar;
+                                    }
+
+                                    var computedBias = localMarketStateForEvalBar.Bias;
+
+                                    var detectedPattern = _patternRunner.DetectDominantOrderflowPattern(
+                                        bar: evalBar,
+                                        history: _ofFeaturesHistory,
+                                        ofFeaturesByBar: _ofFeaturesByBar,
+                                        currentRegime: localRegimeForEvalBar,
+                                        currentDirectionalBias: computedBias,
+                                        currentMarketState: localMarketStateForEvalBar,
+                                        currentMarketStructureContext: _marketStructureContext,
+                                        currentBar: evalBar);
+
+                                    if (detectedPattern != null)
+                                        detectedPatternIntrabar = detectedPattern;
+                                }
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+
+                        _intrabarImmediatePlaceMode = true;
+                        _intrabarImmediatePlaceBar = bar;
+                        try
+                        {
+                            EvaluateSignalsAndOrders(
+                                caller: "IntrabarPending",
+                                closed: evalBar,
+                                ovLastClosed: ovForEvalBar ?? ovSnapshot,
+                                ofFeaturesHistory: _ofFeaturesHistory,
+                                isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
+                                isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
+                                levelsSnapshot: _currentLevelsSnapshot,
+                                currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
+                                currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
+                                currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
+                                currentMarketRegime: localRegimeForEvalBar,
+                                detectedPattern: detectedPatternIntrabar,
+                                currentMarketState: localMarketStateForEvalBar,
+                                currentVwap: _currentVwapSnapshot?.Current ?? 0m);
+                        }
+                        finally
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+                        _lastIntrabarZoneTriggerClosed = evalBar;
+
+                        _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneId;
                     }
 
                     _lastSeenMarketStructureMaxReadyZoneId = maxReadyZoneId;
@@ -11692,6 +12091,92 @@ namespace MyNamespace.Strategies
 
                     UpdateLastClosedOv(ovSnapshot);
 
+                    // Deferred intrabar pending-zone evaluation: now the snapshot/history should be aligned to 'closed'.
+                    try
+                    {
+                        if (_deferredIntrabarPendingEvalClosed == closed && _marketStructureContext != null && _currentLevelsSnapshot != null && _hasOvLastClosed && ovSnapshot != null)
+                        {
+                            int maxPendingIdNow = -1;
+                            int pendingCountNow = 0;
+                            try
+                            {
+                                var zonesNow = _marketStructureContext.ActiveZones;
+                                if (zonesNow != null && zonesNow.Count > 0)
+                                {
+                                    for (int zi = 0; zi < zonesNow.Count; zi++)
+                                    {
+                                        var z = zonesNow[zi];
+                                        if (z == null) continue;
+                                        if (z.Status == MyNamespace.Strategies.MarketAnalysis.MarketStructureContext.ZoneStatus.Used) continue;
+                                        if (z.IsConfirmed) continue;
+                                        pendingCountNow++;
+                                        if (z.Id > maxPendingIdNow) maxPendingIdNow = z.Id;
+                                    }
+                                }
+                            }
+                            catch { maxPendingIdNow = -1; pendingCountNow = 0; }
+
+                            if (pendingCountNow > 0)
+                            {
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED] Running deferred pending-zone eval. bar={bar} closed={closed} pending={pendingCountNow} maxPendingId={maxPendingIdNow} tick900Dirty={_deferredIntrabarPendingEvalTick900Dirty}");
+
+                                MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternDeferred = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
+                                try
+                                {
+                                    if (_patternRunner != null && _ofFeaturesHistory != null)
+                                    {
+                                        var safeOfFeaturesByBar = _ofFeaturesByBar ?? new Dictionary<int, OfFeatures>();
+                                        var localRegime = _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None;
+                                        var localMarketState = _currentMarketStateV2 ?? new MyNamespace.Strategies.Models.MarketStateV2 { Dynamic = localRegime };
+                                        var localBias = localMarketState.Bias;
+                                        detectedPatternDeferred = _patternRunner.DetectDominantOrderflowPattern(
+                                            bar: closed,
+                                            history: _ofFeaturesHistory,
+                                            ofFeaturesByBar: safeOfFeaturesByBar,
+                                            currentRegime: localRegime,
+                                            currentDirectionalBias: localBias,
+                                            currentMarketState: localMarketState,
+                                            currentMarketStructureContext: _marketStructureContext,
+                                            currentBar: closed);
+                                        this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Detected: bar={bar} closed={closed} type={detectedPatternDeferred?.Type} dir={detectedPatternDeferred?.Direction} conf={detectedPatternDeferred?.ConfidenceScore:0.00}");
+                                    }
+                                    else
+                                    {
+                                        this.LogWarn($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Pattern detection skipped: runner={( _patternRunner==null ? "null" : "ok")} history={( _ofFeaturesHistory==null ? "null" : "ok")} (bar={bar}, closed={closed})");
+                                    }
+                                }
+                                catch (Exception exDet)
+                                {
+                                    this.LogWarn($"[OnCalculate-INTRABAR-PENDING-DEFERRED-PATTERN] Detection failed: {exDet.GetType().Name}: {exDet.Message} (bar={bar}, closed={closed})");
+                                }
+
+                                EvaluateSignalsAndOrders(
+                                    caller: "IntrabarPendingDeferred",
+                                    closed: closed,
+                                    ovLastClosed: ovSnapshot,
+                                    ofFeaturesHistory: _ofFeaturesHistory,
+                                    isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
+                                    isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
+                                    levelsSnapshot: _currentLevelsSnapshot,
+                                    currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
+                                    currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
+                                    currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
+                                    currentMarketRegime: _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
+                                    detectedPattern: detectedPatternDeferred,
+                                    currentMarketState: _currentMarketStateV2,
+                                    currentVwap: _currentVwapSnapshot?.Current ?? 0m);
+
+                                _lastIntrabarZoneTriggerClosed = closed;
+                                _lastIntrabarZoneTriggerMaxPendingId = maxPendingIdNow;
+                            }
+
+                            _deferredIntrabarPendingEvalClosed = -1;
+                            _deferredIntrabarPendingEvalMaxPendingId = -1;
+                            _deferredIntrabarPendingEvalTick900Dirty = false;
+                        }
+                    }
+                    catch { }
+
                     // ========== PHASE 3: MARKET REGIME ==========
 
                     // **********************************************************************************
@@ -12012,24 +12497,29 @@ namespace MyNamespace.Strategies
                                             }
                                         }
 
-                                        if (maxReadyZoneIdAfter >= 0 && maxReadyZoneIdAfter > maxReadyZoneIdBefore && closed != _lastIntrabarZoneTriggerClosed)
+                                        bool notAlreadyTriggeredForClosed = closed != _lastIntrabarZoneTriggerClosed;
+                                        bool newPendingZoneAppearedSameClosed = (closed == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneIdAfter > _lastIntrabarZoneTriggerMaxPendingId);
+                                        if (maxReadyZoneIdAfter >= 0 && maxReadyZoneIdAfter > maxReadyZoneIdBefore && (notAlreadyTriggeredForClosed || newPendingZoneAppearedSameClosed))
                                         {
                                             this.LogInfo($"[OnCalculate-INTRABAR-ZONE-AFTER-UPDATE] Ready zone created during MarketStructure.Update (maxReadyId {maxReadyZoneIdAfter} > {maxReadyZoneIdBefore}) at bar={bar}, closed={closed} -> EvaluateSignalsAndOrders NOW");
                                             EvaluateSignalsAndOrders(
-                                                closed,
-                                                ovSnapshot,
-                                                _ofFeaturesHistory,
-                                                _currentLevelsSnapshot.IsBlockedLong,
-                                                _currentLevelsSnapshot.IsBlockedShort,
-                                                _currentLevelsSnapshot,
-                                                _currentLevelsSnapshot.CurrentPOC,
-                                                _currentLevelsSnapshot.CurrentVAH,
-                                                _currentLevelsSnapshot.CurrentVAL,
-                                                _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
-                                                new MyNamespace.Strategies.Models.DetectedOrderflowPattern(),
-                                                _currentMarketStateV2,
-                                                _currentVwapSnapshot?.Current ?? 0m);
+                                                caller: "IntrabarZoneAfterUpdate",
+                                                closed: closed,
+                                                ovLastClosed: ovSnapshot,
+                                                ofFeaturesHistory: _ofFeaturesHistory,
+                                                isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
+                                                isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
+                                                levelsSnapshot: _currentLevelsSnapshot,
+                                                currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
+                                                currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
+                                                currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
+                                                currentMarketRegime: _marketRegimeDetails != null ? _marketRegimeDetails.Regime : MarketRegime.None,
+                                                detectedPattern: new MyNamespace.Strategies.Models.DetectedOrderflowPattern(),
+                                                currentMarketState: _currentMarketStateV2,
+                                                currentVwap: _currentVwapSnapshot?.Current ?? 0m);
                                             _lastIntrabarZoneTriggerClosed = closed;
+
+                                            _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneIdAfter;
                                             _lastSeenMarketStructureMaxReadyZoneId = Math.Max(_lastSeenMarketStructureMaxReadyZoneId, maxReadyZoneIdAfter);
                                         }
                                     }
@@ -12692,14 +13182,51 @@ namespace MyNamespace.Strategies
 
                     // ========== PHASE 6: SIGNAL EVALUATION ==========
 
+                    // Wenn wir für diesen closed-Bar bereits einen Intrabar-Pending-Trigger hatten,
+                    // aktivieren wir den Intrabar-Immediate-Place-Modus, damit placeBar=bar (forming) statt closed verwendet wird.
+                    bool useIntrabarPlaceMode = false;
+
+                    // WICHTIG: IsNewBar-Pfad darf niemals mit Intrabar-Immediate-Place arbeiten.
+                    // Falls der Flag aus einem vorherigen Intrabar/Pending-Zweig "leakt" (z.B. Exception-Pfad),
+                    // erzwingen wir hier scoped: off.
+                    bool prevIntrabarImmediatePlaceMode = _intrabarImmediatePlaceMode;
+                    int prevIntrabarImmediatePlaceBar = _intrabarImmediatePlaceBar;
+                    _intrabarImmediatePlaceMode = false;
+                    _intrabarImmediatePlaceBar = -1;
 
                     //this.LogInfo($"[OnCalculate] Calling EvaluateSignalsAndOrders for closed={closed}, lastEvalBar(before)={_lastEvalBar}");
                     //this.LogInfo($"[DEBUG] Vor EvaluateSignalsAndOrders: Bar={bar}, POC={currentPOC}, VAH={currentVAH}, VAL={currentVAL}");
                     //this.LogInfo($"[DBG] Enter isNewBar: bar={bar}, closed={closed}, now={DateTime.UtcNow:O}, CurrentBar={CurrentBar}, _lastEvalBar={_lastEvalBar}");
-                    EvaluateSignalsAndOrders(
-                        closed, ovSnapshot, _ofFeaturesHistory, isBlockedLong, isBlockedShort,
-                        _currentLevelsSnapshot, currentPOC, currentVAH, currentVAL, currentMarketRegime, detectedPattern, _currentMarketStateV2,
-                        _currentVwapSnapshot?.Current ?? 0m);
+                    try
+                    {
+                        EvaluateSignalsAndOrders(
+                            caller: "IsNewBar",
+                            closed: closed,
+                            ovLastClosed: ovSnapshot,
+                            ofFeaturesHistory: _ofFeaturesHistory,
+                            isBlockedLong: isBlockedLong,
+                            isBlockedShort: isBlockedShort,
+                            levelsSnapshot: _currentLevelsSnapshot,
+                            currentPOC_Explicit: currentPOC,
+                            currentVAH_Explicit: currentVAH,
+                            currentVAL_Explicit: currentVAL,
+                            currentMarketRegime: currentMarketRegime,
+                            detectedPattern: detectedPattern,
+                            currentMarketState: _currentMarketStateV2,
+                            currentVwap: _currentVwapSnapshot?.Current ?? 0m);
+                    }
+                    finally
+                    {
+                        if (useIntrabarPlaceMode)
+                        {
+                            _intrabarImmediatePlaceMode = false;
+                            _intrabarImmediatePlaceBar = -1;
+                        }
+
+                        // Restore previous intrabar immediate place state (defensive).
+                        _intrabarImmediatePlaceMode = prevIntrabarImmediatePlaceMode;
+                        _intrabarImmediatePlaceBar = prevIntrabarImmediatePlaceBar;
+                    }
                     _lastEvalBar = closed;
 
                     //this.LogInfo($"[OnCalculate] EvaluateSignalsAndOrders completed for closed={closed}; setting _lastEvalBar={closed}");
@@ -12751,7 +13278,8 @@ namespace MyNamespace.Strategies
                 {
                     if (_entryBarIndex >= 0 && OrderTimeoutBars > 0) // defensive Vorbedingungen
                     {
-                        int timeoutBarIndex = _entryBarIndex + OrderTimeoutBars; // $$timeoutBarIndex = _entryBarIndex + OrderTimeoutBars$$
+                        int timeoutBaseBarIndex = _entryTimeoutStartBarIndex >= 0 ? _entryTimeoutStartBarIndex : _entryBarIndex;
+                        int timeoutBarIndex = timeoutBaseBarIndex + OrderTimeoutBars; // $$timeoutBarIndex = _entryBarIndex + OrderTimeoutBars$$
 
                         // Timeout nur pr?fen auf dem LatestClosedBar (oder dem erwarteten "bar" Parameter)
                         if (latestClosedBar >= timeoutBarIndex)
@@ -12808,6 +13336,7 @@ namespace MyNamespace.Strategies
                                     _entryOrder = null;
                                     _pullbackOrder = null;
                                     _entryBarIndex = -1;
+                                    _entryTimeoutStartBarIndex = -1;
                                 }
                             }
                             // sonst: Orders sind gef?llt oder in einem finalen/anderen Status ? nichts zu tun
@@ -12849,14 +13378,24 @@ namespace MyNamespace.Strategies
 
 
 
-                var currentMarketPrice = Security.LastTradePrice;
-                if (currentMarketPrice <= 0)  // FIX: Ung?ltiger Preis ? Abbruch
+                decimal currentMarketPrice = Security?.LastTradePrice ?? 0m;
+                if (currentMarketPrice <= 0m)  // FIX: Ung?ltiger Preis ? Abbruch
                 {
                     this.LogWarn("[OnCalculate] Pullback-Trailing: Ung?ltiger Market-Price, skip.");
                     return;
                 }
                 bool shouldModifyOrder = false;
-                decimal newTrailPrice = 0;
+                decimal newTriggerPrice = 0m;
+                decimal newLimitPrice = 0m;
+
+                decimal tick = InstrumentInfo?.TickSize ?? _tickSize;
+                if (tick <= 0m) tick = 0.25m;
+
+                // Preisquelle: für Long eher Ask, für Short eher Bid; fallback auf Last.
+                var bestAsk = Security?.BestAskPrice;
+                var bestBid = Security?.BestBidPrice;
+                decimal refPriceLong = (bestAsk.HasValue && bestAsk.Value > 0m) ? bestAsk.Value : currentMarketPrice;
+                decimal refPriceShort = (bestBid.HasValue && bestBid.Value > 0m) ? bestBid.Value : currentMarketPrice;
 
                 if (po != null && _pullbackTriggerPrice <= 0m)
                 {
@@ -12891,46 +13430,56 @@ namespace MyNamespace.Strategies
                 if (po.Direction == OrderDirections.Buy)
                 {
                     // Hinweis: du nutzt Last, daher Log auf Last anpassen oder Bid/Ask besorgen
-                    if (!_isPullbackMode && currentMarketPrice <= _pullbackTriggerPrice + _tickSize)
+                    if (!_isPullbackMode && refPriceLong <= _pullbackTriggerPrice + tick)
                     {
-                        this.LogInfo($"[OnCalculate] Long Pullback ber?hrt (Last={currentMarketPrice} <= Trigger={_pullbackTriggerPrice}). Wechsle zu trailing StopLimit.");
+                        this.LogInfo($"[OnCalculate] Long Pullback ber?hrt (Px={refPriceLong} <= Trigger={_pullbackTriggerPrice}). Wechsle zu trailing StopLimit.");
                         CancelOrder(po);
 
-                        decimal newStopPrice = (decimal)(currentMarketPrice - (PullbackTicksTrail * _tickSize)); // x Ticks unter aktuellem Preis                    
-                        _pullbackOrder = CreateStopLimitOrder(OrderDirections.Buy, newStopPrice);
+                        // Long: StopLimit X Ticks ÜBER dem aktuellen Preis; Fill erst beim Reversal nach oben.
+                        decimal trg = refPriceLong + (PullbackTicksTrail * tick);
+                        decimal lim = trg + tick; // kleiner Puffer, um "triggered-but-not-filled" zu reduzieren
+                        _pullbackOrder = CreateStopLimitOrder(OrderDirections.Buy, trg, lim);
                         _isPullbackMode = true;
                         OpenOrder(_pullbackOrder);
                         return; // wichtig: diesen Tick hier beenden
                     }
-                    else if (_isPullbackMode && EnableContinuousTrailing && currentMarketPrice < po.TriggerPrice)
+                    else if (_isPullbackMode && EnableContinuousTrailing)
                     {
-                        decimal potential = (decimal)currentMarketPrice + (PullbackTicksTrail * _tickSize);
-                        if (potential < po.TriggerPrice)
+                        // Wenn der Preis weiter fällt, soll der Stop-Trigger mit nach unten wandern,
+                        // aber immer X Ticks ÜBER dem Preis bleiben.
+                        decimal potentialTrigger = refPriceLong + (PullbackTicksTrail * tick);
+                        if (po.TriggerPrice > 0m && potentialTrigger < po.TriggerPrice)
                         {
-                            newTrailPrice = potential;
+                            newTriggerPrice = potentialTrigger;
+                            newLimitPrice = potentialTrigger + tick;
                             shouldModifyOrder = true;
                         }
                     }
                 }
                 else if (po.Direction == OrderDirections.Sell)
                 {
-                    if (!_isPullbackMode && currentMarketPrice >= _pullbackTriggerPrice - _tickSize)
+                    if (!_isPullbackMode && refPriceShort >= _pullbackTriggerPrice - tick)
                     {
-                        this.LogInfo($"[OnCalculate] Short Pullback ber?hrt (Last={currentMarketPrice} >= Trigger={_pullbackTriggerPrice}). Wechsle zu trailing StopLimit.");
+                        this.LogInfo($"[OnCalculate] Short Pullback ber?hrt (Px={refPriceShort} >= Trigger={_pullbackTriggerPrice}). Wechsle zu trailing StopLimit.");
                         CancelOrder(po);
 
-                        decimal newStopPrice = (decimal)currentMarketPrice - (PullbackTicksTrail * _tickSize);
-                        _pullbackOrder = CreateStopLimitOrder(OrderDirections.Sell, newStopPrice);
+                        // Short: StopLimit X Ticks UNTER dem aktuellen Preis; Fill erst beim Reversal nach unten.
+                        decimal trg = refPriceShort - (PullbackTicksTrail * tick);
+                        decimal lim = trg - tick; // kleiner Puffer
+                        _pullbackOrder = CreateStopLimitOrder(OrderDirections.Sell, trg, lim);
                         _isPullbackMode = true;
                         OpenOrder(_pullbackOrder);
                         return; // wichtig
                     }
-                    else if (_isPullbackMode && EnableContinuousTrailing && currentMarketPrice > po.TriggerPrice)
+                    else if (_isPullbackMode && EnableContinuousTrailing)
                     {
-                        decimal potential = (decimal)currentMarketPrice - (PullbackTicksTrail * _tickSize);
-                        if (potential > po.TriggerPrice)
+                        // Wenn der Preis weiter steigt, soll der Stop-Trigger mit nach oben wandern,
+                        // aber immer X Ticks UNTER dem Preis bleiben.
+                        decimal potentialTrigger = refPriceShort - (PullbackTicksTrail * tick);
+                        if (po.TriggerPrice > 0m && potentialTrigger > po.TriggerPrice)
                         {
-                            newTrailPrice = potential;
+                            newTriggerPrice = potentialTrigger;
+                            newLimitPrice = potentialTrigger - tick;
                             shouldModifyOrder = true;
                         }
                     }
@@ -12942,8 +13491,8 @@ namespace MyNamespace.Strategies
                     try
                     {
                         var modifiedOrder = po.Clone();
-                        modifiedOrder.Price = newTrailPrice;
-                        modifiedOrder.TriggerPrice = newTrailPrice;
+                        modifiedOrder.TriggerPrice = newTriggerPrice;
+                        modifiedOrder.Price = newLimitPrice;
                         ModifyOrder(po, modifiedOrder);
                         _pullbackOrder = modifiedOrder; // Referenz aktualisieren
                     }
@@ -13546,19 +14095,116 @@ namespace MyNamespace.Strategies
             return tpPrice;
         }
 
-        private void EvaluateSignalsAndOrders(int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MyNamespace.Strategies.Models.MarketStateV2 currentMarketState, decimal currentVwap)
+        private void EvaluateSignalsAndOrders(string caller, int closed, OvSnapshot ovLastClosed, Orderflow.OfFeaturesHistory ofFeaturesHistory, bool isBlockedLong, bool isBlockedShort, LevelsSnapshot levelsSnapshot, decimal currentPOC_Explicit, decimal currentVAH_Explicit, decimal currentVAL_Explicit, MarketRegime currentMarketRegime, DetectedOrderflowPattern detectedPattern, MyNamespace.Strategies.Models.MarketStateV2 currentMarketState, decimal currentVwap)
         {
             //this.LogInfo($"[DBG-EVAL] Start EvaluateSignalsAndOrders(closed={closed}) at {DateTime.UtcNow:O}");
 
-            if (closed < 0 || closed >= CurrentBar) return;
+            if (closed < 0 || closed > CurrentBar || (closed == CurrentBar && !_intrabarImmediatePlaceMode))
+            {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=closed_out_of_range closed={closed} CurrentBar={CurrentBar}");
+                return;
+            }
             //this.LogInfo($"[DBG] Pre-Eval bar={bar}, hasZ=true, Z={Volumenburst:F6}, CurrentBar={CurrentBar}");
 
-            var c = GetCandle(closed);
-            var p = closed > 0 ? GetCandle(closed - 1) : c;
+            int? entryClosedOverride = null;
+            int? entryChartBarOverride = null;
+            try
+            {
+                if (detectedPattern?.MatchedCriteriaValues != null && detectedPattern.MatchedCriteriaValues.Count > 0)
+                {
+                    if (detectedPattern.MatchedCriteriaValues.TryGetValue("EntryClosedOverride", out var eIdxObj) && eIdxObj != null)
+                    {
+                        if (eIdxObj is int ei)
+                            entryClosedOverride = ei;
+                        else if (eIdxObj is long el)
+                            entryClosedOverride = (int)el;
+                        else if (int.TryParse(eIdxObj.ToString(), out var eParsed))
+                            entryClosedOverride = eParsed;
+                    }
+
+                    if (detectedPattern.MatchedCriteriaValues.TryGetValue("EntryChartBarOverride", out var eChartObj) && eChartObj != null)
+                    {
+                        if (eChartObj is int eci)
+                            entryChartBarOverride = eci;
+                        else if (eChartObj is long ecl)
+                            entryChartBarOverride = (int)ecl;
+                        else if (int.TryParse(eChartObj.ToString(), out var ecParsed))
+                            entryChartBarOverride = ecParsed;
+                    }
+                }
+            }
+            catch { }
+
+            // Guard: Retro-Entry in Pending-Zone nur zulassen, wenn das Signalbar direkt vor der aktuell entstehenden Forming-Bar liegt.
+            // (Sonst ist Entry/Preis-Kontext veraltet, wenn der Markt bereits mehrere Bars weiter ist.)
+            int? pendingSignalBarUsedForDedupe = null;
+            try
+            {
+                if (caller == "IntrabarPending")
+                {
+                    int placeBarForPending = (_intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0)
+                        ? _intrabarImmediatePlaceBar
+                        : closed;
+                    int requiredSignalBar = placeBarForPending - 1;
+
+                    int signalBarUsed = entryClosedOverride ?? closed;
+                    pendingSignalBarUsedForDedupe = signalBarUsed;
+                    if (signalBarUsed != requiredSignalBar)
+                    {
+                        this.LogInfo(
+                            $"[SETUP-BLOCKED-RETRO-TIMING] caller={caller} pattern={detectedPattern?.Type} dir={detectedPattern?.Direction} " +
+                            $"CurrentBar={CurrentBar} requiredSignalBar={requiredSignalBar} signalBarUsed={signalBarUsed} " +
+                            $"EntryClosedOverride={(entryClosedOverride.HasValue ? entryClosedOverride.Value.ToString() : "-")} closed={closed} " +
+                            $"intrabarMode={_intrabarImmediatePlaceMode} intrabarPlaceBar={_intrabarImmediatePlaceBar}");
+                        return;
+                    }
+
+                    if (_lastPendingSignalBarPlaced == signalBarUsed)
+                    {
+                        this.LogInfo($"[PENDING-DEDUPE] Skip: signalBar={signalBarUsed} already used for pending entry.");
+                        return;
+                    }
+                }
+            }
+            catch { }
+
+            int placeBar = closed;
+            if (_intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0)
+            {
+                placeBar = _intrabarImmediatePlaceBar;
+                this.LogInfo($"[EvaluateSignalsAndOrders] Intrabar immediate place mode: caller={caller} placeBar={placeBar} (was closed={closed})");
+            }
+            int placeChart = placeBar + 1;
+
+            int setupBar = closed;
+            if (caller == "IntrabarPending")
+            {
+                setupBar = CurrentBar - 1;
+            }
+            else if (entryClosedOverride.HasValue && entryClosedOverride.Value >= 0 && entryClosedOverride.Value < CurrentBar)
+            {
+                setupBar = entryClosedOverride.Value;
+            }
+
+            if (detectedPattern != null && detectedPattern.IsDetected && setupBar >= 0)
+            {
+                if (_lastEntryAttemptSetupBar == setupBar)
+                {
+                    if (_intrabarImmediatePlaceMode)
+                        this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=entry_dedupe_same_setup_bar caller={caller} setupBar={setupBar} closed={closed} placeBar={( _intrabarImmediatePlaceMode && _intrabarImmediatePlaceBar >= 0 ? _intrabarImmediatePlaceBar : closed)} pattern={detectedPattern.Type} dir={detectedPattern.Direction}");
+                    this.LogInfo($"[ENTRY-DEDUPE] Skip duplicate entry evaluation: setupBar={setupBar} closed={closed} caller={caller} pattern={detectedPattern.Type} dir={detectedPattern.Direction}");
+                    return;
+                }
+                _lastEntryAttemptSetupBar = setupBar;
+            }
+
+            var c = GetCandle(setupBar);
+            var p = setupBar > 0 ? GetCandle(setupBar - 1) : c;
             double seconds = (c.Time - p.Time).TotalSeconds;
             if (seconds <= 0) seconds = 1;
             //this.LogInfo($"[Eval] bar={bar}, time={c.Time:O}");
-            bool inSession = IsWithinAnyTradingSession(closed);
+            bool inSession = IsWithinAnyTradingSession(setupBar);
             var tickSize = InstrumentInfo?.TickSize ?? _tickSize;
             int riskTicks = GetRiskTicks();
             bool wegFreiLong = true;
@@ -13705,6 +14351,8 @@ namespace MyNamespace.Strategies
             //this.LogInfo($"[EVAL] timeCheck inSession={inSession}");
             if (!inSession)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=outside_session setupBar={setupBar} time={c.Time:O}");
                 this.LogInfo("[EVAL] guard: outside session");
                 return;
             }
@@ -13719,6 +14367,8 @@ namespace MyNamespace.Strategies
             // 2. Pr?fen des Trading Managers (grundlegende Absicherung)
             if (TradingManager == null)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=trading_manager_null closed={closed} setupBar={setupBar}");
                 this.LogInfo($"[EvaluateSignalAndOrders] TradingManager ist null!");
                 return;
             }
@@ -13726,6 +14376,8 @@ namespace MyNamespace.Strategies
             // 3. Pr?fen auf ausreichend historische Kerzen
             if (closed < 2)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=insufficient_history closed={closed}");
                 return;
             }
 
@@ -13822,6 +14474,8 @@ namespace MyNamespace.Strategies
 
             if (hasOpenPosition || hasActiveTradingManagerOrders || hasPendingEntryOrders || hasPendingExitOrders)
             {
+                if (_intrabarImmediatePlaceMode)
+                    this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=guards_open_pos_or_orders closed={closed} setupBar={setupBar} Pos={CurrentPosition} TMActive={hasActiveTradingManagerOrders} EntryPending={hasPendingEntryOrders} ExitPending={hasPendingExitOrders}");
                 this.LogInfo($"[GUARD] Skip: Pos={CurrentPosition}, TMOrders={hasActiveTradingManagerOrders}, " +
                              $"EntryOrders={hasPendingEntryOrders}, ExitOrders={hasPendingExitOrders}");
                 return;
@@ -13872,6 +14526,8 @@ namespace MyNamespace.Strategies
                         int pdPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.PreviousDayPOC));
                         if (pdPocDistTicks <= pocKlebeZoneTicks)
                         {
+                            if (_intrabarImmediatePlaceMode)
+                                this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=poc_cling_prev_day setupBar={setupBar} PdPOC={levelsSnapshot.PreviousDayPOC:F2} close={c.Close:F2} distTicks={pdPocDistTicks}");
                             this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am POC vom Vortag (PdPOC={levelsSnapshot.PreviousDayPOC:F2}, Close={c.Close:F2}, dist={pdPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
                             return;
                         }
@@ -13882,6 +14538,8 @@ namespace MyNamespace.Strategies
                         int curPocDistTicks = Math.Abs(TicksBetween(c.Close, levelsSnapshot.CurrentPOC));
                         if (curPocDistTicks <= pocKlebeZoneTicks)
                         {
+                            if (_intrabarImmediatePlaceMode)
+                                this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=poc_cling_current setupBar={setupBar} POC={levelsSnapshot.CurrentPOC:F2} close={c.Close:F2} distTicks={curPocDistTicks}");
                             this.LogInfo($"[SETUP-BLOCKED] Setup blockiert: Preis klebt am aktuellen POC (POC={levelsSnapshot.CurrentPOC:F2}, Close={c.Close:F2}, dist={curPocDistTicks} ticks, zone=±{pocKlebeZoneTicks}).");
                             return;
                         }
@@ -13899,6 +14557,8 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
+                        if (_intrabarImmediatePlaceMode)
+                            this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=signal_candle_not_bullish setupBar={setupBar} open={c.Open:F2} close={c.Close:F2} pattern={detectedPattern.Type} conf={detectedPattern.ConfidenceScore:0.00}");
                         this.LogInfo($"[SETUP-LONG-BLOCKED] Long Setup blockiert: Signalkerze nicht bullisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
@@ -13913,6 +14573,8 @@ namespace MyNamespace.Strategies
                     }
                     else
                     {
+                        if (_intrabarImmediatePlaceMode)
+                            this.LogInfo($"[INTRABAR-IMMEDIATE-SKIP] reason=signal_candle_not_bearish setupBar={setupBar} open={c.Open:F2} close={c.Close:F2} pattern={detectedPattern.Type} conf={detectedPattern.ConfidenceScore:0.00}");
                         this.LogInfo($"[SETUP-SHORT-BLOCKED] Short Setup blockiert: Signalkerze nicht bärisch (Open={c.Open:F2}, Close={c.Close:F2}, Bar={closed}, ChartBar={closed + 1}, Time={c.Time:O}, Pattern={detectedPattern.Type}, Dir={detectedPattern.Direction}).");
                     }
                 }
@@ -14025,6 +14687,10 @@ namespace MyNamespace.Strategies
             }
             else
             {
+                if (_intrabarImmediatePlaceMode && detectedPattern != null && detectedPattern.IsDetected)
+                {
+                    this.LogInfo($"[SETUP-NO-ORDER] caller={caller} Pattern detected but no valid setup -> no order. Pattern={detectedPattern.Type} Dir={detectedPattern.Direction} conf={detectedPattern.ConfidenceScore:0.00} setupBar={setupBar} open={c.Open:F2} close={c.Close:F2} isBlockedLong={isBlockedLong} isBlockedShort={isBlockedShort} wegFreiLong={wegFreiLong} wegFreiShort={wegFreiShort} vwap={currentVwap:F2}");
+                }
                 this.LogDebug("[SETUP-VALID] Derzeit kein g?ltiges Long- oder Short-Setup nach Pattern/Bias-Kriterien.");
             }
 
@@ -14142,7 +14808,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLong,
-                            BreakEvenLevelsTrendConfig = "5:1;7:5",
+                            BreakEvenLevelsTrendConfig = "5:1;8:5",
                             SuggestedStopLossPrice = suggestedSlLong,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -14174,7 +14840,8 @@ namespace MyNamespace.Strategies
                 }
 
                 _activeTradeSetupParams = setup;
-                _entryBarIndex = closed;
+                _entryBarIndex = placeBar;
+                _entryTimeoutStartBarIndex = _intrabarImmediatePlaceMode ? (placeBar - 1) : (CurrentBar - 1);
 
                 bool entryWegFreiLong = true;
                 string entryWegFreiLongBlocker = string.Empty;
@@ -14217,11 +14884,23 @@ namespace MyNamespace.Strategies
                         return;
                     }
                 }
-
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={longEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-LONG] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={longEntryPrice:F2}.");
-                PlaceEntry(OrderDirections.Buy, longEntryPrice, closed);
+                if (caller == "IntrabarPending")
+                    _lastPendingSignalBarPlaced = pendingSignalBarUsedForDedupe ?? setupBar;
+                if (EnablePullback && PullbackTicksInitial > 0)
+                {
+                    // Pullback-Arming-Level nahe am aktuellen Signalbar-Close, um Fill-Chance zu erhöhen.
+                    // Long: X Ticks UNTER Close -> bei Touch switch zu trailing StopLimit (Reversal Entry)
+                    decimal armPx = RoundToTick(c.Close - (PullbackTicksInitial * tickSize));
+                    this.LogInfo($"[ORDER-LONG] Pullback aktiv: armPx={armPx:F2} (close={c.Close:F2}, initTicks={PullbackTicksInitial}).");
+                    PlacePullbackEntry(OrderDirections.Buy, armPx, placeBar);
+                    _entryState = EntryState.PullbackPlaced;
+                }
+                else
+                {
+                    PlaceEntry(OrderDirections.Buy, longEntryPrice, placeBar);
+                }
                 return; // Beende die Methode nach Orderplatzierung
             }
             else if (isShortSetupValid)
@@ -14335,7 +15014,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
-                            BreakEvenLevelsTrendConfig = "5:1;7:5",
+                            BreakEvenLevelsTrendConfig = "5:1;8:5",
                             SuggestedStopLossPrice = suggestedSlShort,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -14367,7 +15046,8 @@ namespace MyNamespace.Strategies
                 }
 
                 _activeTradeSetupParams = setup;
-                _entryBarIndex = closed;
+                _entryBarIndex = placeBar;
+                _entryTimeoutStartBarIndex = _intrabarImmediatePlaceMode ? (placeBar - 1) : (CurrentBar - 1);
 
                 bool entryWegFreiShort = true;
                 string entryWegFreiShortBlocker = string.Empty;
@@ -14411,16 +15091,26 @@ namespace MyNamespace.Strategies
                     }
                 }
 
-                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}, closedChart={closed + 1}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
+                this.LogInfo($"[DBG-EVAL] About to PlaceEntry: caller={caller}, intrabarMode={_intrabarImmediatePlaceMode}, intrabarPlaceBar={_intrabarImmediatePlaceBar}, CurrentBar={CurrentBar}, lastOnCalcBar={_lastOnCalculateBar}, dir={(isLongSetupValid ? "Buy" : "Sell")}, price={shortEntryPrice}, closed={closed}, closedChart={closed + 1}, placeBar={placeBar}, placeChart={placeChart}, signalBar={(signalBarIdxOverride?.ToString() ?? "-")}, signalChart={(signalChartBarOverride?.ToString() ?? "-")}, pocSrc={(signalPocFromOverride ? "SignalBarOverride" : "ClosedBar")}");
                 this.LogInfo($"[ORDER-SHORT] Platzierung: Pattern={detectedPattern.Type}, Bias={currentMarketState.Bias}, " +
                              $"TriggerLevel={entryTriggerLevelName}={entryTriggerLevel:F2}, EntryPrice={shortEntryPrice:F2}.");
-                PlaceEntry(OrderDirections.Sell, shortEntryPrice, closed);
+                if (caller == "IntrabarPending")
+                    _lastPendingSignalBarPlaced = pendingSignalBarUsedForDedupe ?? setupBar;
+                if (EnablePullback && PullbackTicksInitial > 0)
+                {
+                    // Short: X Ticks ÜBER Close -> bei Touch switch zu trailing StopLimit (Reversal Entry)
+                    decimal armPx = RoundToTick(c.Close + (PullbackTicksInitial * tickSize));
+                    this.LogInfo($"[ORDER-SHORT] Pullback aktiv: armPx={armPx:F2} (close={c.Close:F2}, initTicks={PullbackTicksInitial}).");
+                    PlacePullbackEntry(OrderDirections.Sell, armPx, placeBar);
+                    _entryState = EntryState.PullbackPlaced;
+                }
+                else
+                {
+                    PlaceEntry(OrderDirections.Sell, shortEntryPrice, placeBar);
+                }
                 return; // Beende die Methode nach Orderplatzierung
             }
         }
-
-
-
 
 
 
@@ -15624,6 +16314,14 @@ namespace MyNamespace.Strategies
             if ((order.Id == _tpOrder?.Id || order.Id == _slOrder?.Id) &&
                 (order.Status() == OrderStatus.Canceled || order.State == OrderStates.Failed))
             {
+                // WICHTIG: Cancel/Failed einer Exit-Order kann auch durch Modify/ReRegister entstehen (z.B. BreakEven/Trailing).
+                // In diesem Fall ist die Position noch offen und darf NICHT als Trade-Ende interpretiert werden.
+                if (CurrentPosition != 0)
+                {
+                    this.LogInfo($"[OnOrderChanged] EXIT ORDER Id={order.Id} (Typ: {order.Type}) CANCELED/FAILED while position still open (Pos={CurrentPosition}). Likely Modify/ReRegister - skip trade reset.");
+                    return;
+                }
+
                 this.LogInfo($"[OnOrderChanged] EXIT ORDER Id={order.Id} (Typ: {order.Type}) WURDE GECANCELT/FAILED. Wahrscheinlich durch OCO. Bereinige Zustand.");
 
                 _positionOpen = false;
@@ -15948,26 +16646,12 @@ namespace MyNamespace.Strategies
         private void ResetTradeState()
         {
             this.LogInfo("ResetTradeState() aufgerufen: Setze alle Order- und Setup-Settings zur?ck.");
-
             try
             {
                 this.LogInfo("ResetTradeState() aufgerufen: Setze alle Order- und Setup-Settings zur?ck.");
 
-                // 1. Order-Referenzen zur?cksetzen
-                _pullbackOrder = null;
-                _entryOrder = null;
-                _tpOrder = null;
-                _slOrder = null;
-
-                // 2. Position und Fill-Details zur?cksetzen
-                _positionOpen = false;
-                _entryFillPrice = 0;
-                _breakEvenLevelReached = 0;
-
-                // 3. Bar-Indexe zur?cksetzen
-                _entryBarIndex = -1;
-                _armedBarIndex = -1;
                 _fillBarIndex = -1;
+                _lastPendingSignalBarPlaced = -1;
 
                 // 4. Modi, Flags und Trigger zur?cksetzen
                 _isPullbackMode = false;
@@ -16998,9 +17682,10 @@ namespace MyNamespace.Strategies
             if (_tickSize > 0m)
             {
                 var steps = price / _tickSize;
+                // Limit-Orders: Buy sollte NICHT nach oben gerundet werden (schlechterer Fill), Sell nicht nach unten.
                 alignedPrice = (direction == OrderDirections.Buy)
-                    ? Math.Ceiling(steps) * _tickSize    // Long: nach oben
-                    : Math.Floor(steps) * _tickSize;     // Short: nach unten
+                    ? Math.Floor(steps) * _tickSize      // Buy Limit: nach unten
+                    : Math.Ceiling(steps) * _tickSize;   // Sell Limit: nach oben
             }
 
             if (alignedPrice <= 0m)
@@ -17139,6 +17824,30 @@ namespace MyNamespace.Strategies
             _entryBarIndex = bar;
             this.LogInfo($"[PlaceEntry SET] entryBarIndex={_entryBarIndex} timeoutBars={_orderTimeoutBars} " +
                  $"timeoutBarIndex={_entryBarIndex + _orderTimeoutBars}");
+            try
+            {
+                var cb = CurrentBar;
+                int lastCalcBar = _lastOnCalculateBar;
+                int calcClosed = lastCalcBar - 1;
+
+                DateTime? tClosed = null;
+                DateTime? tForming = null;
+                try
+                {
+                    if (TryGetCandleSafe(cb - 1, out var icClosed) && icClosed != null)
+                        tClosed = icClosed.Time;
+                }
+                catch { }
+                try
+                {
+                    if (TryGetCandleSafe(cb, out var icForming) && icForming != null)
+                        tForming = icForming.Time;
+                }
+                catch { }
+
+                this.LogInfo($"[PlaceEntry-TIMING] CurrentBar={cb} CurrentClosed={(cb - 1)} lastOnCalcBar={lastCalcBar} lastOnCalcClosed={calcClosed} argBar={bar} nowUtc={DateTime.UtcNow:O} candleTime(CurrentClosed)={(tClosed.HasValue ? tClosed.Value.ToString("O") : "n/a")} candleTime(CurrentForming)={(tForming.HasValue ? tForming.Value.ToString("O") : "n/a")}");
+            }
+            catch { }
 
             // Sende-Log inkl. tats?chlich verwendeter Menge
             if (entry.Type == OrderTypes.Stop)
@@ -17146,6 +17855,11 @@ namespace MyNamespace.Strategies
             else
                 this.LogInfo($"[PlaceEntry] Sende Limit: Dir={direction}, Px={entry.Price:F5}, Qty={HandelsMenge}.");
             OpenOrder(entry);
+            try
+            {
+                this.LogInfo($"[PlaceEntry-AFTER-OPEN] EntryOrder Id={entry.Id} Status={entry.Status()} State={entry.State} Dir={entry.Direction} Type={entry.Type} Px={entry.Price:F5} Trg={entry.TriggerPrice:F5}");
+            }
+            catch { }
             //this.LogInfo($"[DBG-ORDER] PlaceOrder returned:  time={DateTime.UtcNow:O}");
 
         } // Ende PlaceEntry Methode
@@ -17293,7 +18007,7 @@ namespace MyNamespace.Strategies
 
         private void CleanupInactiveOrders()
         {
-            if (_entryOrder != null && (_entryOrder.State == OrderStates.None || _entryOrder.State == OrderStates.Failed))
+            if (_entryOrder != null && _entryOrder.State == OrderStates.Failed)
             {
                 this.LogInfo($"[Cleanup] Entry Order: {_entryOrder.Direction} {_entryOrder.State}");
                 _entryOrder = null;
@@ -17303,7 +18017,7 @@ namespace MyNamespace.Strategies
             }
 
             // Pullback Order: ?hnlich
-            if (_pullbackOrder != null && (_pullbackOrder.State == OrderStates.None || _pullbackOrder.State == OrderStates.Failed))
+            if (_pullbackOrder != null && _pullbackOrder.State == OrderStates.Failed)
             {
                 this.LogInfo($"[Cleanup] Pullback Order: {_pullbackOrder.Direction} {_pullbackOrder.State}");
                 _pullbackOrder = null;
