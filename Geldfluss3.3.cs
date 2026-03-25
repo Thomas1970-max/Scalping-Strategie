@@ -4955,11 +4955,23 @@ namespace MyNamespace.Strategies
         public bool EnableReversalEvaluator { get; set; } = true;
 
         [OFTParameter]
+        [Category("Reversal Settings")]
+        [DisplayName("Break-Even Stages (Trigger:Offset)")]
+        [Description("BE-Stufen für Reversal-Patterns. Format: trigger:offset;trigger:offset (Ticks). Leer = Setup/Default.")]
+        public string ReversalBreakEvenStagesConfig { get; set; } = "5:1;8:5";
+
+        [OFTParameter]
         [Category("Continuation Settings")]
         [DisplayName("Pullback Evaluator aktiv")]
         [Description("Aktiviert/deaktiviert den ContinuationPullbackEvaluator.")]
         [DefaultValue(false)]
         public bool EnablePullbackEvaluator { get; set; } = false;
+
+        [OFTParameter]
+        [Category("Continuation Settings")]
+        [DisplayName("Break-Even Stages (Trigger:Offset)")]
+        [Description("BE-Stufen für Continuation-Patterns. Format: trigger:offset;trigger:offset (Ticks). Leer = Setup/Default.")]
+        public string ContinuationBreakEvenStagesConfig { get; set; } = "";
 
 
         [Display(Name = "Noisy Orderflow-Logs unterdrücken",
@@ -14808,7 +14820,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLong,
-                            BreakEvenLevelsTrendConfig = "5:1;8:5",
+                            BreakEvenLevelsTrendConfig = string.IsNullOrWhiteSpace(ReversalBreakEvenStagesConfig) ? "5:1;8:5" : ReversalBreakEvenStagesConfig,
                             SuggestedStopLossPrice = suggestedSlLong,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -14828,6 +14840,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksLongCont,
+                            BreakEvenLevelsTrendConfig = string.IsNullOrWhiteSpace(ContinuationBreakEvenStagesConfig) ? null : ContinuationBreakEvenStagesConfig,
                             SuggestedStopLossPrice = suggestedSlLongCont,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -15014,7 +15027,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShort,
-                            BreakEvenLevelsTrendConfig = "5:1;8:5",
+                            BreakEvenLevelsTrendConfig = string.IsNullOrWhiteSpace(ReversalBreakEvenStagesConfig) ? "5:1;8:5" : ReversalBreakEvenStagesConfig,
                             SuggestedStopLossPrice = suggestedSlShort,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -15034,6 +15047,7 @@ namespace MyNamespace.Strategies
                         {
                             TpTicks = 10,
                             SlTicks = slTicksShortCont,
+                            BreakEvenLevelsTrendConfig = string.IsNullOrWhiteSpace(ContinuationBreakEvenStagesConfig) ? null : ContinuationBreakEvenStagesConfig,
                             SuggestedStopLossPrice = suggestedSlShortCont,
                             TrailType = "CANDLE_HL",
                             TrailActivateAfterTicks = 4,
@@ -16815,6 +16829,7 @@ namespace MyNamespace.Strategies
                 _trailManager = null;
             }
         }
+
 
         private void ResetManagersState()
         {
