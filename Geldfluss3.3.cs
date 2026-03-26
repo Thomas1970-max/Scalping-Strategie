@@ -4706,8 +4706,10 @@ namespace MyNamespace.Strategies
         private bool _positionOpen = false;
         private bool _isExitPlacementPending = false;
         private int _entryBarIndex = -1;
+        private int _entryTimeoutStartClosedBarIndex = -1;
         private int _armedBarIndex = -1;   // Bar, an dem das Arming stattfand
         private int _pullbackBarIndex = -1;
+        private int _pullbackTimeoutStartClosedBarIndex = -1;
         private int _fillBarIndex = -1;
         private decimal _entryFillPrice = 0m;
         private decimal _currentAtrValue;
@@ -6919,6 +6921,8 @@ namespace MyNamespace.Strategies
             _positionOpen = false;
             _isExitPlacementPending = false;
             _entryBarIndex = _fillBarIndex = -1;
+            _entryTimeoutStartClosedBarIndex = -1;
+            _pullbackTimeoutStartClosedBarIndex = -1;
             _armedBarIndex = -1;
             _signalCheckedForThisBarFirstTick = false;
             _lastProcessedBarIndex = -1;
@@ -10745,6 +10749,8 @@ namespace MyNamespace.Strategies
                                         _orderTimeoutEnabled = false;
                                         _orderTimeoutBars = 0;
                                         _entryBarIndex = -1;
+                                        _entryTimeoutStartClosedBarIndex = -1;
+                                        _pullbackTimeoutStartClosedBarIndex = -1;
                                         _currentTimeoutOwnerSetup = SetupKind.None;
                                     }
                                 }
@@ -11494,11 +11500,10 @@ namespace MyNamespace.Strategies
                         _lastPendingZonesLogClosed = closedNow;
                     }
 
-                    bool notAlreadyTriggeredForEvalBar = evalBar != _lastIntrabarZoneTriggerClosed;
-                    bool newPendingZoneAppearedSameEvalBar = (evalBar == _lastIntrabarZoneTriggerClosed) && (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId);
-                    if (pendingCount > 0 && evalBar >= 0 && (tick900Dirty || notAlreadyTriggeredForEvalBar || newPendingZoneAppearedSameEvalBar))
+                    bool newPendingZoneAppeared = maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId;
+                    if (pendingCount > 0 && evalBar >= 0 && (tick900Dirty || newPendingZoneAppeared))
                     {
-                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones present (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + evalBar + ")");
+                        this.LogInfo("[OnCalculate-INTRABAR-PENDING] Pending zones NEW/dirty (pending=" + pendingCount + ", maxPendingId=" + maxReadyZoneId + ", lastMaxPendingId=" + _lastIntrabarZoneTriggerMaxPendingId + ", tick900Dirty=" + tick900Dirty + ") at bar=" + bar + " CurrentBar=" + CurrentBar + " -> EvaluateSignalsAndOrders(closed=" + evalBar + ")");
 
                         OvSnapshot ovForEvalBar = null;
                         try
@@ -11738,33 +11743,38 @@ namespace MyNamespace.Strategies
                             _intrabarImmediatePlaceBar = -1;
                         }
 
-                        _intrabarImmediatePlaceMode = true;
-                        _intrabarImmediatePlaceBar = bar;
-                        try
+                        if (maxReadyZoneId > _lastIntrabarZoneTriggerMaxPendingId || tick900Dirty)
                         {
-                            EvaluateSignalsAndOrders(
-                                caller: "IntrabarPending",
-                                closed: evalBar,
-                                ovLastClosed: ovForEvalBar ?? ovSnapshot,
-                                ofFeaturesHistory: _ofFeaturesHistory,
-                                isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
-                                isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
-                                levelsSnapshot: _currentLevelsSnapshot,
-                                currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
-                                currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
-                                currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
-                                currentMarketRegime: localRegimeForEvalBar,
-                                detectedPattern: detectedPatternIntrabar,
-                                currentMarketState: localMarketStateForEvalBar,
-                                currentVwap: _currentVwapSnapshot?.Current ?? 0m);
+                            _intrabarImmediatePlaceMode = true;
+                            _intrabarImmediatePlaceBar = bar;
+                            try
+                            {
+                                EvaluateSignalsAndOrders(
+                                    caller: "IntrabarPending",
+                                    closed: evalBar,
+                                    ovLastClosed: ovForEvalBar,
+                                    ofFeaturesHistory: _ofFeaturesHistory,
+                                    isBlockedLong: _currentLevelsSnapshot.IsBlockedLong,
+                                    isBlockedShort: _currentLevelsSnapshot.IsBlockedShort,
+                                    levelsSnapshot: _currentLevelsSnapshot,
+                                    currentPOC_Explicit: _currentLevelsSnapshot.CurrentPOC,
+                                    currentVAH_Explicit: _currentLevelsSnapshot.CurrentVAH,
+                                    currentVAL_Explicit: _currentLevelsSnapshot.CurrentVAL,
+                                    currentMarketRegime: localRegimeForEvalBar,
+                                    detectedPattern: detectedPatternIntrabar,
+                                    currentMarketState: localMarketStateForEvalBar,
+                                    currentVwap: _currentVwapSnapshot?.Current ?? 0m);
+                            }
+                            finally
+                            {
+                                _intrabarImmediatePlaceMode = false;
+                                _intrabarImmediatePlaceBar = -1;
+                            }
+                            _lastIntrabarZoneTriggerClosed = evalBar;
+                            _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneId;
                         }
-                        finally
-                        {
-                            _intrabarImmediatePlaceMode = false;
-                            _intrabarImmediatePlaceBar = -1;
-                        }
-                        _lastIntrabarZoneTriggerClosed = evalBar;
 
+                        _lastSeenMarketStructureMaxReadyZoneId = maxReadyZoneId;
                         _lastIntrabarZoneTriggerMaxPendingId = maxReadyZoneId;
                     }
 
@@ -12128,9 +12138,10 @@ namespace MyNamespace.Strategies
                             }
                             catch { maxPendingIdNow = -1; pendingCountNow = 0; }
 
-                            if (pendingCountNow > 0)
+                            bool newPendingZoneAppeared = maxPendingIdNow > _lastIntrabarZoneTriggerMaxPendingId;
+                            if (pendingCountNow > 0 && (_deferredIntrabarPendingEvalTick900Dirty || newPendingZoneAppeared))
                             {
-                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED] Running deferred pending-zone eval. bar={bar} closed={closed} pending={pendingCountNow} maxPendingId={maxPendingIdNow} tick900Dirty={_deferredIntrabarPendingEvalTick900Dirty}");
+                                this.LogInfo($"[OnCalculate-INTRABAR-PENDING-DEFERRED] Running deferred pending-zone eval (new/dirty). bar={bar} closed={closed} pending={pendingCountNow} maxPendingId={maxPendingIdNow} lastMaxPendingId={_lastIntrabarZoneTriggerMaxPendingId} tick900Dirty={_deferredIntrabarPendingEvalTick900Dirty}");
 
                                 MyNamespace.Strategies.Models.DetectedOrderflowPattern detectedPatternDeferred = new MyNamespace.Strategies.Models.DetectedOrderflowPattern();
                                 try
@@ -13288,76 +13299,64 @@ namespace MyNamespace.Strategies
                 // Nur pr?fen, wenn Timeout aktiviert ist UND mindestens eine Order existiert
                 if (EnableOrderTimeout && (_entryOrder != null || _pullbackOrder != null))
                 {
-                    if (_entryBarIndex >= 0 && OrderTimeoutBars > 0) // defensive Vorbedingungen
+                    if (OrderTimeoutBars > 0)
                     {
-                        int timeoutBaseBarIndex = _entryTimeoutStartBarIndex >= 0 ? _entryTimeoutStartBarIndex : _entryBarIndex;
-                        int timeoutBarIndex = timeoutBaseBarIndex + OrderTimeoutBars; // $$timeoutBarIndex = _entryBarIndex + OrderTimeoutBars$$
+                        Func<OrderStatus?, bool> IsActive = st =>
+                            st.HasValue && st != OrderStatus.Filled && st != OrderStatus.Canceled;
 
-                        // Timeout nur pr?fen auf dem LatestClosedBar (oder dem erwarteten "bar" Parameter)
-                        if (latestClosedBar >= timeoutBarIndex)
+                        if (_entryOrder != null && _entryTimeoutStartClosedBarIndex >= 0)
                         {
-                            // Hole Status nur wenn Order nicht null (safe)
-                            OrderStatus? entryStatus = null;
-                            OrderStatus? pullbackStatus = null;
-
-                            if (_entryOrder != null)
+                            int entryTimeoutBarIndex = _entryTimeoutStartClosedBarIndex + OrderTimeoutBars;
+                            if (latestClosedBar >= entryTimeoutBarIndex)
                             {
+                                OrderStatus? entryStatus = null;
                                 try { entryStatus = _entryOrder.Status(); }
                                 catch (Exception ex) { this.LogWarn($"[OnCalculate-Timeout Check] Could not read _entryOrder.Status(): {ex.Message}"); }
-                            }
-                            if (_pullbackOrder != null)
-                            {
-                                try { pullbackStatus = _pullbackOrder.Status(); }
-                                catch (Exception ex) { this.LogWarn($"[OnCalculate-Timeout Check] Could not read _pullbackOrder.Status(): {ex.Message}"); }
-                            }
 
-                            // Hilfsfunktion: ist eine Order noch "aktiv" (wird gef?llt oder offen gehalten)?
-                            Func<OrderStatus?, bool> IsActive = st =>
-                                st.HasValue && st != OrderStatus.Filled && st != OrderStatus.Canceled;
-
-                            bool entryIsActive = IsActive(entryStatus);
-                            bool pullbackIsActive = IsActive(pullbackStatus);
-
-                            // Wenn MINDESTENS eine der Orders noch aktiv ist -> canceln
-                            if (entryIsActive || pullbackIsActive)
-                            {
-                                if (entryIsActive && _entryOrder != null)
+                                if (IsActive(entryStatus))
                                 {
-                                    this.LogWarn($"[OnCalculate-Timeout Check] Bar={latestClosedBar} >= timeoutBar={timeoutBarIndex}. Cancelling active entry order Id={_entryOrder.Id}, Status={entryStatus}");
+                                    this.LogWarn($"[OnCalculate-Timeout Check] Bar={latestClosedBar} >= timeoutBar={entryTimeoutBarIndex}. Cancelling active entry order Id={_entryOrder.Id}, Status={entryStatus}");
                                     try { CancelOrder(_entryOrder); }
                                     catch (Exception ex) { this.LogWarn($"[OnCalculate-Timeout Check] CancelOrder(_entryOrder) threw: {ex.Message}"); }
                                 }
-
-                                if (pullbackIsActive && _pullbackOrder != null)
+                                else if (entryStatus == OrderStatus.Canceled)
                                 {
-                                    this.LogWarn($"[OnCalculate-Timeout Check] Bar={latestClosedBar} >= timeoutBar={timeoutBarIndex}. Cancelling active pullback order Id={_pullbackOrder.Id}, Status={pullbackStatus}");
+                                    this.LogInfo($"[OnCalculate-Timeout Check] Entry order already canceled/rejected by exchange at Bar={latestClosedBar}. Clearing internal references.");
+                                    _entryOrder = null;
+                                    _entryBarIndex = -1;
+                                    _entryTimeoutStartClosedBarIndex = -1;
+                                }
+                            }
+                        }
+
+                        if (_pullbackOrder != null && _pullbackTimeoutStartClosedBarIndex >= 0)
+                        {
+                            int pullbackTimeoutBarIndex = _pullbackTimeoutStartClosedBarIndex + OrderTimeoutBars;
+                            if (latestClosedBar >= pullbackTimeoutBarIndex)
+                            {
+                                OrderStatus? pullbackStatus = null;
+                                try { pullbackStatus = _pullbackOrder.Status(); }
+                                catch (Exception ex) { this.LogWarn($"[OnCalculate-Timeout Check] Could not read _pullbackOrder.Status(): {ex.Message}"); }
+
+                                if (IsActive(pullbackStatus))
+                                {
+                                    this.LogWarn($"[OnCalculate-Timeout Check] Bar={latestClosedBar} >= timeoutBar={pullbackTimeoutBarIndex}. Cancelling active pullback order Id={_pullbackOrder.Id}, Status={pullbackStatus}");
                                     try { CancelOrder(_pullbackOrder); }
                                     catch (Exception ex) { this.LogWarn($"[OnCalculate-Timeout Check] CancelOrder(_pullbackOrder) threw: {ex.Message}"); }
                                 }
-
-                                // Optional: belasse das Nullsetzen den OnOrderChanged Callbacks, die den Cancel best?tigt haben.
-                                // Wenn du sofort intern aufr?umen willst (z.B. in Replay/Offline-Modus), kannst du:
-                                // _entryOrder = null; _pullbackOrder = null; _entryBarIndex = -1;
-                            }
-                            else if ((entryStatus == OrderStatus.Canceled) || (pullbackStatus == OrderStatus.Canceled))
-                            {
-                                // Wenn die Orders bereits gecancelt/rejected sind, stelle interne Felder sicher zur?ck
-                                if (_entryOrder != null || _pullbackOrder != null)
+                                else if (pullbackStatus == OrderStatus.Canceled)
                                 {
-                                    this.LogInfo($"[OnCalculate-Timeout Check] Orders already canceled/rejected by exchange at Bar={latestClosedBar}. Clearing internal references.");
-                                    _entryOrder = null;
+                                    this.LogInfo($"[OnCalculate-Timeout Check] Pullback order already canceled/rejected by exchange at Bar={latestClosedBar}. Clearing internal references.");
                                     _pullbackOrder = null;
-                                    _entryBarIndex = -1;
-                                    _entryTimeoutStartBarIndex = -1;
+                                    _pullbackBarIndex = -1;
+                                    _pullbackTimeoutStartClosedBarIndex = -1;
                                 }
                             }
-                            // sonst: Orders sind gef?llt oder in einem finalen/anderen Status ? nichts zu tun
                         }
                     }
                     else
                     {
-                        // Falls _entryBarIndex nicht gesetzt oder OrderTimeoutBars nicht > 0, logge optional
-                        this.LogDebug($"[OnCalculate-Timeout Check] Skipping timeout calculation - _entryBarIndex={_entryBarIndex}, OrderTimeoutBars={OrderTimeoutBars}");
+                        this.LogDebug($"[OnCalculate-Timeout Check] Skipping timeout calculation - OrderTimeoutBars={OrderTimeoutBars}");
                     }
                 }
 
@@ -14405,17 +14404,18 @@ namespace MyNamespace.Strategies
                 hasPendingEntryOrders = (_pullbackOrder.State == OrderStates.Active);
 
                 // ? BEREINIGE INAKTIVE ORDERS (None, Done, Failed)
-                if ((_pullbackOrder.State == OrderStates.None ||
-                     _pullbackOrder.State == OrderStates.Done ||
-                     _pullbackOrder.State == OrderStates.Failed) &&
+                if (_pullbackOrder != null &&
+                     (_pullbackOrder.Status() == OrderStatus.Filled || _pullbackOrder.Status() == OrderStatus.Canceled) &&
                      !_isExitPlacementPending)  // MINIMALER FIX: Sch?tze bei Pending (Trade l?uft)
                 {
                     this.LogInfo($"[Cleanup] Removing inactive Pullback Order: {_pullbackOrder.Direction} {_pullbackOrder.State} (State reset skipped, da Pending=true)");
                     _pullbackOrder = null;
+                    _pullbackTimeoutStartClosedBarIndex = -1;
                     // KEINEN Reset von _activeTradeSetupParams hier (Pullback-spezifisch; falls vorhanden, f?ge hinzu: && !_isExitPlacementPending)
                 }
                 else if (_isExitPlacementPending)
                 {
+                    // In Pending-Modus keine automatische Cleanup
                     this.LogDebug("[Cleanup] Skipped Pullback-Reset: Pending Trade aktiv (TP/SL wartet).");
                 }
             }
@@ -14426,13 +14426,13 @@ namespace MyNamespace.Strategies
                 hasPendingEntryOrders = (_entryOrder.State == OrderStates.Active);
 
                 // ? BEREINIGE INAKTIVE ORDERS (None, Done, Failed)
-                if ((_entryOrder.State == OrderStates.None ||
-                     _entryOrder.State == OrderStates.Done ||
-                     _entryOrder.State == OrderStates.Failed) &&
+                if (_entryOrder != null &&
+                     (_entryOrder.Status() == OrderStatus.Filled || _entryOrder.Status() == OrderStatus.Canceled) &&
                      !_isExitPlacementPending)  // MINIMALER FIX: Sch?tze bei Pending (Trade l?uft nach Fill)
                 {
                     this.LogInfo($"[Cleanup] Removing inactive Entry Order: {_entryOrder.Direction} {_entryOrder.State}");
                     _entryOrder = null;
+                    _entryTimeoutStartClosedBarIndex = -1;
                     _activeTradeSetupParams = null;  // Bleibt, aber nur bei !Pending
                     _entryBarIndex = -1;
                 }
@@ -14744,6 +14744,11 @@ namespace MyNamespace.Strategies
                 }
                 catch { }
 
+                int signalBarIndexForSl = signalBarIdxOverride ?? closed;
+                if (signalBarIndexForSl < 0) signalBarIndexForSl = 0;
+                if (signalBarIndexForSl >= CurrentBar) signalBarIndexForSl = closed;
+                var slCandle = GetCandle(signalBarIndexForSl);
+
                 decimal signalPoc = 0m;
                 bool signalPocFromOverride = false;
                 if (signalBarIdxOverride.HasValue)
@@ -14812,7 +14817,7 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CANDLE_POC";
                         entryTriggerLevel = signalPoc;
 
-                        decimal suggestedSlLong = c.Low - tickSize;
+                        decimal suggestedSlLong = RoundToTick(signalPoc - (2m * tickSize));
                         int slTicksLong = (int)Math.Ceiling((longEntryPrice - suggestedSlLong) / tickSize);
                         if (slTicksLong < 1) slTicksLong = 1;
 
@@ -14832,7 +14837,7 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CANDLE_POC";
                         entryTriggerLevel = signalPoc;
 
-                        decimal suggestedSlLongCont = c.Low - tickSize;
+                        decimal suggestedSlLongCont = RoundToTick(signalPoc - (2m * tickSize));
                         int slTicksLongCont = (int)Math.Ceiling((longEntryPrice - suggestedSlLongCont) / tickSize);
                         if (slTicksLongCont < 1) slTicksLongCont = 1;
 
@@ -14951,6 +14956,11 @@ namespace MyNamespace.Strategies
                 }
                 catch { }
 
+                int signalBarIndexForSl = signalBarIdxOverride ?? closed;
+                if (signalBarIndexForSl < 0) signalBarIndexForSl = 0;
+                if (signalBarIndexForSl >= CurrentBar) signalBarIndexForSl = closed;
+                var slCandle = GetCandle(signalBarIndexForSl);
+
                 decimal signalPoc = 0m;
                 bool signalPocFromOverride = false;
                 if (signalBarIdxOverride.HasValue)
@@ -15019,7 +15029,7 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CANDLE_POC";
                         entryTriggerLevel = signalPoc;
 
-                        decimal suggestedSlShort = c.High + tickSize;
+                        decimal suggestedSlShort = RoundToTick(signalPoc + (2m * tickSize));
                         int slTicksShort = (int)Math.Ceiling((suggestedSlShort - shortEntryPrice) / tickSize);
                         if (slTicksShort < 1) slTicksShort = 1;
 
@@ -15039,7 +15049,7 @@ namespace MyNamespace.Strategies
                         entryTriggerLevelName = "CANDLE_POC";
                         entryTriggerLevel = signalPoc;
 
-                        decimal suggestedSlShortCont = c.High + tickSize;
+                        decimal suggestedSlShortCont = RoundToTick(signalPoc + (2m * tickSize));
                         int slTicksShortCont = (int)Math.Ceiling((suggestedSlShortCont - shortEntryPrice) / tickSize);
                         if (slTicksShortCont < 1) slTicksShortCont = 1;
 
@@ -16216,8 +16226,8 @@ namespace MyNamespace.Strategies
                 _entryState = EntryState.Filled;
 
                 // Falls andere Referenzen dieselbe ID haben, bereinigen
-                if (_pullbackOrder != null && order.Id == _pullbackOrder.Id) { _pullbackOrder = null; }
-                if (_entryOrder != null && order.Id == _entryOrder.Id) { _entryOrder = null; }
+                if (_pullbackOrder != null && order.Id == _pullbackOrder.Id) { _pullbackOrder = null; _pullbackTimeoutStartClosedBarIndex = -1; }
+                if (_entryOrder != null && order.Id == _entryOrder.Id) { _entryOrder = null; _entryTimeoutStartClosedBarIndex = -1; }
 
                 this.LogInfo($"[OnOrderChanged] Market gef?llt @ {_entryFillPrice:F5}. Exit-Platzierung pending (tickbasiert).");
                 return;
@@ -16267,6 +16277,7 @@ namespace MyNamespace.Strategies
                 {
                     this.LogInfo($"[OnOrderChanged] Clearing _entryOrder reference (same ID: {order.Id})");
                     _entryOrder = null;
+                    _entryTimeoutStartClosedBarIndex = -1;
                 }
 
                 // Fallback/Init via OnCalculate aktivieren
@@ -16313,6 +16324,8 @@ namespace MyNamespace.Strategies
                 _marketOrder = null;
                 _tpOrder = null;
                 _slOrder = null;
+                _entryTimeoutStartClosedBarIndex = -1;
+                _pullbackTimeoutStartClosedBarIndex = -1;
 
                 _entryFillPrice = 0;
                 _breakEvenLevelReached = 0;
@@ -16344,6 +16357,8 @@ namespace MyNamespace.Strategies
                 _entryOrder = null;
                 _tpOrder = null;
                 _slOrder = null;
+                _entryTimeoutStartClosedBarIndex = -1;
+                _pullbackTimeoutStartClosedBarIndex = -1;
 
                 _entryFillPrice = 0;
                 _breakEvenLevelReached = 0;
@@ -16381,6 +16396,8 @@ namespace MyNamespace.Strategies
                     _tpOrder = null;
                     _slOrder = null;
                     _entryBarIndex = -1;
+                    _entryTimeoutStartClosedBarIndex = -1;
+                    _pullbackTimeoutStartClosedBarIndex = -1;
                     _armedBarIndex = -1;
                     _fillBarIndex = -1;
                     _breakEvenLevelReached = 0;
@@ -16675,6 +16692,8 @@ namespace MyNamespace.Strategies
                 // 5. Timeout-spezifische Resets
                 _orderTimeoutEnabled = false;
                 _orderTimeoutBars = 0;
+                _entryTimeoutStartClosedBarIndex = -1;
+                _pullbackTimeoutStartClosedBarIndex = -1;
 
                 // 6. TimeFilter-spezifische Resets
                 _orderEnableTimeFilter = false;
@@ -17714,6 +17733,8 @@ namespace MyNamespace.Strategies
             _isPullbackMode = false;            // Noch nicht im Trailing-Modus
             _pullbackBarIndex = bar;
             _entryBarIndex = bar;
+            _pullbackTimeoutStartClosedBarIndex = CurrentBar - 1;
+            _entryTimeoutStartClosedBarIndex = CurrentBar - 1;
 
             var pullback = new Order
             {
@@ -17837,6 +17858,7 @@ namespace MyNamespace.Strategies
             }
             _entryOrder = entry;
             _entryBarIndex = bar;
+            _entryTimeoutStartClosedBarIndex = CurrentBar - 1;
             this.LogInfo($"[PlaceEntry SET] entryBarIndex={_entryBarIndex} timeoutBars={_orderTimeoutBars} " +
                  $"timeoutBarIndex={_entryBarIndex + _orderTimeoutBars}");
             try
@@ -18026,6 +18048,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogInfo($"[Cleanup] Entry Order: {_entryOrder.Direction} {_entryOrder.State}");
                 _entryOrder = null;
+                _entryTimeoutStartClosedBarIndex = -1;
                 _activeTradeSetupParams = null;
                 _entryBarIndex = -1;
                 _armedBarIndex = -1;
@@ -18036,6 +18059,7 @@ namespace MyNamespace.Strategies
             {
                 this.LogInfo($"[Cleanup] Pullback Order: {_pullbackOrder.Direction} {_pullbackOrder.State}");
                 _pullbackOrder = null;
+                _pullbackTimeoutStartClosedBarIndex = -1;
             }
 
         }
@@ -18067,6 +18091,8 @@ namespace MyNamespace.Strategies
             _marketOrder = null;
             _tpOrder = null;
             _slOrder = null;
+            _entryTimeoutStartClosedBarIndex = -1;
+            _pullbackTimeoutStartClosedBarIndex = -1;
             _entryBarIndex = -1;
             _armedBarIndex = -1;
             _pullbackBarIndex = -1;
